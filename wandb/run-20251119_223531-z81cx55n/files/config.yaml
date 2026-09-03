@@ -1,0 +1,73 @@
+_wandb:
+    value:
+        cli_version: 0.22.1
+        e:
+            7n8vfgtg00b0zcx4vij73cssdm2lst19:
+                apple:
+                    ecpuCores: 4
+                    gpuCores: 10
+                    memoryGb: 24
+                    name: Apple M3
+                    pcpuCores: 4
+                    ramTotalBytes: "25769803776"
+                    swapTotalBytes: "16106127360"
+                codePath: main_training.py
+                codePathLocal: main_training.py
+                cpu_count: 8
+                cpu_count_logical: 8
+                disk:
+                    /:
+                        total: "494384795648"
+                        used: "343955484672"
+                email: 532373844@qq.com
+                executable: /Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/bin/python
+                git:
+                    commit: 4e40ada3330bc86cce1e8bb89161bb778b6af11b
+                    remote: https://github.com/bassamlab/SigmaRL.git
+                host: Mac
+                memory:
+                    total: "25769803776"
+                os: macOS-15.6.1-arm64-arm-64bit
+                program: /Users/zhangxiaotong/Code/sigmarl-traffic/main_training.py
+                python: CPython 3.9.21
+                root: /Users/zhangxiaotong/Code/sigmarl-traffic
+                startedAt: "2025-11-19T21:35:31.210263Z"
+                writerId: 7n8vfgtg00b0zcx4vij73cssdm2lst19
+        m: []
+        python_version: 3.9.21
+        t:
+            "1":
+                - 1
+            "2":
+                - 1
+            "3":
+                - 13
+                - 16
+            "4": 3.9.21
+            "5": 0.22.1
+            "10":
+                - 20
+            "12": 0.22.1
+            "13": darwin-arm64
+frames_per_batch:
+    value: 4096
+gamma:
+    value: 0.99
+lmbda:
+    value: 0.9
+lr:
+    value: 0.0002
+lr_min:
+    value: 1e-05
+max_steps:
+    value: 128
+minibatch_size:
+    value: 512
+n_iters:
+    value: 250
+num_epochs:
+    value: 60
+num_vmas_envs:
+    value: 32
+scenario_type:
+    value: CPM_mixed

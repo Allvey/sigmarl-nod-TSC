@@ -1,0 +1,172 @@
+Episode mean reward = 2.37:  12%|████▊                                   | 30/250 [03:44<27:52,  7.60s/it]
+Saved model: -0.55.
+Saved model: -0.53.
+Saved model: -0.52.
+Saved model: -0.49.
+Saved model: -0.49.
+Saved model: -0.41.
+Saved model: -0.29.
+Saved model: -0.11.
+Saved model: 0.13.
+Saved model: 0.40.
+Learning rate updated to 0.00019240000000000001.
+Saved model: 0.71.
+Saved model: 1.03.
+Saved model: 1.11.
+Saved model: 1.29.
+Saved model: 1.34.
+Saved model: 1.71.
+Saved model: 1.87.
+Saved model: 2.35.
+Saved model: 2.35.
+Saved model: 2.35.
+Learning rate updated to 0.00018480000000000002.
+Saved model: 2.35.
+Saved model: 2.75.
+Saved model: 2.75.
+Saved model: 2.75.
+Saved model: 2.82.
+Saved model: 2.82.
+Saved model: 2.82.
+Saved model: 2.82.
+Saved model: 2.82.
+Saved model: 2.82.
+Learning rate updated to 0.0001772.
+Saved model: 2.82.
+Saved model: 2.82.
+Saved model: 2.82.
+Saved model: 2.82.
+Saved model: 2.82.
+Saved model: 2.89.
+Saved model: 3.60.
+Saved model: 3.60.
+Saved model: 3.60.
+Saved model: 3.60.
+Learning rate updated to 0.0001696.
+Saved model: 3.60.
+Saved model: 3.60.
+Saved model: 3.60.
+Saved model: 3.60.
+Saved model: 3.60.
+Saved model: 3.60.
+Saved model: 3.60.
+Saved model: 3.60.
+Saved model: 3.60.
+Saved model: 3.60.
+Learning rate updated to 0.000162.
+Saved model: 3.60.
+Saved model: 3.60.
+Saved model: 3.60.
+Saved model: 3.60.
+Saved model: 3.77.
+Saved model: 3.77.
+Saved model: 3.77.
+Saved model: 3.77.
+Saved model: 3.77.
+Saved model: 3.77.
+Learning rate updated to 0.0001544.
+Saved model: 3.77.
+Saved model: 4.26.
+Saved model: 4.26.
+Saved model: 4.26.
+Saved model: 4.26.
+Saved model: 4.26.
+Saved model: 4.26.
+Saved model: 4.26.
+Saved model: 4.26.
+Saved model: 4.26.
+Learning rate updated to 0.0001468.
+Saved model: 4.26.
+Saved model: 4.26.
+Saved model: 4.26.
+Saved model: 4.43.
+Saved model: 4.43.
+Saved model: 4.43.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Learning rate updated to 0.0001392.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Learning rate updated to 0.00013160000000000003.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.91.
+Learning rate updated to 0.000124.
+Saved model: 4.91.
+Saved model: 4.91.
+Saved model: 4.99.
+Saved model: 4.99.
+Saved model: 4.99.
+Saved model: 4.99.
+Saved model: 4.99.
+Saved model: 4.99.
+Saved model: 4.99.
+Saved model: 4.99.
+Learning rate updated to 0.00011640000000000001.
+Saved model: 4.99.
+Saved model: 4.99.
+Saved model: 4.99.
+Saved model: 4.99.
+Saved model: 4.99.
+Saved model: 4.99.
+Saved model: 4.99.
+Saved model: 5.19.
+Saved model: 5.19.
+Saved model: 5.19.
+Learning rate updated to 0.0001088.
+Saved model: 5.19.
+Saved model: 5.19.
+Saved model: 5.19.
+Saved model: 5.19.
+Saved model: 5.19.
+Saved model: 5.19.
+Saved model: 5.19.
+Saved model: 5.19.
+Saved model: 5.19.
+Saved model: 5.19.
+Learning rate updated to 0.00010120000000000001.
+Saved model: 5.19.
+Saved model: 5.24.
+Saved model: 5.24.
+Saved model: 5.24.
+Saved model: 5.24.
+Saved model: 5.24.
+Saved model: 5.24.
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/main_training.py", line 6, in <module>
+    mappo_cavs(parameters=parameters)
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/mappo_cavs.py", line 348, in mappo_cavs
+    for tensordict_data in collector:
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/collectors/collectors.py", line 755, in iterator
+    tensordict_out = self.rollout()
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/utils/_contextlib.py", line 115, in decorate_context
+    return func(*args, **kwargs)
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/helper_training.py", line 678, in rollout
+    tensordict, tensordict_ = self.env.step_and_maybe_reset(
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/envs/common.py", line 1942, in step_and_maybe_reset
+    tensordict = self.step(tensordict)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/envs/common.py", line 1313, in step
+    next_tensordict = self._step(tensordict)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/envs/transforms/transforms.py", line 725, in _step
+    next_tensordict = self.base_env._step(tensordict_in)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/envs/libs/vmas.py", line 377, in _step
+    agent_tds = torch.stack(agent_tds, dim=1)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/tensordict.py", line 2771, in __torch_function__
+    @classmethod
+KeyboardInterrupt

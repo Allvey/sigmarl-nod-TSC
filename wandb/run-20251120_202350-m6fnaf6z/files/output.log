@@ -1,0 +1,30 @@
+Episode mean reward = -0.55:   0%|▏                                     | 1/250 [00:46<3:12:37, 46.42s/it]Traceback (most recent call last):
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/main_training.py", line 6, in <module>
+    mappo_cavs(parameters=parameters)
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/mappo_cavs.py", line 358, in mappo_cavs
+    for tensordict_data in collector:
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/collectors/collectors.py", line 755, in iterator
+    tensordict_out = self.rollout()
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/utils/_contextlib.py", line 115, in decorate_context
+    return func(*args, **kwargs)
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/helper_training.py", line 678, in rollout
+    tensordict, tensordict_ = self.env.step_and_maybe_reset(
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/envs/common.py", line 1960, in step_and_maybe_reset
+    tensordict_ = self.reset(tensordict_)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/envs/common.py", line 1480, in reset
+    tensordict_reset = self._reset(tensordict, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/envs/transforms/transforms.py", line 755, in _reset
+    tensordict_reset = self.base_env._reset(tensordict=tensordict, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/envs/libs/vmas.py", line 309, in _reset
+    self._env.reset_at(env_index, return_observations=False)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/vmas/simulator/environment/environment.py", line 117, in reset_at
+    self.scenario.env_reset_world_at(index)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/vmas/simulator/scenario.py", line 85, in env_reset_world_at
+    self.reset_world_at(env_index)
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/scenarios/road_traffic.py", line 1133, in reset_world_at
+    self._reset_init_distances_and_short_term_ref_path(
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/scenarios/road_traffic.py", line 1466, in _reset_init_distances_and_short_term_ref_path
+    ) = get_perpendicular_distances(
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/helper_scenario.py", line 662, in get_perpendicular_distances
+    projected_lengths = torch.sum(point_vecs * line_vecs, dim=2) / line_lens_squared
+KeyboardInterrupt

@@ -1,0 +1,1 @@
+step,t_sec,ego_agent,neighbor_agent,pred_vel_norm,pred_steer_norm,gt_vel_norm,gt_steer_norm,abs_vel_norm,abs_steer_norm,l2_norm

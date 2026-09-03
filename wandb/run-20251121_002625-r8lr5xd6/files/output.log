@@ -1,0 +1,10 @@
+Episode mean reward = -0.51:   1%|▉                                                                             | 3/250 [01:52<2:35:27, 37.76s/it]Traceback (most recent call last):
+Saved model: -0.55.
+Saved model: -0.51.
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/main_training.py", line 6, in <module>
+    mappo_cavs(parameters=parameters)
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/mappo_cavs.py", line 598, in mappo_cavs
+    e_labels_mb = generate_e_labels_from_refs(
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/topology_labels.py", line 74, in generate_e_labels_from_refs
+    L2 = ref_neighbors[b, j].T.detach().cpu().numpy()  # [2, T]
+KeyboardInterrupt

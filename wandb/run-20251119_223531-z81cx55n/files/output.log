@@ -1,0 +1,51 @@
+check_env_specs succeeded!
+Episode mean reward = 1.87:   7%|█████▍                                                                      | 18/250 [03:42<45:13, 11.70s/it]Traceback (most recent call last):
+Saved model: -0.55.
+Learning rate updated to 0.0002.
+Saved model: -0.55.
+Saved model: -0.53.
+Saved model: -0.52.
+Saved model: -0.49.
+Saved model: -0.49.
+Saved model: -0.41.
+Saved model: -0.29.
+Saved model: -0.11.
+Saved model: 0.13.
+Saved model: 0.40.
+Learning rate updated to 0.00019240000000000001.
+Saved model: 0.71.
+Saved model: 1.03.
+Saved model: 1.11.
+Saved model: 1.29.
+Saved model: 1.34.
+Saved model: 1.71.
+Saved model: 1.87.
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/main_training.py", line 6, in <module>
+    mappo_cavs(parameters=parameters)
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/mappo_cavs.py", line 368, in mappo_cavs
+    if priority_module:
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/collectors/collectors.py", line 755, in iterator
+    tensordict_out = self.rollout()
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/utils/_contextlib.py", line 115, in decorate_context
+    return func(*args, **kwargs)
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/helper_training.py", line 678, in rollout
+    tensordict, tensordict_ = self.env.step_and_maybe_reset(
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/envs/common.py", line 1942, in step_and_maybe_reset
+    tensordict = self.step(tensordict)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/envs/common.py", line 1313, in step
+    next_tensordict = self._step(tensordict)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/envs/transforms/transforms.py", line 725, in _step
+    next_tensordict = self.base_env._step(tensordict_in)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/envs/libs/vmas.py", line 355, in _step
+    obs, rews, dones, infos = self._env.step(action)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/vmas/simulator/environment/environment.py", line 260, in step
+    obs, rewards, dones, infos = self.get_from_scenario(
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/vmas/simulator/environment/environment.py", line 153, in get_from_scenario
+    reward = self.scenario.reward(agent).clone()
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/scenarios/road_traffic.py", line 1583, in reward
+    self._update_state_before_rewarding(agent, agent_index)
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/scenarios/road_traffic.py", line 1887, in _update_state_before_rewarding
+    ) = get_perpendicular_distances(
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/helper_scenario.py", line 677, in get_perpendicular_distances
+    distance_to_end_point = distances[env_idx, n_long_term_point - 2]
+KeyboardInterrupt

@@ -1,0 +1,37 @@
+{
+  "os": "macOS-15.6.1-arm64-arm-64bit",
+  "python": "CPython 3.9.21",
+  "startedAt": "2025-11-20T18:53:02.499616Z",
+  "program": "/Users/zhangxiaotong/Code/sigmarl-traffic/main_training.py",
+  "codePath": "main_training.py",
+  "codePathLocal": "main_training.py",
+  "git": {
+    "remote": "https://github.com/Allvey/SigmaRL.git",
+    "commit": "bbd7bdd8e446592036a5145d1e5aa00d584f83f7"
+  },
+  "email": "532373844@qq.com",
+  "root": "/Users/zhangxiaotong/Code/sigmarl-traffic",
+  "host": "w223-5l-v4.eduroam.dynamic.rbg.tum.de",
+  "executable": "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/bin/python",
+  "cpu_count": 8,
+  "cpu_count_logical": 8,
+  "disk": {
+    "/": {
+      "total": "494384795648",
+      "used": "349102309376"
+    }
+  },
+  "memory": {
+    "total": "25769803776"
+  },
+  "apple": {
+    "name": "Apple M3",
+    "ecpuCores": 4,
+    "pcpuCores": 4,
+    "gpuCores": 10,
+    "memoryGb": 24,
+    "swapTotalBytes": "16106127360",
+    "ramTotalBytes": "25769803776"
+  },
+  "writerId": "jyr4289apvav7x0k90pq4exk4jpwcq2t"
+}

@@ -1,0 +1,1 @@
+{"collision/total_rate":0.3359375,"_timestamp":1.7636424823693938e+09,"_runtime":27.863265208,"loss/total":63.63520050048828,"_step":80,"collision/lanelets_rate":0.3359375,"reward/episode_mean":-0.86,"collision/agents_rate":0,"_wandb":{"runtime":27}}

@@ -1,0 +1,70 @@
+Episode mean reward = 2.67:  12%|████▊                                   | 30/250 [05:49<49:06, 13.39s/it]
+Saved model: -0.55.
+Saved model: -0.51.
+Saved model: -0.49.
+Saved model: -0.49.
+Saved model: -0.49.
+Saved model: -0.43.
+Saved model: -0.33.
+Saved model: -0.25.
+Saved model: -0.07.
+Saved model: 0.22.
+Learning rate updated to 0.00019240000000000001.
+Saved model: 0.71.
+Saved model: 0.75.
+Saved model: 0.96.
+Saved model: 1.29.
+Saved model: 1.51.
+Saved model: 1.96.
+Saved model: 1.96.
+Saved model: 1.96.
+Saved model: 2.00.
+Saved model: 2.00.
+Learning rate updated to 0.00018480000000000002.
+Saved model: 2.00.
+Saved model: 2.66.
+Saved model: 2.66.
+Saved model: 2.66.
+Saved model: 2.66.
+Saved model: 2.66.
+Saved model: 2.99.
+Saved model: 2.99.
+Saved model: 2.99.
+Saved model: 2.99.
+Learning rate updated to 0.0001772.
+Saved model: 2.99.
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/main_training.py", line 6, in <module>
+    mappo_cavs(parameters=parameters)
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/mappo_cavs.py", line 596, in mappo_cavs
+    .mean()
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1518, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1527, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/topology_module.py", line 89, in forward
+    q_R_final = self.decoder(ego_observation, neighbors_observation, relative_features)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1518, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1527, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/topology_module.py", line 59, in forward
+    q_R = layer(ego_observation, neighbors_observation, relative_features, q_R)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1518, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1527, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/topology_module.py", line 40, in forward
+    q_R_update = self.mlp(combined_features)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1518, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1527, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/container.py", line 215, in forward
+    input = module(input)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1518, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1527, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/linear.py", line 114, in forward
+    return F.linear(input, self.weight, self.bias)
+KeyboardInterrupt

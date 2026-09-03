@@ -1,0 +1,57 @@
+{"time":"2025-11-20T20:50:57.943822+01:00","level":"INFO","msg":"stream: starting","core version":"0.22.1"}
+{"time":"2025-11-20T20:50:58.227965+01:00","level":"INFO","msg":"stream: created new stream","id":"xitm4h9l"}
+{"time":"2025-11-20T20:50:58.228208+01:00","level":"INFO","msg":"handler: started","stream_id":"xitm4h9l"}
+{"time":"2025-11-20T20:50:58.228345+01:00","level":"INFO","msg":"stream: started","id":"xitm4h9l"}
+{"time":"2025-11-20T20:50:58.228358+01:00","level":"INFO","msg":"writer: started","stream_id":"xitm4h9l"}
+{"time":"2025-11-20T20:50:58.228653+01:00","level":"INFO","msg":"sender: started","stream_id":"xitm4h9l"}
+{"time":"2025-11-20T21:11:02.092066+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:11:04.168116+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:11:08.49398+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:11:17.05379+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": read tcp 131.159.223.201:49514->35.186.228.49:443: read: can't assign requested address"}
+{"time":"2025-11-20T21:11:17.852128+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:11:19.248133+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:11:23.860063+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:11:32.075114+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:11:33.978129+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:11:56.396167+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:12:18.978783+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:16:20.461152+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:16:22.73807+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:16:27.339917+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:16:50.953493+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-11-20T21:17:23.07588+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-11-20T21:18:02.650561+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded"}
+{"time":"2025-11-20T21:18:16.364815+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp 35.186.228.49:443: connect: network is unreachable"}
+{"time":"2025-11-20T21:18:18.779119+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:18:22.839454+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:18:51.705381+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": read tcp 131.159.223.201:62557->35.186.228.49:443: read: can't assign requested address"}
+{"time":"2025-11-20T21:19:05.946079+01:00","level":"INFO","msg":"flowcontrol: backed up, offloading to disk","recordNumber":418}
+{"time":"2025-11-20T21:20:03.004769+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-11-20T21:21:10.253819+01:00","level":"INFO","msg":"flowcontrol: unblocked","totalOffloaded":15}
+{"time":"2025-11-20T21:24:51.369932+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:24:53.520605+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:24:57.547304+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:25:06.518637+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:25:15.504422+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded"}
+{"time":"2025-11-20T21:25:25.001594+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:41:06.870932+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": read tcp 10.177.4.113:51568->35.186.228.49:443: read: can't assign requested address"}
+{"time":"2025-11-20T21:41:11.069964+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:41:20.118213+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:41:33.346999+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:41:37.598384+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:42:21.978437+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:43:02.624314+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:43:27.543399+01:00","level":"INFO","msg":"flowcontrol: backed up, offloading to disk","recordNumber":512}
+{"time":"2025-11-20T21:43:39.18747+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:44:16.72282+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:45:29.454817+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:45:52.895111+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:46:56.775196+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:47:20.213456+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:48:00.079752+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:48:24.895304+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:49:01.459769+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:49:25.568189+01:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/allvey/sigmarl-traffic/xitm4h9l/file_stream\": dial tcp: lookup api.wandb.ai: no such host"}
+{"time":"2025-11-20T21:50:03.767425+01:00","level":"INFO","msg":"flowcontrol: unblocked","totalOffloaded":73}
+{"time":"2025-11-20T22:00:26.226164+01:00","level":"INFO","msg":"stream: closing","id":"xitm4h9l"}
+{"time":"2025-11-20T22:00:26.886429+01:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}

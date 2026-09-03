@@ -1,0 +1,60 @@
+Scenario: CPM_entire
+[LOG] Agent-agent collision rate [%]: mean=0.13, std=0.10, min=0.00, max=0.33
+[LOG] Agent-lanelet collision rate [%]: mean=0.29, std=0.18, min=0.00, max=0.67
+[LOG] Total collision rate [%]: mean=0.42, std=0.22, min=0.08, max=1.00
+[LOG] Relative centerline deviation [%]: mean=56.70, std=4.98, min=48.28, max=68.83
+[LOG] Relative average speed [%]: mean=87.01, std=0.90, min=84.86, max=89.78
+[LOG] Relative average speed with collision penalty [%]: mean=86.17, std=1.18
+[LOG] Smoothness [%]: mean=5.82, std=0.42, min=5.06, max=6.81
+[LOG] Smoothness with collision penalty [%]: mean=6.24, std=0.58
+[LOG] Smoothness longitudinal [%]: mean=1.84, std=0.58, min=0.91, max=3.29
+[LOG] Smoothness longitudinal with collision penalty [%]: mean=2.26, std=0.74
+[LOG] Smoothness lateral [%]: mean=9.81, std=0.37, min=9.10, max=10.71
+[LOG] Smoothness lateral with collision penalty [%]: mean=10.22, std=0.48
+[LOG] Composite scores: -1.00
+=========================================
+Scenario: intersection_2
+[LOG] Agent-agent collision rate [%]: mean=1.72, std=0.39, min=1.17, max=2.84
+[LOG] Agent-lanelet collision rate [%]: mean=0.02, std=0.04, min=0.00, max=0.17
+[LOG] Total collision rate [%]: mean=1.73, std=0.40, min=1.17, max=2.84
+[LOG] Relative centerline deviation [%]: mean=38.50, std=0.49, min=37.35, max=39.39
+[LOG] Relative average speed [%]: mean=86.65, std=0.55, min=85.22, max=88.06
+[LOG] Relative average speed with collision penalty [%]: mean=83.18, std=0.93
+[LOG] Smoothness [%]: mean=6.35, std=0.25, min=6.03, max=7.32
+[LOG] Smoothness with collision penalty [%]: mean=8.08, std=0.52
+[LOG] Smoothness longitudinal [%]: mean=3.14, std=0.39, min=2.45, max=4.69
+[LOG] Smoothness longitudinal with collision penalty [%]: mean=4.87, std=0.61
+[LOG] Smoothness lateral [%]: mean=9.56, std=0.20, min=9.26, max=10.01
+[LOG] Smoothness lateral with collision penalty [%]: mean=11.29, std=0.49
+[LOG] Composite scores: -1.00
+=========================================
+Scenario: on_ramp_1
+[LOG] Agent-agent collision rate [%]: mean=1.57, std=0.29, min=0.92, max=2.17
+[LOG] Agent-lanelet collision rate [%]: mean=0.00, std=0.00, min=0.00, max=0.00
+[LOG] Total collision rate [%]: mean=1.57, std=0.29, min=0.92, max=2.17
+[LOG] Relative centerline deviation [%]: mean=38.22, std=0.30, min=37.69, max=38.88
+[LOG] Relative average speed [%]: mean=88.62, std=0.29, min=88.04, max=89.29
+[LOG] Relative average speed with collision penalty [%]: mean=85.48, std=0.70
+[LOG] Smoothness [%]: mean=4.92, std=0.21, min=4.47, max=5.36
+[LOG] Smoothness with collision penalty [%]: mean=6.49, std=0.35
+[LOG] Smoothness longitudinal [%]: mean=2.43, std=0.29, min=1.75, max=2.94
+[LOG] Smoothness longitudinal with collision penalty [%]: mean=4.00, std=0.40
+[LOG] Smoothness lateral [%]: mean=7.41, std=0.15, min=7.16, max=7.78
+[LOG] Smoothness lateral with collision penalty [%]: mean=8.98, std=0.33
+[LOG] Composite scores: -1.00
+=========================================
+Scenario: roundabout_1
+[LOG] Agent-agent collision rate [%]: mean=0.97, std=0.22, min=0.42, max=1.58
+[LOG] Agent-lanelet collision rate [%]: mean=0.10, std=0.10, min=0.00, max=0.42
+[LOG] Total collision rate [%]: mean=1.07, std=0.24, min=0.42, max=1.58
+[LOG] Relative centerline deviation [%]: mean=34.15, std=0.66, min=32.48, max=35.40
+[LOG] Relative average speed [%]: mean=83.47, std=0.73, min=81.93, max=85.47
+[LOG] Relative average speed with collision penalty [%]: mean=81.33, std=0.94
+[LOG] Smoothness [%]: mean=7.46, std=0.34, min=6.88, max=8.58
+[LOG] Smoothness with collision penalty [%]: mean=8.53, std=0.46
+[LOG] Smoothness longitudinal [%]: mean=4.94, std=0.56, min=4.00, max=6.79
+[LOG] Smoothness longitudinal with collision penalty [%]: mean=6.02, std=0.66
+[LOG] Smoothness lateral [%]: mean=9.98, std=0.18, min=9.54, max=10.37
+[LOG] Smoothness lateral with collision penalty [%]: mean=11.05, std=0.32
+[LOG] Composite scores: -1.00
+=========================================

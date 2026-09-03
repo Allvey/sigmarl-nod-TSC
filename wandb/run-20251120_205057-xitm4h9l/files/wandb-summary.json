@@ -1,0 +1,1 @@
+{"_wandb":{"runtime":2844},"collision/agents_rate":0.00360107421875,"loss/topology_weight":0.5,"_step":48,"loss/total":-0.013934801332652569,"reward/episode_mean":3.14,"collision/total_rate":0.00457763671875,"collision/lanelets_rate":0.0009765625,"_timestamp":1.763672354444764e+09,"_runtime":2844.511400792,"loss/topology_bce":0.02914336510002613}

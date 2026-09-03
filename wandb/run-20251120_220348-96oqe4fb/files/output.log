@@ -1,0 +1,214 @@
+Episode mean reward = 2.69:  12%|█████████▎                                                                    | 30/250 [25:23<2:47:14, 45.61s/it]
+Saved model: -0.57.
+Saved model: -0.55.
+Saved model: -0.55.
+Saved model: -0.55.
+Saved model: -0.55.
+Saved model: -0.55.
+Saved model: -0.50.
+Saved model: -0.38.
+Saved model: -0.14.
+Saved model: -0.01.
+Learning rate updated to 0.00019240000000000001.
+Saved model: 0.39.
+Saved model: 0.53.
+Saved model: 1.04.
+Saved model: 1.06.
+Saved model: 1.35.
+Saved model: 1.63.
+Saved model: 1.80.
+Saved model: 1.80.
+Saved model: 2.12.
+Saved model: 2.12.
+Learning rate updated to 0.00018480000000000002.
+Saved model: 2.12.
+Saved model: 2.63.
+Saved model: 2.63.
+Saved model: 2.63.
+Saved model: 2.63.
+Saved model: 2.63.
+Saved model: 2.63.
+Saved model: 2.63.
+Saved model: 2.69.
+Saved model: 2.87.
+Learning rate updated to 0.0001772.
+Saved model: 2.87.
+Saved model: 2.87.
+Saved model: 2.87.
+Saved model: 2.87.
+Saved model: 2.87.
+Saved model: 2.87.
+Saved model: 2.87.
+Saved model: 2.90.
+Saved model: 2.90.
+Saved model: 2.90.
+Learning rate updated to 0.0001696.
+Saved model: 2.90.
+Saved model: 3.27.
+Saved model: 3.27.
+Saved model: 3.27.
+Saved model: 3.39.
+Saved model: 3.39.
+Saved model: 3.39.
+Saved model: 3.39.
+Saved model: 3.71.
+Saved model: 3.71.
+Learning rate updated to 0.000162.
+Saved model: 3.71.
+Saved model: 3.71.
+Saved model: 3.83.
+Saved model: 3.83.
+Saved model: 3.83.
+Saved model: 3.83.
+Saved model: 3.83.
+Saved model: 3.83.
+Saved model: 3.83.
+Saved model: 3.83.
+Learning rate updated to 0.0001544.
+Saved model: 3.83.
+Saved model: 3.83.
+Saved model: 3.83.
+Saved model: 3.83.
+Saved model: 3.83.
+Saved model: 3.83.
+Saved model: 3.83.
+Saved model: 3.83.
+Saved model: 3.83.
+Saved model: 3.99.
+Learning rate updated to 0.0001468.
+Saved model: 3.99.
+Saved model: 3.99.
+Saved model: 3.99.
+Saved model: 4.32.
+Saved model: 4.32.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Learning rate updated to 0.0001392.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Learning rate updated to 0.00013160000000000003.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Learning rate updated to 0.000124.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Learning rate updated to 0.00011640000000000001.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Learning rate updated to 0.0001088.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.54.
+Learning rate updated to 0.00010120000000000001.
+Saved model: 4.60.
+Saved model: 4.60.
+Saved model: 4.61.
+Saved model: 4.61.
+Saved model: 4.61.
+Saved model: 4.61.
+Saved model: 4.87.
+Saved model: 4.87.
+Saved model: 4.87.
+Saved model: 4.87.
+Learning rate updated to 9.36e-05.
+Saved model: 4.87.
+Saved model: 4.87.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Learning rate updated to 8.6e-05.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Learning rate updated to 7.84e-05.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Learning rate updated to 7.08e-05.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Learning rate updated to 6.32e-05.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+Saved model: 4.98.
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/main_training.py", line 6, in <module>
+    mappo_cavs(parameters=parameters)
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/mappo_cavs.py", line 626, in mappo_cavs
+    combined_loss.backward()
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/_tensor.py", line 492, in backward
+    torch.autograd.backward(
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/autograd/__init__.py", line 251, in backward
+    Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/autograd/function.py", line 276, in apply
+    def apply(self, *args):
+KeyboardInterrupt

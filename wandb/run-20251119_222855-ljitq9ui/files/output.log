@@ -1,0 +1,108 @@
+Episode mean reward = 1.34:   6%|████▊                                                                       | 16/250 [03:25<48:05, 12.33s/it]Traceback (most recent call last):
+Saved model: -0.55.
+Learning rate updated to 0.0002.
+Saved model: -0.55.
+Saved model: -0.53.
+Saved model: -0.52.
+Saved model: -0.49.
+Saved model: -0.49.
+Saved model: -0.41.
+Saved model: -0.29.
+Saved model: -0.11.
+Saved model: 0.13.
+Saved model: 0.40.
+Learning rate updated to 0.00019240000000000001.
+Saved model: 0.71.
+Saved model: 1.03.
+Saved model: 1.11.
+Saved model: 1.29.
+Saved model: 1.34.
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/main_training.py", line 6, in <module>
+    mappo_cavs(parameters=parameters)
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/mappo_cavs.py", line 427, in mappo_cavs
+    loss_vals = loss_module(mini_batch_data)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1518, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1568, in _call_impl
+    result = forward_call(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/_contextlib.py", line 126, in decorate_context
+    return func(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/common.py", line 282, in wrapper
+    return func(_self, tensordict, *args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/objectives/ppo.py", line 642, in forward
+    log_weight, dist = self._log_weight(tensordict)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/objectives/ppo.py", line 377, in _log_weight
+    dist = self.actor.get_dist(tensordict, params=self.actor_params)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/functional_modules.py", line 576, in new_fun
+    out = getattr(type(self), fun_name)(self, *args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/probabilistic.py", line 524, in get_dist
+    tensordict_out = self.get_dist_params(tensordict, tensordict_out, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/probabilistic.py", line 515, in get_dist_params
+    return tds(tensordict, tensordict_out, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1518, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1527, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/functional_modules.py", line 588, in new_fun
+    return getattr(type(self), fun_name)(self, *args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/common.py", line 282, in wrapper
+    return func(_self, tensordict, *args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/_contextlib.py", line 126, in decorate_context
+    return func(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/utils.py", line 254, in wrapper
+    return func(_self, tensordict, *args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/sequence.py", line 426, in forward
+    tensordict = self._run_module(module, tensordict, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/sequence.py", line 407, in _run_module
+    tensordict = module(tensordict, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1518, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1527, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/functional_modules.py", line 588, in new_fun
+    return getattr(type(self), fun_name)(self, *args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/common.py", line 282, in wrapper
+    return func(_self, tensordict, *args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/_contextlib.py", line 126, in decorate_context
+    return func(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/utils.py", line 254, in wrapper
+    return func(_self, tensordict, *args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/common.py", line 1164, in forward
+    tensors = self._call_module(tensors, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/common.py", line 1121, in _call_module
+    out = self.module(*tensors, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1518, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1527, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/functional_modules.py", line 588, in new_fun
+    return getattr(type(self), fun_name)(self, *args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/container.py", line 215, in forward
+    input = module(input)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1518, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1527, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/functional_modules.py", line 588, in new_fun
+    return getattr(type(self), fun_name)(self, *args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/modules/models/multiagent.py", line 213, in forward
+    output = self.agent_networks[0](inputs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1518, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1527, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/functional_modules.py", line 588, in new_fun
+    return getattr(type(self), fun_name)(self, *args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/modules/models/models.py", line 267, in forward
+    out = super().forward(*inputs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/container.py", line 215, in forward
+    input = module(input)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1518, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1527, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/tensordict/nn/functional_modules.py", line 588, in new_fun
+    return getattr(type(self), fun_name)(self, *args, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/nn/modules/linear.py", line 114, in forward
+    return F.linear(input, self.weight, self.bias)
+KeyboardInterrupt

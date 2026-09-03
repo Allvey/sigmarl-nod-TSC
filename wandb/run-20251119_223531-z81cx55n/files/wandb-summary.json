@@ -1,0 +1,1 @@
+{"collision/total_rate":0,"_wandb":{"runtime":225},"_timestamp":1.76358835517219e+09,"optim/lr":0.00018784,"collision/lanelets_rate":0,"loss/total":-0.08268248658472051,"loss/entropy":0.00012026085376722524,"_runtime":225,"iter":17,"loss/critic":0.04721116239670664,"collision/agents_rate":0,"reward/episode_mean":1.87,"_step":17,"loss/actor":-0.13001390998251736}

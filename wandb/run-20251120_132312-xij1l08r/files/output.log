@@ -1,0 +1,16 @@
+Episode mean reward = -0.83: : 11it [00:13,  1.21s/it]Traceback (most recent call last):                  
+Saved model: -0.48.
+Saved model: -0.48.
+Saved model: -0.48.
+Saved model: -0.48.
+Saved model: -0.48.
+Saved model: -0.48.
+Saved model: -0.48.
+Saved model: -0.48.
+Saved model: -0.48.
+Saved model: -0.48.
+Learning rate updated to -0.0017000000000000001.
+  File "<string>", line 1, in <module>
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/mappo_cavs.py", line 409, in mappo_cavs
+    assert not loss_value.isinf().any()
+AssertionError

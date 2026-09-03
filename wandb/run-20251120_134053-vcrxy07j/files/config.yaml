@@ -1,0 +1,47 @@
+_wandb:
+    value:
+        cli_version: 0.22.1
+        e:
+            wdd7ragi2n1tbfels1c5eak9obsm9wtm:
+                apple:
+                    ecpuCores: 4
+                    gpuCores: 10
+                    memoryGb: 24
+                    name: Apple M3
+                    pcpuCores: 4
+                    ramTotalBytes: "25769803776"
+                    swapTotalBytes: "15032385536"
+                cpu_count: 8
+                cpu_count_logical: 8
+                disk:
+                    /:
+                        total: "494384795648"
+                        used: "346589564928"
+                email: 532373844@qq.com
+                executable: /Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/bin/python
+                git:
+                    commit: bbd7bdd8e446592036a5145d1e5aa00d584f83f7
+                    remote: https://github.com/Allvey/SigmaRL.git
+                host: w223-5l-v4.eduroam.dynamic.rbg.tum.de
+                memory:
+                    total: "25769803776"
+                os: macOS-15.6.1-arm64-arm-64bit
+                program: <python with no main file>
+                python: CPython 3.9.21
+                root: /Users/zhangxiaotong/Code/sigmarl-traffic
+                startedAt: "2025-11-20T12:40:53.940449Z"
+                writerId: wdd7ragi2n1tbfels1c5eak9obsm9wtm
+        m: []
+        python_version: 3.9.21
+        t:
+            "1":
+                - 1
+            "2":
+                - 1
+            "3":
+                - 13
+                - 61
+            "4": 3.9.21
+            "5": 0.22.1
+            "12": 0.22.1
+            "13": darwin-arm64

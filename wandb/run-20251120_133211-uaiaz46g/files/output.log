@@ -1,0 +1,374 @@
+Episode mean reward = -0.80: : 30it [00:12,  2.40it/s]                                                    
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Learning rate updated to -0.0017000000000000001.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Learning rate updated to -0.0036000000000000003.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Learning rate updated to -0.0055000000000000005.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Learning rate updated to -0.007400000000000001.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Learning rate updated to -0.009300000000000001.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Learning rate updated to -0.011200000000000002.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Learning rate updated to -0.0131.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Learning rate updated to -0.015000000000000001.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Learning rate updated to -0.016900000000000002.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Learning rate updated to -0.0188.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.38.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Learning rate updated to -0.020700000000000003.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Learning rate updated to -0.022600000000000002.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Learning rate updated to -0.0245.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Learning rate updated to -0.026400000000000003.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.35.
+Saved model: -0.33.
+Saved model: -0.28.
+Learning rate updated to -0.028300000000000002.
+Saved model: -0.22.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Learning rate updated to -0.0302.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Learning rate updated to -0.0321.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Learning rate updated to -0.033999999999999996.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Learning rate updated to -0.0359.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Learning rate updated to -0.0378.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Learning rate updated to -0.0397.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Learning rate updated to -0.0416.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Learning rate updated to -0.0435.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Learning rate updated to -0.0454.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Learning rate updated to -0.0473.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Learning rate updated to -0.0492.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Learning rate updated to -0.0511.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Learning rate updated to -0.053.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Learning rate updated to -0.0549.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Learning rate updated to -0.0568.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Saved model: -0.19.
+Learning rate updated to -0.0587.
+Saved model: -0.19.
+Saved model: -0.19.
+  File "<string>", line 1, in <module>
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/mappo_cavs.py", line 348, in mappo_cavs
+    for tensordict_data in collector:
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/collectors/collectors.py", line 755, in iterator
+    tensordict_out = self.rollout()
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/utils/_contextlib.py", line 115, in decorate_context
+    return func(*args, **kwargs)
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/helper_training.py", line 678, in rollout
+    tensordict, tensordict_ = self.env.step_and_maybe_reset(
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/envs/common.py", line 1960, in step_and_maybe_reset
+    tensordict_ = self.reset(tensordict_)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/envs/common.py", line 1480, in reset
+    tensordict_reset = self._reset(tensordict, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/envs/transforms/transforms.py", line 755, in _reset
+    tensordict_reset = self.base_env._reset(tensordict=tensordict, **kwargs)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torchrl/envs/libs/vmas.py", line 309, in _reset
+    self._env.reset_at(env_index, return_observations=False)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/vmas/simulator/environment/environment.py", line 117, in reset_at
+    self.scenario.env_reset_world_at(index)
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/vmas/simulator/scenario.py", line 85, in env_reset_world_at
+    self.reset_world_at(env_index)
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/scenarios/road_traffic.py", line 1133, in reset_world_at
+    self._reset_init_distances_and_short_term_ref_path(
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/scenarios/road_traffic.py", line 1476, in _reset_init_distances_and_short_term_ref_path
+    ) = get_perpendicular_distances(
+  File "/Users/zhangxiaotong/Code/sigmarl-traffic/utilities/helper_scenario.py", line 676, in get_perpendicular_distances
+    for env_idx, n_long_term_point in enumerate(n_points_long_term):
+  File "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/lib/python3.9/site-packages/torch/_tensor.py", line 1000, in __iter__
+    return iter(self.unbind(0))
+KeyboardInterrupt

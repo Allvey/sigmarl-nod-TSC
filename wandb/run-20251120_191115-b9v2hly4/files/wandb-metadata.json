@@ -1,0 +1,15 @@
+{
+  "os": "macOS-15.6.1-arm64-arm-64bit",
+  "python": "CPython 3.9.21",
+  "startedAt": "2025-11-20T18:11:15.074206Z",
+  "program": "<python with no main file>",
+  "git": {
+    "remote": "https://github.com/Allvey/SigmaRL.git",
+    "commit": "bbd7bdd8e446592036a5145d1e5aa00d584f83f7"
+  },
+  "email": "532373844@qq.com",
+  "root": "/Users/zhangxiaotong/Code/sigmarl-traffic",
+  "host": "w223-5l-v4.eduroam.dynamic.rbg.tum.de",
+  "executable": "/Users/zhangxiaotong/anaconda3/envs/sigmarl-v0/bin/python",
+  "writerId": "xbn8wbokfjmx9vm75aphlsbgt72y9br1"
+}

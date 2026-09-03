@@ -1,0 +1,26 @@
+2025-11-19 22:46:21,034 INFO    MainThread:88748 [wandb_setup.py:_flush():81] Current SDK version is 0.22.1
+2025-11-19 22:46:21,034 INFO    MainThread:88748 [wandb_setup.py:_flush():81] Configure stats pid to 88748
+2025-11-19 22:46:21,034 INFO    MainThread:88748 [wandb_setup.py:_flush():81] Loading settings from /Users/zhangxiaotong/.config/wandb/settings
+2025-11-19 22:46:21,034 INFO    MainThread:88748 [wandb_setup.py:_flush():81] Loading settings from /Users/zhangxiaotong/Code/sigmarl-traffic/wandb/settings
+2025-11-19 22:46:21,034 INFO    MainThread:88748 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2025-11-19 22:46:21,034 INFO    MainThread:88748 [wandb_init.py:setup_run_log_directory():705] Logging user logs to /Users/zhangxiaotong/Code/sigmarl-traffic/wandb/run-20251119_224621-87bd0dwe/logs/debug.log
+2025-11-19 22:46:21,035 INFO    MainThread:88748 [wandb_init.py:setup_run_log_directory():706] Logging internal logs to /Users/zhangxiaotong/Code/sigmarl-traffic/wandb/run-20251119_224621-87bd0dwe/logs/debug-internal.log
+2025-11-19 22:46:21,035 INFO    MainThread:88748 [wandb_init.py:init():832] calling init triggers
+2025-11-19 22:46:21,035 INFO    MainThread:88748 [wandb_init.py:init():837] wandb.init called with sweep_config: {}
+config: {'_wandb': {}}
+2025-11-19 22:46:21,035 INFO    MainThread:88748 [wandb_init.py:init():880] starting backend
+2025-11-19 22:46:21,258 INFO    MainThread:88748 [wandb_init.py:init():883] sending inform_init request
+2025-11-19 22:46:21,298 INFO    MainThread:88748 [wandb_init.py:init():891] backend started and connected
+2025-11-19 22:46:21,303 INFO    MainThread:88748 [wandb_init.py:init():961] updated telemetry
+2025-11-19 22:46:21,340 INFO    MainThread:88748 [wandb_init.py:init():985] communicating run to backend with 90.0 second timeout
+2025-11-19 22:46:21,989 INFO    MainThread:88748 [wandb_init.py:init():1036] starting run threads in backend
+2025-11-19 22:46:22,071 INFO    MainThread:88748 [wandb_run.py:_console_start():2506] atexit reg
+2025-11-19 22:46:22,072 INFO    MainThread:88748 [wandb_run.py:_redirect():2354] redirect: wrap_raw
+2025-11-19 22:46:22,072 INFO    MainThread:88748 [wandb_run.py:_redirect():2423] Wrapping output streams.
+2025-11-19 22:46:22,072 INFO    MainThread:88748 [wandb_run.py:_redirect():2446] Redirects installed.
+2025-11-19 22:46:22,074 INFO    MainThread:88748 [wandb_init.py:init():1076] run started, returning control to user process
+2025-11-19 23:31:32,008 INFO    MainThread:88748 [wandb_run.py:_finish():2272] finishing run allvey/sigmarl-traffic/87bd0dwe
+2025-11-19 23:31:32,008 INFO    MainThread:88748 [wandb_run.py:_atexit_cleanup():2471] got exitcode: 0
+2025-11-19 23:31:32,008 INFO    MainThread:88748 [wandb_run.py:_restore():2453] restore
+2025-11-19 23:31:32,009 INFO    MainThread:88748 [wandb_run.py:_restore():2459] restore done
+2025-11-19 23:31:32,996 INFO    MainThread:88748 [wandb_run.py:_footer_sync_info():3869] logging synced files
