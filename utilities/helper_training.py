@@ -80,6 +80,29 @@ from utilities.topology_labels import (
 )
 
 
+def resolve_device(device: Union[str, torch.device, None]) -> str:
+    """Resolve ``auto`` and fail early for an unavailable explicit CUDA device."""
+    requested = "auto" if device is None else str(device).lower()
+    if requested == "auto":
+        return "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    resolved = torch.device(requested)
+    if resolved.type == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"CUDA device '{device}' was requested, but CUDA is unavailable. "
+                "Use device='cpu' or install a CUDA-enabled PyTorch build."
+            )
+        if resolved.index is not None and resolved.index >= torch.cuda.device_count():
+            raise RuntimeError(
+                f"CUDA device index {resolved.index} is unavailable; "
+                f"found {torch.cuda.device_count()} CUDA device(s)."
+            )
+        if resolved.index is None:
+            return "cuda:0"
+    return str(resolved)
+
+
 def get_model_name(parameters):
     # model_name = f"nags{parameters.n_agents}_it{parameters.n_iters}_fpb{parameters.frames_per_batch}_tfrms{parameters.total_frames}_neps{parameters.num_epochs}_mnbsz{parameters.minibatch_size}_lr{parameters.lr}_mgn{parameters.max_grad_norm}_clp{parameters.clip_epsilon}_gm{parameters.gamma}_lmbda{parameters.lmbda}_etp{parameters.entropy_eps}_mstp{parameters.max_steps}_nenvs{parameters.num_vmas_envs}"
     model_name = f"reward{parameters.episode_reward_mean_current:.2f}"
@@ -815,7 +838,7 @@ class Parameters:
         # General parameters
         n_agents: int = 4,  # Number of agents
         dt: float = 0.05,  # [s] sample time
-        device: str = "cpu",  # Tensor device
+        device: str = "auto",  # Tensor device: "auto", "cpu", or "cuda:N"
         scenario_name: str = "road_traffic",  # Scenario name
         seed: int = None,
         # Training parameters
@@ -907,12 +930,13 @@ class Parameters:
         is_using_opponent_modeling: bool = False,  # Whether to use opponent modeling to predict the actions of other agents
         is_using_prioritized_marl: bool = False,  # Whether to use prioritized MARL and action propagation.
         prioritization_method: str = "marl",  # Which method to use for generating priority ranks (options: {"marl", "random"}). Applicable only for prioritized MARL scenarios.
+        verbose_training_diagnostics: bool = False,
     ):
 
         self.n_agents = n_agents
         self.dt = dt
 
-        self.device = device
+        self.device = resolve_device(device)
         self.scenario_name = scenario_name
         self.seed = seed
 
@@ -1027,6 +1051,7 @@ class Parameters:
         self.is_using_prioritized_marl = is_using_prioritized_marl
 
         self.prioritization_method = prioritization_method
+        self.verbose_training_diagnostics = verbose_training_diagnostics
 
         if (model_name is None) and (scenario_name is not None):
             self.model_name = get_model_name(self)
@@ -1612,7 +1637,11 @@ def opponent_modeling(
             T = D // 2
             short_term_all = ref_local_all.view(Bn, Nn, T, 2).to(device)
             P_full = generate_soft_labels_full_graph(short_term_all)
-            P_processed, _ = break_cycles_min_cost(P_full, eps_neutralize=0.02)
+            # Graph post-processing is tiny (normally 4x4) and non-differentiable.
+            # Transfer the whole batch once instead of synchronizing CUDA for every
+            # scalar accessed by the graph algorithms.
+            P_graph = P_full.detach().cpu()
+            P_processed, _ = break_cycles_min_cost(P_graph, eps_neutralize=0.02)
             P_trans = enforce_transitivity(
                 P_processed, eps_neutralize=0.02, gamma=0.5, delta=1e-3
             )
@@ -1645,8 +1674,8 @@ def opponent_modeling(
                 if len(ord_env) < Nn:
                     rest = [i for i in range(Nn) if i not in ord_env]
                     ord_env += sorted(rest)
-                orders.append(torch.tensor(ord_env, device=device, dtype=torch.int64))
-                order = torch.stack(orders, dim=0)
+                orders.append(torch.tensor(ord_env, dtype=torch.int64))
+            order = torch.stack(orders, dim=0).to(device)
             pos = torch.zeros_like(order)
             # pos.scatter_(1, order, torch.arange(N, device=device).unsqueeze(0).expand(B, N))
             pos.scatter_(
@@ -1784,7 +1813,7 @@ def prioritized_ap_policy(
     elif prioritization_method.lower() == "random":
         # Generate a random priority ordering
         priority_ordering = torch.stack(
-            [torch.randperm(n_agents) for _ in range(n_envs)]
+            [torch.randperm(n_agents, device=device) for _ in range(n_envs)]
         )
     elif prioritization_method.lower() == "soft_label":
         ref_local_all = tensordict.get(("agents", "info", "ref_local"), default=None)
@@ -1793,7 +1822,8 @@ def prioritized_ap_policy(
             T = D // 2
             short_term_all = ref_local_all.view(Bn, Nn, T, 2)
             P_full = generate_soft_labels_full_graph(short_term_all)
-            P_processed, _ = break_cycles_min_cost(P_full, eps_neutralize=0.02)
+            P_graph = P_full.detach().cpu()
+            P_processed, _ = break_cycles_min_cost(P_graph, eps_neutralize=0.02)
             P_trans = enforce_transitivity(
                 P_processed, eps_neutralize=0.02, gamma=0.5, delta=1e-3
             )
@@ -1827,19 +1857,25 @@ def prioritized_ap_policy(
                     rest = [i for i in range(Nn) if i not in ord_env]
                     ord_env += sorted(rest)
                 ordering_list.append(torch.tensor(ord_env, dtype=torch.int64))
-            priority_ordering = torch.stack(ordering_list, dim=0)
+            priority_ordering = torch.stack(ordering_list, dim=0).to(device)
         else:
             priority_ordering = torch.stack(
-                [torch.randperm(n_agents) for _ in range(n_envs)]
+                [torch.randperm(n_agents, device=device) for _ in range(n_envs)]
             )
 
     # Temporary tensors to store intermediate observations and combined results
-    temp_obs = torch.zeros(n_envs, n_agents, obs_dim)
-    combined_action = torch.zeros(n_envs, n_agents, action_dim)
-    combined_loc = torch.zeros(n_envs, n_agents, action_dim)
-    combined_sample_log_prob = torch.zeros(n_envs, n_agents)
-    combined_scale = torch.zeros(n_envs, n_agents, action_dim)
-    combined_obs = torch.zeros(n_envs, n_agents, obs_dim)
+    temp_obs = torch.zeros(
+        n_envs, n_agents, obs_dim, device=device, dtype=original_obs.dtype
+    )
+    combined_action = torch.zeros(
+        n_envs, n_agents, action_dim, device=device, dtype=original_obs.dtype
+    )
+    combined_loc = torch.zeros_like(combined_action)
+    combined_sample_log_prob = torch.zeros(
+        n_envs, n_agents, device=device, dtype=original_obs.dtype
+    )
+    combined_scale = torch.zeros_like(combined_action)
+    combined_obs = torch.zeros_like(original_obs)
 
     # Loop through each step in the priority ordering
     for turn in range(n_agents):
@@ -1850,10 +1886,10 @@ def prioritized_ap_policy(
         current_turn_agents = priority_ordering[:, turn]
 
         # Create environment indices (from 0 to n_envs - 1)
-        envs = torch.arange(n_envs)
+        envs = torch.arange(n_envs, device=device)
 
         # Create a mask indicating which agents are acting in each environment
-        mask = torch.zeros(n_envs, n_agents, dtype=torch.bool)
+        mask = torch.zeros(n_envs, n_agents, device=device, dtype=torch.bool)
         mask[envs, current_turn_agents] = True
 
         # Prepare input for the policy by modifying the observations

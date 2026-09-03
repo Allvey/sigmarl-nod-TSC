@@ -156,6 +156,17 @@ def _load_action_predictor_if_available(
 
 
 def mappo_cavs(parameters: Parameters):
+    if str(parameters.device).startswith("cuda"):
+        torch.cuda.set_device(torch.device(parameters.device))
+        torch.set_float32_matmul_precision("high")
+        device_name = torch.cuda.get_device_name(torch.device(parameters.device))
+        print(
+            colored("[INFO] Training device:", "black"),
+            colored(f"{parameters.device} ({device_name})", "green"),
+        )
+    else:
+        print(colored("[INFO] Training device:", "black"), colored("cpu", "blue"))
+
     seed = getattr(parameters, "seed", None)
     if seed is None:
         seed = _generate_seed()
@@ -304,7 +315,10 @@ def mappo_cavs(parameters: Parameters):
         if highest_reward is not float("-inf"):
             if parameters.is_load_final_model:
                 policy.load_state_dict(
-                    torch.load(parameters.where_to_save + "final_policy.pth")
+                    torch.load(
+                        parameters.where_to_save + "final_policy.pth",
+                        map_location=parameters.device,
+                    )
                 )
                 print(
                     colored(
@@ -316,7 +330,8 @@ def mappo_cavs(parameters: Parameters):
                 if priority_module:
                     priority_module.policy.load_state_dict(
                         torch.load(
-                            parameters.where_to_save + "final_priority_policy.pth"
+                            parameters.where_to_save + "final_priority_policy.pth",
+                            map_location=parameters.device,
                         )
                     )
 
@@ -402,7 +417,9 @@ def mappo_cavs(parameters: Parameters):
                     PATH_POLICY, PATH_CRITIC, PATH_FIG, PATH_JSON = paths
 
                 # Load the saved model state dictionaries for policy and critic
-                policy.load_state_dict(torch.load(PATH_POLICY))
+                policy.load_state_dict(
+                    torch.load(PATH_POLICY, map_location=parameters.device)
+                )
                 print(
                     colored(
                         f"[INFO] Loaded the intermediate model {PATH_POLICY}  with the highest episode reward",
@@ -413,7 +430,9 @@ def mappo_cavs(parameters: Parameters):
                 # Load priority policy and critic if prioritized (dual) MARL is enabled
                 if priority_module:
                     priority_module.policy.load_state_dict(
-                        torch.load(PATH_PRIORITY_POLICY)
+                        torch.load(
+                            PATH_PRIORITY_POLICY, map_location=parameters.device
+                        )
                     )
                     print(
                         colored(
@@ -507,10 +526,16 @@ def mappo_cavs(parameters: Parameters):
             print(
                 colored("[INFO] Training will continue with the loaded model.", "red")
             )
-            critic.load_state_dict(torch.load(PATH_CRITIC))
+            critic.load_state_dict(
+                torch.load(PATH_CRITIC, map_location=parameters.device)
+            )
 
             if priority_module:
-                priority_module.critic.load_state_dict(torch.load(PATH_PRIORITY_CRITIC))
+                priority_module.critic.load_state_dict(
+                    torch.load(
+                        PATH_PRIORITY_CRITIC, map_location=parameters.device
+                    )
+                )
 
     collector = SyncDataCollectorCustom(
         env,
@@ -572,6 +597,9 @@ def mappo_cavs(parameters: Parameters):
     collision_agents_rate_list = []
     collision_lanelets_rate_list = []
     collision_total_rate_list = []
+    verbose_training_diagnostics = bool(
+        getattr(parameters, "verbose_training_diagnostics", False)
+    )
 
     t_start = time.time()
     for tensordict_data in collector:
@@ -810,12 +838,15 @@ def mappo_cavs(parameters: Parameters):
                         bce_mb, edge_logits_mb = topology_manager.compute_bce(
                             ego_b, nei_b, rel_b, e_labels_mb
                         )
-                        last_topology_bce_value = float(bce_mb.item())
+                        last_topology_bce_value = bce_mb.detach()
                         # ---- 详细日志：一次迭代仅打印一次 ----
                         # ---- 打印：拓扑概率 / 真值标签 / 距离 / 是否为启发式邻居 ----
                         try:
                             # 仅在本 iter 打印一次：随机抽取展平样本
-                            if not printed_debug_this_iter:
+                            if (
+                                verbose_training_diagnostics
+                                and not printed_debug_this_iter
+                            ):
                                 sample_shape_mb = neighbors_flat_mb.shape[:-1]
                                 # 获取每环境智能体数 A（支持 [T,E,A] 或 [TE,A] 或退化）
                                 A_mb = (
@@ -1444,8 +1475,8 @@ def mappo_cavs(parameters: Parameters):
                 else:
                     combined_loss = loss_value
 
-                assert not combined_loss.isnan().any()
-                assert not combined_loss.isinf().any()
+                if verbose_training_diagnostics:
+                    assert torch.isfinite(combined_loss).all()
 
                 # 反传：同时更新 PPO 与拓扑分支参数
                 optim.zero_grad()
@@ -1453,7 +1484,7 @@ def mappo_cavs(parameters: Parameters):
                 combined_loss.backward()
 
                 # Track last loss value for logging（包含拓扑项）
-                last_loss_value = combined_loss.detach().mean().item()
+                last_loss_value = combined_loss.detach().mean()
 
                 torch.nn.utils.clip_grad_norm_(
                     loss_module.parameters(), parameters.max_grad_norm
@@ -1641,13 +1672,15 @@ def mappo_cavs(parameters: Parameters):
                 pass
 
             if last_loss_value is not None:
-                log_payload["loss/total"] = last_loss_value
+                log_payload["loss/total"] = float(last_loss_value.cpu())
             # 附加：拓扑 BCE 与权重
             if (
                 "last_topology_bce_value" in locals()
                 and last_topology_bce_value is not None
             ):
-                log_payload["loss/topology_bce"] = last_topology_bce_value
+                log_payload["loss/topology_bce"] = float(
+                    last_topology_bce_value.cpu()
+                )
                 log_payload["loss/topology_weight"] = float(
                     getattr(parameters, "topology_loss_weight", 0.1)
                 )
@@ -1656,7 +1689,9 @@ def mappo_cavs(parameters: Parameters):
                 "last_action_pred_loss_value" in locals()
                 and last_action_pred_loss_value is not None
             ):
-                log_payload["loss/action_pred_mse"] = last_action_pred_loss_value
+                log_payload["loss/action_pred_mse"] = float(
+                    last_action_pred_loss_value.cpu()
+                )
                 if topology_manager.action_optim is not None:
                     log_payload["optim_action/lr"] = float(
                         topology_manager.action_optim.param_groups[0]["lr"]

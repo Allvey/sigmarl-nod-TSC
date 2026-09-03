@@ -42,7 +42,7 @@ class KinematicBicycle(Dynamics):
         theta = state[:, 2]  # Yaw angle
         beta = torch.atan2(
             torch.tan(steering_command) * self.l_r / (self.l_f + self.l_r),
-            torch.tensor(1),
+            torch.ones_like(steering_command),
         )  # [-pi, pi] slip angle
         dx = v_command * torch.cos(theta + beta)
         dy = v_command * torch.sin(theta + beta)

@@ -879,7 +879,11 @@ class ScenarioRoadTraffic(BaseScenario):
         self.distances = Distances(
             type=distance_type,  # Type of distances between agents
             agents=torch.zeros(
-                batch_dim, self.n_agents, self.n_agents, dtype=torch.float32
+                batch_dim,
+                self.n_agents,
+                self.n_agents,
+                device=device,
+                dtype=torch.float32,
             ),
             left_boundaries=torch.zeros(
                 (batch_dim, self.n_agents, 1 + 4), device=device, dtype=torch.float32
@@ -1109,7 +1113,11 @@ class ScenarioRoadTraffic(BaseScenario):
             if (
                 self.parameters.is_challenging_initial_state_buffer
                 and (
-                    torch.rand(1) < self.initial_state_buffer.probability_use_recording
+                    torch.rand(
+                        (),
+                        device=self.initial_state_buffer.probability_use_recording.device,
+                    )
+                    < self.initial_state_buffer.probability_use_recording
                 )
                 and (self.initial_state_buffer.valid_size >= 1)
             ):
@@ -2523,38 +2531,30 @@ class ScenarioRoadTraffic(BaseScenario):
             # Distances of candidates (for stable reordering later)
             dist_cand = torch.gather(dist_row, dim=1, index=cand_idx)  # [B, K_topo]
 
-            # Build selection tensors
-            # 注意：特征收集需使用候选列表中的“位置索引”，而非全局 agent 索引
-            sel_pos = torch.full(
-                (B, K_policy), -1, device=self.world.device, dtype=torch.long
-            )
-            sel_ids = torch.full(
-                (B, K_policy), -1, device=self.world.device, dtype=torch.long
-            )
-            sel_probs = torch.zeros(
-                (B, K_policy), device=self.world.device, dtype=sorted_probs.dtype
-            )
-            for b in range(B):
-                valid = (sorted_probs[b] >= thr).nonzero(as_tuple=False).squeeze(-1)
-                n_take = min(K_policy, valid.numel())
-                if n_take > 0:
-                    # 位置索引（在 K_topo 列表内）
-                    sel_pos[b, :n_take] = sorted_idx[b, valid[:n_take]]
-                    # 对应的全局 agent 索引与概率，仅用于缓存与日志
-                    sel_ids[b, :n_take] = cand_idx_sorted[b, valid[:n_take]]
-                    sel_probs[b, :n_take] = sorted_probs[b, valid[:n_take]]
+            # Probability determines membership; distance (and id as tie-breaker)
+            # determines order. Keep this batched to avoid one CUDA sync per env.
+            n_take = min(K_policy, K_topo)
+            sel_pos = sorted_idx[:, :n_take]
+            sel_ids = cand_idx_sorted[:, :n_take]
+            sel_probs = sorted_probs[:, :n_take]
+            valid = sel_probs >= thr
+            selected_dist = torch.gather(dist_cand, 1, sel_pos)
+            stable_key = selected_dist + 1e-6 * sel_ids.to(selected_dist.dtype)
+            stable_key = stable_key.masked_fill(~valid, float("inf"))
+            distance_order = torch.argsort(stable_key, dim=1, stable=True)
+            sel_pos = torch.gather(sel_pos, 1, distance_order)
+            sel_ids = torch.gather(sel_ids, 1, distance_order)
+            sel_probs = torch.gather(sel_probs, 1, distance_order)
+            valid = torch.gather(valid, 1, distance_order)
+            sel_pos = sel_pos.masked_fill(~valid, -1)
+            sel_ids = sel_ids.masked_fill(~valid, -1)
+            sel_probs = sel_probs.masked_fill(~valid, 0)
 
-                    # --- Stable reordering by distance (tie-break by agent id) ---
-                    # 仅对有效槽位进行稳定重排，确保与“距离升序”一致，从而稳定策略输入分布
-                    pos_take = sel_pos[b, :n_take]
-                    # 对应候选的距离
-                    dist_take = dist_cand[b].index_select(0, pos_take)
-                    ids_take = sel_ids[b, :n_take].to(torch.float32)
-                    # 将 agent_id 作为微小扰动用于平局打破，避免频繁抖动
-                    order = torch.argsort(dist_take + 1e-6 * ids_take, dim=0)
-                    sel_pos[b, :n_take] = pos_take.index_select(0, order)
-                    sel_ids[b, :n_take] = sel_ids[b, :n_take].index_select(0, order)
-                    sel_probs[b, :n_take] = sel_probs[b, :n_take].index_select(0, order)
+            if n_take < K_policy:
+                pad = K_policy - n_take
+                sel_pos = F.pad(sel_pos, (0, pad), value=-1)
+                sel_ids = F.pad(sel_ids, (0, pad), value=-1)
+                sel_probs = F.pad(sel_probs, (0, pad), value=0)
 
             # Cache selected indices/probabilities per agent for info() and training logs
             if not hasattr(self.observations, "topology_selected_indices"):
@@ -2973,7 +2973,7 @@ class ScenarioRoadTraffic(BaseScenario):
         if (
             self.parameters.is_challenging_initial_state_buffer
         ):  # Record challenging initial states
-            if torch.rand(1) > (
+            if torch.rand((), device=self.world.device) > (
                 1 - self.initial_state_buffer.probability_record
             ):  # Only a certain probability to record
                 for env_collide in torch.where(is_collision_with_agents)[0]:

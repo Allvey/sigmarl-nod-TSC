@@ -97,19 +97,21 @@ class MapManager:
         Returns:
             torch.Tensor: A tensor of shape (batch_dim, n_nearing_agents_observed) containing boolean values where True indicates that the nearing agent should be masked and False otherwise.
         """
-        # Prepare a tensor to store the mask results
-        mask = torch.zeros(nearing_agents_indices.shape, dtype=torch.bool)
+        device = nearing_agents_indices.device
+        neighboring = self.parser.neighboring_lanelets_idx
+        n_lanelets = len(neighboring)
+        cache_key = (str(device), n_lanelets)
+        if getattr(self, "_adjacency_cache_key", None) != cache_key:
+            adjacency = torch.zeros(
+                (n_lanelets, n_lanelets), device=device, dtype=torch.bool
+            )
+            for lanelet_idx, neighbor_ids in enumerate(neighboring):
+                if len(neighbor_ids) > 0:
+                    adjacency[lanelet_idx, neighbor_ids] = True
+            self._lanelet_adjacency = adjacency
+            self._adjacency_cache_key = cache_key
 
-        # Iterate through each agent and its nearing agents
-        for env_idx in range(self.current_lanelet_idx.size(0)):
-            ego_lanelet_idx = self.current_lanelet_idx[env_idx, agent_idx].item()
-            for near_idx in range(nearing_agents_indices.size(1)):
-                near_agent_idx = nearing_agents_indices[env_idx, near_idx].item()
-                near_lanelet = self.current_lanelet_idx[env_idx, near_agent_idx].item()
-                if (
-                    near_lanelet
-                    not in self.parser.neighboring_lanelets_idx[ego_lanelet_idx]
-                ):
-                    mask[env_idx, near_idx] = True
-
-        return mask
+        lanelets = self.current_lanelet_idx.squeeze(-1).long()
+        ego_lanelets = lanelets[:, agent_idx]
+        near_lanelets = torch.gather(lanelets, 1, nearing_agents_indices.long())
+        return ~self._lanelet_adjacency[ego_lanelets.unsqueeze(1), near_lanelets]

@@ -61,9 +61,27 @@ SigmaRL is a decentralized MARL framework designed for motion planning of CAVs. 
 ## Install
 We use Python 3.9. Other versions may also work well. After git clone this repository, install the necessary packages using
 ```
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 We have tested that this repository works well in Windows and macOS.
+
+### GPU acceleration
+
+The default `"device": "auto"` setting in `config.json` uses `cuda:0` when a
+CUDA-enabled PyTorch installation and an NVIDIA GPU are available, and otherwise
+falls back to CPU. To require a particular device, set it explicitly to `"cuda:0"`
+or `"cpu"`. An unavailable explicit CUDA device produces an early error instead
+of silently running on CPU.
+
+Verify the active Python environment before training:
+
+```bash
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+python main_training.py
+```
+
+On the development machine for this repository, activate the `sigmarl` Conda
+environment first; the base environment contains a different PyTorch build.
 
 ## How to Use
 ### Training

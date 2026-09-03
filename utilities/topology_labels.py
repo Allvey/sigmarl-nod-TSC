@@ -92,52 +92,32 @@ def generate_soft_labels_full_graph(
     eps: float = 1e-3,
 ) -> torch.Tensor:
     device = short_term_all_agents.device
-    dtype = short_term_all_agents.dtype
     B, A, T, _ = short_term_all_agents.shape
-    P = torch.zeros((B, A, A), dtype=torch.float32, device=device)
+    if T < 2:
+        raise ValueError("At least two short-term path points are required.")
 
-    def _yaw(v):
-        dx = v[..., 0]
-        dy = v[..., 1]
-        return torch.atan2(dy, dx)
-
+    # Transform every agent j into every ego agent i's local frame in one
+    # broadcasted operation: [B, ego_i, agent_j, T, xy].
     vec = short_term_all_agents[:, :, 1] - short_term_all_agents[:, :, 0]
-    theta = _yaw(vec)
+    theta = torch.atan2(vec[..., 1], vec[..., 0])
     c = torch.cos(theta)
     s = torch.sin(theta)
     origin = short_term_all_agents[:, :, 0]
-    for b in range(B):
-        for i in range(A):
-            c_i = float(c[b, i].item())
-            s_i = float(s[b, i].item())
-            ori_i = origin[b, i]
-            dx_i = short_term_all_agents[b, i] - ori_i
-            x_i = c_i * dx_i[:, 0] + s_i * dx_i[:, 1]
-            y_i = -s_i * dx_i[:, 0] + c_i * dx_i[:, 1]
-            for j in range(A):
-                if i == j:
-                    P[b, i, j] = 0.0
-                    continue
-                dx_j_i = short_term_all_agents[b, j] - ori_i
-                y_j_i = -s_i * dx_j_i[:, 0] + c_i * dx_j_i[:, 1]
-                d = y_i - y_j_i
-                d_ij = float(d.abs().min().item())
-                c_j = float(c[b, j].item())
-                s_j = float(s[b, j].item())
-                ori_j = origin[b, j]
-                dx_j = short_term_all_agents[b, j] - ori_j
-                y_j = -s_j * dx_j[:, 0] + c_j * dx_j[:, 1]
-                dx_i_j = short_term_all_agents[b, i] - ori_j
-                y_i_j = -s_j * dx_i_j[:, 0] + c_j * dx_i_j[:, 1]
-                d2 = y_j - y_i_j
-                d_ji = float(d2.abs().min().item())
-                a_ij = -float(d_ij) / float(sigma)
-                a_ji = -float(d_ji) / float(sigma)
-                m_a = max(a_ij, a_ji)
-                e_ij = math.exp(a_ij - m_a)
-                e_ji = math.exp(a_ji - m_a)
-                p_ij = e_ij / (e_ij + e_ji + 1e-12)
-                P[b, i, j] = float(p_ij)
+    delta = (
+        short_term_all_agents[:, None, :, :, :]
+        - origin[:, :, None, None, :]
+    )
+    y_in_ego = (
+        -s[:, :, None, None] * delta[..., 0]
+        + c[:, :, None, None] * delta[..., 1]
+    )
+    own_y = torch.diagonal(y_in_ego, dim1=1, dim2=2).permute(0, 2, 1)
+    d_ij = (own_y[:, :, None, :] - y_in_ego).abs().amin(dim=-1)
+    d_ji = d_ij.transpose(1, 2)
+    temperature = max(float(sigma) * float(tau), float(eps))
+    P = torch.sigmoid((d_ji - d_ij) / temperature).to(torch.float32)
+    diagonal = torch.arange(A, device=device)
+    P[:, diagonal, diagonal] = 0.0
     return P
 
 

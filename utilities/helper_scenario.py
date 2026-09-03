@@ -905,7 +905,9 @@ def interX(L1, L2, is_return_points=False):
     # L1[:,:,0] -= 0.35
     # L1[:,:,1] -= 0.05
     batch_dim = L1.shape[0]
-    collision_index = torch.zeros(batch_dim, dtype=torch.bool)  # Initialize
+    collision_index = torch.zeros(
+        batch_dim, device=L1.device, dtype=torch.bool
+    )  # Initialize
 
     # Handle empty inputs
     if L1.numel() == 0 or L2.numel() == 0:
@@ -981,7 +983,7 @@ def interX(L1, L2, is_return_points=False):
 def remove_overlapping_points(polyline: torch.Tensor, threshold: float = 1e-4):
     remove = polyline.diff(dim=0).norm(dim=1) <= threshold
     remove = torch.hstack(
-        (remove, torch.zeros(1, dtype=torch.bool))
+        (remove, torch.zeros(1, device=polyline.device, dtype=torch.bool))
     )  # Always keep the last point
     # Filter out overlapping points
     return polyline[~remove]

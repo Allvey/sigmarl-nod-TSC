@@ -338,7 +338,7 @@ class Evaluation:
         )
         if should_load_cached_out_td:
             cprint("[INFO] Simulation outputs exist and will be loaded.", "grey")
-            out_td = torch.load(path_eval_out_td)
+            out_td = torch.load(path_eval_out_td, map_location=self.parameters.device)
         else:
             env, policy, priority_module, _ = mappo_cavs(parameters=self.parameters)
             rollout_policy = (
@@ -473,7 +473,7 @@ class Evaluation:
         ###############################
         ## Fig 1 - Episode reward
         ###############################
-        data_np = self.episode_reward.numpy()
+        data_np = self.episode_reward.detach().cpu().numpy()
         plt.clf()
         plt.figure(figsize=self.fig_sizes["episode_reward"])
 
@@ -556,9 +556,9 @@ class Evaluation:
         else:
             plt.clf()
             fig, ax = plt.subplots(figsize=self.fig_sizes["collision_rate"])
-            data_np = self.collision_rate_sum.numpy()
-            data_with_agents_np = self.collision_rate_with_agents.numpy()
-            data_with_lanelets_np = self.collision_rate_with_lanelets.numpy()
+            data_np = self.collision_rate_sum.detach().cpu().numpy()
+            data_with_agents_np = self.collision_rate_with_agents.detach().cpu().numpy()
+            data_with_lanelets_np = self.collision_rate_with_lanelets.detach().cpu().numpy()
 
             # Positions of the violin plots (adjust as needed to avoid overlap)
             positions = np.arange(1, self.num_models + 1)
@@ -696,7 +696,7 @@ class Evaluation:
         plt.clf()
         fig, ax = plt.subplots(figsize=figsize)
 
-        data_np = data.numpy()
+        data_np = data.detach().cpu().numpy()
 
         # Plot a horizontal line indicating the median of our model
         median_our = np.median(data_np[self.idx_our])
@@ -841,7 +841,9 @@ class Evaluation:
                 self._init_eva_matrices()  # Only need to be done once
 
             self.episode_reward[self.model_idx, :] = torch.tensor(
-                [self.saved_data.episode_reward_mean_list]
+                [self.saved_data.episode_reward_mean_list],
+                device=self.episode_reward.device,
+                dtype=self.episode_reward.dtype,
             )
 
             self._evaluate_model_i()
@@ -976,101 +978,101 @@ class Evaluation:
 
         log_CR_AA = (
             "[LOG] Agent-agent collision rate [%]: "
-            f"mean={self.format_array(self.CR_AA_avg.numpy())}, "
-            f"std={self.format_array(CR_AA_std.numpy())}, "
-            f"min={self.format_array(CR_AA_min.numpy())}, "
-            f"max={self.format_array(CR_AA_max.numpy())}"
+            f"mean={self.format_array(self.CR_AA_avg.detach().cpu().numpy())}, "
+            f"std={self.format_array(CR_AA_std.detach().cpu().numpy())}, "
+            f"min={self.format_array(CR_AA_min.detach().cpu().numpy())}, "
+            f"max={self.format_array(CR_AA_max.detach().cpu().numpy())}"
         )
         log_CR_AL = (
             "[LOG] Agent-lanelet collision rate [%]: "
-            f"mean={self.format_array(self.CR_AL_avg.numpy())}, "
-            f"std={self.format_array(CR_AL_std.numpy())}, "
-            f"min={self.format_array(CR_AL_min.numpy())}, "
-            f"max={self.format_array(CR_AL_max.numpy())}"
+            f"mean={self.format_array(self.CR_AL_avg.detach().cpu().numpy())}, "
+            f"std={self.format_array(CR_AL_std.detach().cpu().numpy())}, "
+            f"min={self.format_array(CR_AL_min.detach().cpu().numpy())}, "
+            f"max={self.format_array(CR_AL_max.detach().cpu().numpy())}"
         )
         log_CR_total = (
             "[LOG] Total collision rate [%]: "
-            f"mean={self.format_array(self.CR_total_avg.numpy())}, "
-            f"std={self.format_array(CR_total_std.numpy())}, "
-            f"min={self.format_array(CR_total_min.numpy())}, "
-            f"max={self.format_array(CR_total_max.numpy())}"
+            f"mean={self.format_array(self.CR_total_avg.detach().cpu().numpy())}, "
+            f"std={self.format_array(CR_total_std.detach().cpu().numpy())}, "
+            f"min={self.format_array(CR_total_min.detach().cpu().numpy())}, "
+            f"max={self.format_array(CR_total_max.detach().cpu().numpy())}"
         )
         log_CD = (
             "[LOG] Relative centerline deviation [%]: "
-            f"mean={self.format_array(self.CD_avg.numpy())}, "
-            f"std={self.format_array(CD_std.numpy())}, "
-            f"min={self.format_array(CD_min.numpy())}, "
-            f"max={self.format_array(CD_max.numpy())}"
+            f"mean={self.format_array(self.CD_avg.detach().cpu().numpy())}, "
+            f"std={self.format_array(CD_std.detach().cpu().numpy())}, "
+            f"min={self.format_array(CD_min.detach().cpu().numpy())}, "
+            f"max={self.format_array(CD_max.detach().cpu().numpy())}"
         )
         log_AS = (
             "[LOG] Relative average speed [%]: "
-            f"mean={self.format_array(self.AS_avg.numpy())}, "
-            f"std={self.format_array(AS_std.numpy())}, "
-            f"min={self.format_array(AS_min.numpy())}, "
-            f"max={self.format_array(AS_max.numpy())}"
+            f"mean={self.format_array(self.AS_avg.detach().cpu().numpy())}, "
+            f"std={self.format_array(AS_std.detach().cpu().numpy())}, "
+            f"min={self.format_array(AS_min.detach().cpu().numpy())}, "
+            f"max={self.format_array(AS_max.detach().cpu().numpy())}"
         )
         log_AS_penalized = (
             "[LOG] Relative average speed with collision penalty [%]: "
-            f"mean={self.format_array(self.AS_penalized_avg.numpy())}, "
-            f"std={self.format_array(AS_penalized_std.numpy())}"
+            f"mean={self.format_array(self.AS_penalized_avg.detach().cpu().numpy())}, "
+            f"std={self.format_array(AS_penalized_std.detach().cpu().numpy())}"
         )
         log_SM = (
             "[LOG] Smoothness [%]: "
-            f"mean={self.format_array(self.SM_avg.numpy())}, "
-            f"std={self.format_array(SM_std.numpy())}, "
-            f"min={self.format_array(SM_min.numpy())}, "
-            f"max={self.format_array(SM_max.numpy())}"
+            f"mean={self.format_array(self.SM_avg.detach().cpu().numpy())}, "
+            f"std={self.format_array(SM_std.detach().cpu().numpy())}, "
+            f"min={self.format_array(SM_min.detach().cpu().numpy())}, "
+            f"max={self.format_array(SM_max.detach().cpu().numpy())}"
         )
 
         log_SM_penalized = (
             "[LOG] Smoothness with collision penalty [%]: "
-            f"mean={self.format_array(self.SM_penalized_avg.numpy())}, "
-            f"std={self.format_array(SM_penalized_std.numpy())}"
+            f"mean={self.format_array(self.SM_penalized_avg.detach().cpu().numpy())}, "
+            f"std={self.format_array(SM_penalized_std.detach().cpu().numpy())}"
         )
 
         log_SM_lon = (
             "[LOG] Smoothness longitudinal [%]: "
-            f"mean={self.format_array(self.SM_lon_avg.numpy())}, "
-            f"std={self.format_array(SM_lon_std.numpy())}, "
-            f"min={self.format_array(SM_lon_min.numpy())}, "
-            f"max={self.format_array(SM_lon_max.numpy())}"
+            f"mean={self.format_array(self.SM_lon_avg.detach().cpu().numpy())}, "
+            f"std={self.format_array(SM_lon_std.detach().cpu().numpy())}, "
+            f"min={self.format_array(SM_lon_min.detach().cpu().numpy())}, "
+            f"max={self.format_array(SM_lon_max.detach().cpu().numpy())}"
         )
 
         log_SM_lon_penalized = (
             "[LOG] Smoothness longitudinal with collision penalty [%]: "
-            f"mean={self.format_array(self.SM_lon_penalized_avg.numpy())}, "
-            f"std={self.format_array(SM_lon_penalized_std.numpy())}"
+            f"mean={self.format_array(self.SM_lon_penalized_avg.detach().cpu().numpy())}, "
+            f"std={self.format_array(SM_lon_penalized_std.detach().cpu().numpy())}"
         )
 
         log_SM_lat = (
             "[LOG] Smoothness lateral [%]: "
-            f"mean={self.format_array(self.SM_lat_avg.numpy())}, "
-            f"std={self.format_array(SM_lat_std.numpy())}, "
-            f"min={self.format_array(SM_lat_min.numpy())}, "
-            f"max={self.format_array(SM_lat_max.numpy())}"
+            f"mean={self.format_array(self.SM_lat_avg.detach().cpu().numpy())}, "
+            f"std={self.format_array(SM_lat_std.detach().cpu().numpy())}, "
+            f"min={self.format_array(SM_lat_min.detach().cpu().numpy())}, "
+            f"max={self.format_array(SM_lat_max.detach().cpu().numpy())}"
         )
 
         log_SM_lat_penalized = (
             "[LOG] Smoothness lateral with collision penalty [%]: "
-            f"mean={self.format_array(self.SM_lat_penalized_avg.numpy())}, "
-            f"std={self.format_array(SM_lat_penalized_std.numpy())}"
+            f"mean={self.format_array(self.SM_lat_penalized_avg.detach().cpu().numpy())}, "
+            f"std={self.format_array(SM_lat_penalized_std.detach().cpu().numpy())}"
         )
 
         log_CS = (
-            f"[LOG] Composite scores: {self.format_array(self.composite_score.numpy())}"
+            f"[LOG] Composite scores: {self.format_array(self.composite_score.detach().cpu().numpy())}"
         )
         if hasattr(self, "policy_inference_total_s") and torch.isfinite(
             self.policy_inference_total_s
         ).any():
             log_policy_time = (
                 "[LOG] Policy inference time only: "
-                f"total_s={self.format_array_precision(self.policy_inference_total_s.numpy(), 6)}, "
-                f"calls={self.format_array_precision(self.policy_inference_num_calls.numpy(), 0)}, "
-                f"ms_per_call_mean={self.format_array_precision(self.policy_inference_ms_per_call.numpy(), 4)}, "
-                f"ms_per_call_std={self.format_array_precision(self.policy_inference_ms_per_call_std.numpy(), 4)}, "
-                f"ms_per_call_p95={self.format_array_precision(self.policy_inference_ms_per_call_p95.numpy(), 4)}, "
+                f"total_s={self.format_array_precision(self.policy_inference_total_s.detach().cpu().numpy(), 6)}, "
+                f"calls={self.format_array_precision(self.policy_inference_num_calls.detach().cpu().numpy(), 0)}, "
+                f"ms_per_call_mean={self.format_array_precision(self.policy_inference_ms_per_call.detach().cpu().numpy(), 4)}, "
+                f"ms_per_call_std={self.format_array_precision(self.policy_inference_ms_per_call_std.detach().cpu().numpy(), 4)}, "
+                f"ms_per_call_p95={self.format_array_precision(self.policy_inference_ms_per_call_p95.detach().cpu().numpy(), 4)}, "
                 "us_per_agent_call="
-                f"{self.format_array_precision(self.policy_inference_us_per_agent_call.numpy(), 4)}"
+                f"{self.format_array_precision(self.policy_inference_us_per_agent_call.detach().cpu().numpy(), 4)}"
             )
         else:
             log_policy_time = (

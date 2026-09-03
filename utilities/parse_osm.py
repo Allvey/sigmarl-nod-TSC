@@ -272,7 +272,7 @@ class ParseOSM(ParseMapBase):
             p1 = center_line[i]
             p2 = center_line[i + 1]
             direction = p2 - p1
-            perp_direction = torch.tensor([-direction[1], direction[0]])
+            perp_direction = torch.stack((-direction[1], direction[0]))
             perp_direction = normalize(perp_direction)
 
             left_boundary.append(p1 + perp_direction * self._width / 2)

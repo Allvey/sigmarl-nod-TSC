@@ -364,7 +364,7 @@ class TopologyManager:
         if self.learner is not None:
             self.learner.load_state_dict(state_dict)
 
-    def train_action_predictor(self, mini_batch_data) -> float:
+    def train_action_predictor(self, mini_batch_data) -> torch.Tensor:
         if (self.action_predictor is None) or (self.action_optim is None):
             return None
         ego_obs = mini_batch_data.get(("agents", "info", "ego_observation"))
@@ -431,7 +431,7 @@ class TopologyManager:
             self.action_predictor.parameters(), self.parameters.max_grad_norm
         )
         self.action_optim.step()
-        return float(action_loss.detach().item())
+        return action_loss.detach()
 
     def generate_action_labels(self, td: torch.Tensor) -> torch.Tensor:
         neighbors_flat = td.get(
