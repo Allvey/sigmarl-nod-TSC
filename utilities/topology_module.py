@@ -303,6 +303,53 @@ class TopologyManager:
             except Exception:
                 pass
 
+    def ensure_initialized_from_tensordict(self, tensordict) -> bool:
+        """Lazily initialize the shared topology/action modules from env data."""
+
+        ego_observation = tensordict.get(
+            ("agents", "info", "ego_observation"), default=None
+        )
+        neighbors_flat = tensordict.get(
+            ("agents", "info", "topology_neighbors_observation_flat"),
+            default=None,
+        )
+        relative_features = tensordict.get(
+            ("agents", "info", "topology_relative_features"), default=None
+        )
+        neighbor_indices = tensordict.get(
+            ("agents", "info", "topology_neighbors_indices"), default=None
+        )
+        if neighbors_flat is None or relative_features is None:
+            neighbors_flat = tensordict.get(
+                ("agents", "info", "neighbors_observation_flat"), default=None
+            )
+            relative_features = tensordict.get(
+                ("agents", "info", "relative_features"), default=None
+            )
+            neighbor_indices = tensordict.get(
+                ("agents", "info", "neighbors_indices"), default=None
+            )
+        if any(
+            value is None
+            for value in (
+                ego_observation,
+                neighbors_flat,
+                relative_features,
+                neighbor_indices,
+            )
+        ):
+            return False
+        k_neighbors = int(neighbor_indices.shape[-1])
+        if k_neighbors <= 0:
+            return False
+        self.ensure_initialized(
+            ego_observation,
+            neighbors_flat,
+            relative_features,
+            k_neighbors,
+        )
+        return True
+
     def generate_labels(
         self,
         ref_local_flat: torch.Tensor,
@@ -458,7 +505,10 @@ class TopologyManager:
         corruption whenever the topology ordering changes between frames.
         """
 
-        if self.learner is None or self.action_predictor is None:
+        if (
+            (self.learner is None or self.action_predictor is None)
+            and not self.ensure_initialized_from_tensordict(tensordict)
+        ):
             return None
         ego_obs = tensordict.get(("agents", "info", "ego_observation"), default=None)
         neighbors_flat = tensordict.get(
@@ -494,8 +544,10 @@ class TopologyManager:
         )
         relation_b = self.learner.decoder(ego_b, nei_b, rel_b)
         action_b = self.action_predictor.predict_from_latent(relation_b)
+        probability_b = torch.sigmoid(self.learner.head(relation_b).squeeze(-1))
         relation = relation_b.view(*sample_shape, k_source, self.relation_dim)
         action = action_b.view(*sample_shape, k_source, self.action_dim)
+        probability = probability_b.view(*sample_shape, k_source)
 
         matches = target_neighbor_indices.unsqueeze(-1) == source_indices.unsqueeze(-2)
         available = matches.any(dim=-1)
@@ -506,9 +558,13 @@ class TopologyManager:
         aligned_action = torch.einsum(
             "...ks,...sa->...ka", match_weights, action
         )
+        aligned_probability = torch.einsum(
+            "...ks,...s->...k", match_weights, probability
+        )
         return {
             "relation_features": aligned_relation,
             "predicted_actions": aligned_action,
+            "edge_probability": aligned_probability,
             "available": available,
         }
 

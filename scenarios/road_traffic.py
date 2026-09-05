@@ -3553,9 +3553,9 @@ class ScenarioRoadTraffic(BaseScenario):
                 B, K_topo * T_points * 2
             )
 
-        # --- NOD auxiliary branch: stable directed candidates and physical data ---
-        # These fields are diagnostics/training targets only.  They are not
-        # concatenated to the actor observation in phases 1-3.
+        # --- NOD branch: stable directed candidates and physical data ---
+        # Raw pair fields stay outside the Actor observation. Stage 4 converts
+        # them online into detached edge context before message aggregation.
         with torch.no_grad():
             nod_positions = torch.stack(
                 [world_agent.state.pos for world_agent in self.world.agents], dim=1
@@ -3600,6 +3600,59 @@ class ScenarioRoadTraffic(BaseScenario):
             nod_neighbor_generation = torch.gather(
                 self.nod_agent_generation, dim=1, index=nod_neighbor_indices
             )
+
+        # Stage 4 cache slots are part of the environment schema so the data
+        # collector preserves the exact edge context used for each action.
+        # The policy fills these tensors online before stepping the world.
+        use_nod_actor = bool(
+            getattr(self.parameters, "is_using_nod_actor", True)
+            and getattr(self.parameters, "is_using_nod_opinion", True)
+        )
+        nod_actor_placeholders = {}
+        if use_nod_actor:
+            nod_message_dim = int(getattr(self.parameters, "nod_message_dim", 32))
+            nod_action_dim = int(getattr(self.parameters, "topology_action_dim", 2))
+            nod_context_dim = (
+                int(getattr(self.parameters, "nod_hidden_dim", 64))
+                + nod_action_dim
+                + 6
+                + 3
+            )
+            nod_k_neighbors = int(nod_neighbor_indices.shape[-1])
+            opponent_tail_dim = (
+                self.parameters.n_nearing_agents_observed * AGENTS["n_actions"]
+                if self.parameters.is_using_opponent_modeling
+                else 0
+            )
+            policy_observation_dim = int(
+                (
+                    base_obs
+                    if self.parameters.is_using_prioritized_marl
+                    else self.stored_observations[agent_index]
+                ).shape[-1]
+            )
+            actor_base_dim = policy_observation_dim - opponent_tail_dim
+            nod_actor_placeholders = {
+                "nod_actor_observation": base_obs.new_zeros(
+                    B, actor_base_dim + nod_message_dim + nod_action_dim
+                ),
+                "nod_actor_edge_context": base_obs.new_zeros(
+                    B, nod_k_neighbors, nod_context_dim
+                ),
+                "nod_actor_edge_mask": torch.zeros(
+                    B,
+                    nod_k_neighbors,
+                    device=base_obs.device,
+                    dtype=torch.bool,
+                ),
+                "nod_actor_context_ready": torch.zeros(
+                    B, 1, device=base_obs.device, dtype=torch.bool
+                ),
+                "nod_actor_message": base_obs.new_zeros(B, nod_message_dim),
+                "nod_actor_message_attention": base_obs.new_zeros(
+                    B, nod_k_neighbors
+                ),
+            }
 
         info = {
             "pos": agent.state.pos / self.normalizers.pos_world,
@@ -3695,6 +3748,7 @@ class ScenarioRoadTraffic(BaseScenario):
             "nod_overlap_risk": nod_interaction["overlap_risk"],
             "nod_world_pos": agent.state.pos,
             "nod_world_vel": agent.state.vel,
+            **nod_actor_placeholders,
         }
 
         return info

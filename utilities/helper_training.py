@@ -881,8 +881,11 @@ class Parameters:
         # Topology-based neighbor selection (policy-side)
         use_topology_neighbor_selection: bool = False,  # Enable using topology learner to select policy neighbors
         topology_selection_threshold: float = 0.5,  # Probability threshold for selecting neighbors
-        # NOD phases 1-3: auxiliary only; no policy/reward/PPO behavior change
+        # NOD opinion model and Stage-4 opinion-conditioned actor
         is_using_nod_opinion: bool = True,
+        is_using_nod_actor: bool = True,
+        nod_message_dim: int = 32,
+        nod_message_hidden_dim: int = 64,
         nod_hidden_dim: int = 64,
         nod_lr: float = 1e-3,
         nod_tau: float = 0.25,
@@ -1028,6 +1031,9 @@ class Parameters:
         self.use_topology_neighbor_selection = use_topology_neighbor_selection
         self.topology_selection_threshold = topology_selection_threshold
         self.is_using_nod_opinion = is_using_nod_opinion
+        self.is_using_nod_actor = is_using_nod_actor
+        self.nod_message_dim = nod_message_dim
+        self.nod_message_hidden_dim = nod_message_hidden_dim
         self.nod_hidden_dim = nod_hidden_dim
         self.nod_lr = nod_lr
         self.nod_tau = nod_tau

@@ -32,7 +32,12 @@ from torchrl.envs.utils import (
 )
 
 # Multi-agent network
-from torchrl.modules import MultiAgentMLP, ProbabilisticActor, TanhNormal
+from torchrl.modules import (
+    MultiAgentMLP,
+    ProbabilisticActor,
+    SafeProbabilisticTensorDictSequential,
+    TanhNormal,
+)
 
 # Loss
 from torchrl.objectives import ClipPPOLoss, ValueEstimators
@@ -78,7 +83,11 @@ from utilities.helper_training import (
 
 from scenarios.road_traffic import ScenarioRoadTraffic
 from utilities.topology_module import TopologyManager
-from utilities.nod_marl import NODOpinionManager
+from utilities.nod_marl import (
+    NODActorInputModule,
+    NODOpinionManager,
+    NOD_ACTOR_OBSERVATION_KEY,
+)
 from utilities.topology_labels import (
     generate_soft_labels_full_graph,
     break_cycles_min_cost,
@@ -183,6 +192,85 @@ def _load_nod_if_available(
     return True
 
 
+def _load_policy_checkpoint(
+    path: str,
+    policy,
+    parameters: Parameters,
+    *,
+    actor_base_observation_dim: int,
+    use_nod_actor: bool,
+):
+    """Load current Stage-4 or migrate a pre-Stage-4 actor checkpoint.
+
+    Legacy Actor layers are matched by their ``agent_networks`` suffix. The
+    original observation columns are retained in the enlarged first layer;
+    the new opinion-message and previous-action columns keep their normal
+    initialization. This changes no external checkpoint or command interface.
+    """
+
+    state_dict = torch.load(path, map_location=parameters.device)
+    try:
+        policy.load_state_dict(state_dict)
+        return "loaded"
+    except RuntimeError:
+        if not use_nod_actor:
+            raise
+
+    current = policy.state_dict()
+    migrated = dict(current)
+    matched = 0
+    expanded = 0
+    for target_key, target_value in current.items():
+        if (
+            target_key in state_dict
+            and state_dict[target_key].shape == target_value.shape
+        ):
+            migrated[target_key] = state_dict[target_key]
+            matched += 1
+            continue
+        marker = "agent_networks."
+        if marker not in target_key:
+            continue
+        suffix = target_key[target_key.index(marker) :]
+        candidates = [
+            value
+            for source_key, value in state_dict.items()
+            if marker in source_key
+            and source_key[source_key.index(marker) :] == suffix
+        ]
+        if len(candidates) != 1:
+            continue
+        source_value = candidates[0]
+        if source_value.shape == target_value.shape:
+            migrated[target_key] = source_value
+            matched += 1
+        elif (
+            source_value.ndim == 2
+            and target_value.ndim == 2
+            and source_value.shape[0] == target_value.shape[0]
+            and source_value.shape[1] >= actor_base_observation_dim
+            and target_value.shape[1] > source_value.shape[1]
+        ):
+            expanded_value = target_value.clone()
+            expanded_value[:, :actor_base_observation_dim] = source_value[
+                :, :actor_base_observation_dim
+            ]
+            migrated[target_key] = expanded_value
+            matched += 1
+            expanded += 1
+    if matched == 0:
+        policy.load_state_dict(state_dict)
+    policy.load_state_dict(migrated)
+    print(
+        colored(
+            "[INFO] Migrated a pre-Stage-4 policy checkpoint "
+            f"({matched} Actor tensors reused, {expanded} input layer expanded).",
+            "blue",
+        )
+    )
+    return "migrated"
+
+
 def mappo_cavs(parameters: Parameters):
     seed = getattr(parameters, "seed", None)
     if seed is None:
@@ -235,11 +323,49 @@ def mappo_cavs(parameters: Parameters):
         else observation_key
     )
 
+    topology_manager = TopologyManager(parameters=parameters, scenario=scenario)
+    nod_manager = NODOpinionManager(
+        parameters=parameters,
+        relation_feature_dim=topology_manager.relation_dim,
+        action_dim=topology_manager.action_dim,
+    )
+    scenario.topology_manager = topology_manager
+    scenario.nod_manager = nod_manager
+    use_nod_actor = bool(
+        getattr(parameters, "is_using_nod_actor", True) and nod_manager.enabled
+    )
+    raw_actor_observation_dim = int(
+        env.observation_spec[observation_key].shape[-1]
+    )
+    opponent_tail_dim = (
+        int(parameters.n_nearing_agents_observed) * int(env.action_spec.shape[-1])
+        if parameters.is_using_opponent_modeling
+        else 0
+    )
+    actor_base_observation_dim = raw_actor_observation_dim - opponent_tail_dim
+    if actor_base_observation_dim <= 0:
+        raise ValueError("Actor base observation dimension must be positive")
+    if use_nod_actor:
+        actor_input_module = NODActorInputModule(
+            observation_key=observation_key,
+            base_observation_dim=actor_base_observation_dim,
+            topology_manager=topology_manager,
+            nod_manager=nod_manager,
+            message_dim=int(getattr(parameters, "nod_message_dim", 32)),
+            message_hidden_dim=int(
+                getattr(parameters, "nod_message_hidden_dim", 64)
+            ),
+        ).to(parameters.device)
+        actor_observation_key = NOD_ACTOR_OBSERVATION_KEY
+        actor_observation_dim = actor_input_module.actor_input_dim
+    else:
+        actor_input_module = None
+        actor_observation_key = observation_key
+        actor_observation_dim = raw_actor_observation_dim
+
     policy_net = torch.nn.Sequential(
         MultiAgentMLP(
-            n_agent_inputs=env.observation_spec[observation_key].shape[
-                -1
-            ],  # n_obs_per_agent
+            n_agent_inputs=actor_observation_dim,
             n_agent_outputs=(2 * env.action_spec.shape[-1]),  # 2 * n_actions_per_agents
             n_agents=env.n_agents,
             centralised=False,  # the policies are decentralised (ie each agent will act from its observation)
@@ -256,7 +382,7 @@ def mappo_cavs(parameters: Parameters):
 
     policy_module = TensorDictModule(
         policy_net,
-        in_keys=[observation_key],
+        in_keys=[actor_observation_key],
         out_keys=[
             ("agents", "loc"),
             ("agents", "scale"),
@@ -264,7 +390,7 @@ def mappo_cavs(parameters: Parameters):
     )
 
     # Use a probabilistic actor allows for exploration
-    policy = ProbabilisticActor(
+    probabilistic_actor = ProbabilisticActor(
         module=policy_module,
         spec=env.unbatched_action_spec,
         in_keys=[("agents", "loc"), ("agents", "scale")],
@@ -280,6 +406,13 @@ def mappo_cavs(parameters: Parameters):
             "sample_log_prob",
         ),  # log probability favors numerical stability and gradient calculation
     )  # we'll need the log-prob for the PPO loss
+    policy = (
+        SafeProbabilisticTensorDictSequential(
+            actor_input_module, *probabilistic_actor.module
+        )
+        if use_nod_actor
+        else probabilistic_actor
+    )
 
     mappo = True  # IPPO (Independent PPO) if False
 
@@ -311,17 +444,10 @@ def mappo_cavs(parameters: Parameters):
     else:
         priority_module = None
 
-    topology_manager = TopologyManager(parameters=parameters, scenario=scenario)
-    nod_manager = NODOpinionManager(
-        parameters=parameters,
-        relation_feature_dim=topology_manager.relation_dim,
-        action_dim=topology_manager.action_dim,
-    )
-    scenario.nod_manager = nod_manager
     policy_parameter_ids = {id(parameter) for parameter in policy.parameters()}
     nod_parameter_ids = {id(parameter) for parameter in nod_manager.model.parameters()}
     assert policy_parameter_ids.isdisjoint(nod_parameter_ids), (
-        "NOD and actor parameters must remain independent in phases 1-3"
+        "The recurrent NOD model must remain detached from PPO"
     )
 
     # Check if the directory defined to store the model exists and create it if not
@@ -343,8 +469,12 @@ def mappo_cavs(parameters: Parameters):
         parameters.episode_reward_mean_current = highest_reward  # Update the parameter so that the right filename will be returned later on
         if highest_reward is not float("-inf"):
             if parameters.is_load_final_model:
-                policy.load_state_dict(
-                    torch.load(parameters.where_to_save + "final_policy.pth")
+                _load_policy_checkpoint(
+                    parameters.where_to_save + "final_policy.pth",
+                    policy,
+                    parameters,
+                    actor_base_observation_dim=actor_base_observation_dim,
+                    use_nod_actor=use_nod_actor,
                 )
                 print(
                     colored(
@@ -448,7 +578,13 @@ def mappo_cavs(parameters: Parameters):
                     PATH_POLICY, PATH_CRITIC, PATH_FIG, PATH_JSON = paths
 
                 # Load the saved model state dictionaries for policy and critic
-                policy.load_state_dict(torch.load(PATH_POLICY))
+                _load_policy_checkpoint(
+                    PATH_POLICY,
+                    policy,
+                    parameters,
+                    actor_base_observation_dim=actor_base_observation_dim,
+                    use_nod_actor=use_nod_actor,
+                )
                 print(
                     colored(
                         f"[INFO] Loaded the intermediate model {PATH_POLICY}  with the highest episode reward",
@@ -554,6 +690,7 @@ def mappo_cavs(parameters: Parameters):
         if not parameters.is_continue_train:
             print(colored("[INFO] Training will not continue.", "blue"))
 
+            nod_manager.reset_online_state()
             return env, policy, priority_module, parameters
         else:
             print(
@@ -563,6 +700,10 @@ def mappo_cavs(parameters: Parameters):
 
             if priority_module:
                 priority_module.critic.load_state_dict(torch.load(PATH_PRIORITY_CRITIC))
+
+    # Loading probes and NOD parameter updates invalidate recurrent online
+    # state. The next real rollout always starts from a coherent fresh state.
+    nod_manager.reset_online_state()
 
     collector = SyncDataCollectorCustom(
         env,
@@ -1548,12 +1689,51 @@ def mappo_cavs(parameters: Parameters):
                     new_td_errors = compute_td_error(mini_batch_data, gamma=0.9)
                     mini_batch_data.set("td_error", new_td_errors)
                     replay_buffer.update_tensordict_priority(mini_batch_data)
-        # Train NOD only after topology and action-head updates.  NOD consumes
-        # their detached, id-aligned relation features and cannot alter PPO or
-        # topology behavior in phases 1-3.
+        # Train NOD only after topology and action-head updates. NOD consumes
+        # detached, id-aligned relation features; PPO trains only the separate
+        # stateless message aggregator from collection-time cached context.
         last_nod_metrics = nod_manager.train_on_rollout(
             tensordict_data, topology_manager=topology_manager
         )
+        nod_manager.reset_online_state()
+        if use_nod_actor:
+            actor_message = tensordict_data.get(
+                ("agents", "info", "nod_actor_message"), default=None
+            )
+            actor_edge_mask = tensordict_data.get(
+                ("agents", "info", "nod_actor_edge_mask"), default=None
+            )
+            actor_attention = tensordict_data.get(
+                ("agents", "info", "nod_actor_message_attention"), default=None
+            )
+            context_ready = tensordict_data.get(
+                ("agents", "info", "nod_actor_context_ready"), default=None
+            )
+            if actor_message is not None:
+                last_nod_metrics["actor_message_l2_mean"] = float(
+                    torch.linalg.vector_norm(actor_message.detach(), dim=-1).mean()
+                )
+            if actor_edge_mask is not None:
+                last_nod_metrics["actor_active_edge_ratio"] = float(
+                    actor_edge_mask.detach().float().mean()
+                )
+            if actor_attention is not None and actor_edge_mask is not None:
+                valid_receivers = actor_edge_mask.detach().bool().any(
+                    dim=-1
+                )
+                entropy = -(
+                    actor_attention.detach().clamp_min(1e-8)
+                    * actor_attention.detach().clamp_min(1e-8).log()
+                ).sum(dim=-1)
+                last_nod_metrics["actor_attention_entropy_mean"] = (
+                    float(entropy[valid_receivers].mean())
+                    if bool(valid_receivers.any())
+                    else 0.0
+                )
+            if context_ready is not None:
+                last_nod_metrics["actor_context_ready_ratio"] = float(
+                    context_ready.detach().float().mean()
+                )
         nod_metrics_list.append(dict(last_nod_metrics))
 
         collector.update_policy_weights_()  # Updates the policy weights if the policy of the data collector and the trained policy live on different devices

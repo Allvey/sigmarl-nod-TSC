@@ -77,6 +77,7 @@ class NODOpinionManager:
             else relation_feature_dim
         )
         self.action_dim = int(action_dim)
+        self.n_neighbors = max(1, int(getattr(parameters, "n_agents", 2)) - 1)
         dt = float(parameters.dt)
         tau = float(getattr(parameters, "nod_tau", 0.25))
         bifurcation_gain = float(
@@ -138,8 +139,8 @@ class NODOpinionManager:
         seed = int(getattr(parameters, "seed", 0) or 0)
         self._sequence_generator.manual_seed(seed ^ 0x4E4F44)
 
-        # Reserved for future policy-time inference. Training always rebuilds
-        # recurrent state from raw rollout sequences and never writes here.
+        # Collection advances this causal state one frame at a time. Offline
+        # sequence training still rebuilds its own state from rollout start.
         self.online_state: Optional[Dict[str, Tensor]] = None
         self.last_metrics: Dict[str, float] = {}
         self.last_load_info = ""
@@ -150,6 +151,112 @@ class NODOpinionManager:
 
     def reset_online_state(self) -> None:
         self.online_state = None
+
+    @property
+    def online_context_dim(self) -> int:
+        """Detached per-edge features consumed by the PPO message encoder."""
+
+        # NOD hidden + predicted neighbor action + physical risk vector
+        # + risk attention + bounded opinion + topology edge probability.
+        return self.model.hidden_dim + self.action_dim + self.model.risk_dim + 3
+
+    @staticmethod
+    def _online_state_matches(
+        state: Optional[Dict[str, Tensor]], pair_features: Tensor
+    ) -> bool:
+        if state is None:
+            return False
+        expected = pair_features.shape[:-1]
+        return (
+            tuple(state["z"].shape) == tuple(expected)
+            and state["z"].device == pair_features.device
+        )
+
+    @torch.no_grad()
+    def online_step(self, tensordict, topology_manager=None):
+        """Advance NOD exactly once from the current, causally available frame.
+
+        The returned tensors are detached rollout context. PPO can shuffle them
+        freely and train its stateless message aggregator without replaying the
+        recurrent NOD dynamics in a different temporal order.
+        """
+
+        if not self.enabled or topology_manager is None:
+            return None
+        pair_features = self._get_rollout_tensor(tensordict, "nod_pair_features")
+        edge_mask = self._get_rollout_tensor(tensordict, "nod_edge_mask")
+        neighbor_indices = self._get_rollout_tensor(
+            tensordict, "nod_neighbor_indices"
+        )
+        ego_generations = self._get_rollout_tensor(
+            tensordict, "nod_ego_generation"
+        )
+        neighbor_generations = self._get_rollout_tensor(
+            tensordict, "nod_neighbor_generation"
+        )
+        required = (
+            pair_features,
+            edge_mask,
+            neighbor_indices,
+            ego_generations,
+            neighbor_generations,
+        )
+        if any(value is None for value in required):
+            return None
+        if pair_features.ndim != 4:
+            # Online collection is [B,N,K,D]. Sequence/flat PPO data must use
+            # the cached context instead of stepping a recurrent state.
+            return None
+
+        pair_features = pair_features.detach()
+        edge_mask = edge_mask.detach().bool()
+        neighbor_indices = neighbor_indices.detach().long()
+        ego_generations = ego_generations.detach().long()
+        if ego_generations.ndim == 3 and ego_generations.shape[-1] == 1:
+            ego_generations = ego_generations.squeeze(-1)
+        neighbor_generations = neighbor_generations.detach().long()
+        encoded = topology_manager.encode_nod_inputs(
+            tensordict, neighbor_indices
+        )
+        if encoded is None:
+            return None
+
+        relation_features = encoded["relation_features"].detach()
+        predicted_actions = encoded["predicted_actions"].detach()
+        topology_probability = encoded["edge_probability"].detach()
+        edge_mask = edge_mask & encoded["available"].detach().bool()
+        if not self._online_state_matches(self.online_state, pair_features):
+            self.reset_online_state()
+
+        self.model.eval()
+        outputs, state = self.model.forward_sequence(
+            pair_features.unsqueeze(1),
+            edge_mask.unsqueeze(1),
+            ego_generations.unsqueeze(1),
+            neighbor_generations.unsqueeze(1),
+            initial_state=self.online_state,
+            relation_features=relation_features.unsqueeze(1),
+            predicted_actions=predicted_actions.unsqueeze(1),
+        )
+        self.online_state = _detach_state(state)
+        edge_context = torch.cat(
+            [
+                state["hidden"],
+                predicted_actions,
+                self.model.risk_components(pair_features),
+                outputs["attention"][:, 0].unsqueeze(-1),
+                outputs["z"][:, 0].unsqueeze(-1),
+                topology_probability.unsqueeze(-1),
+            ],
+            dim=-1,
+        )
+        return {
+            "edge_context": edge_context.detach(),
+            "edge_mask": edge_mask.detach(),
+            "opinion": outputs["z"][:, 0].detach(),
+            "risk_attention": outputs["attention"][:, 0].detach(),
+            "topology_probability": topology_probability.detach(),
+        }
 
     def _losses(
         self,
