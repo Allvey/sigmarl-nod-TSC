@@ -78,6 +78,7 @@ from utilities.helper_training import (
 
 from scenarios.road_traffic import ScenarioRoadTraffic
 from utilities.topology_module import TopologyManager
+from utilities.nod_marl import NODOpinionManager
 from utilities.topology_labels import (
     generate_soft_labels_full_graph,
     break_cycles_min_cost,
@@ -155,6 +156,23 @@ def _load_action_predictor_if_available(
     return True
 
 
+def _load_nod_if_available(
+    path_nod: str,
+    nod_manager: NODOpinionManager,
+    parameters: Parameters,
+    *,
+    load_optimizer: bool,
+):
+    """Load an optional NOD sidecar without affecting old checkpoints."""
+
+    if not nod_manager.enabled or not os.path.exists(path_nod):
+        return False
+    checkpoint = torch.load(path_nod, map_location=parameters.device)
+    nod_manager.load_checkpoint(checkpoint, load_optimizer=load_optimizer)
+    print(colored(f"[INFO] Loaded NOD opinion model: {path_nod}", "blue"))
+    return True
+
+
 def mappo_cavs(parameters: Parameters):
     seed = getattr(parameters, "seed", None)
     if seed is None:
@@ -186,6 +204,7 @@ def mappo_cavs(parameters: Parameters):
         collision_agents_rate_list=[],
         collision_lanelets_rate_list=[],
         collision_total_rate_list=[],
+        nod_metrics_list=[],
     )
 
     env = TransformedEnvCustom(
@@ -283,6 +302,13 @@ def mappo_cavs(parameters: Parameters):
         priority_module = None
 
     topology_manager = TopologyManager(parameters=parameters, scenario=scenario)
+    nod_manager = NODOpinionManager(parameters=parameters)
+    scenario.nod_manager = nod_manager
+    policy_parameter_ids = {id(parameter) for parameter in policy.parameters()}
+    nod_parameter_ids = {id(parameter) for parameter in nod_manager.model.parameters()}
+    assert policy_parameter_ids.isdisjoint(nod_parameter_ids), (
+        "NOD and actor parameters must remain independent in phases 1-3"
+    )
 
     # Check if the directory defined to store the model exists and create it if not
     if not os.path.exists(parameters.where_to_save):
@@ -383,6 +409,12 @@ def mappo_cavs(parameters: Parameters):
                             "blue",
                         )
                     )
+                _load_nod_if_available(
+                    parameters.where_to_save + "final_nod.pth",
+                    nod_manager,
+                    parameters,
+                    load_optimizer=parameters.is_continue_train,
+                )
 
             else:
                 # Get paths based on the parameter configuration
@@ -408,6 +440,12 @@ def mappo_cavs(parameters: Parameters):
                         f"[INFO] Loaded the intermediate model {PATH_POLICY}  with the highest episode reward",
                         "blue",
                     )
+                )
+                _load_nod_if_available(
+                    parameters.where_to_save + parameters.model_name + "_nod.pth",
+                    nod_manager,
+                    parameters,
+                    load_optimizer=parameters.is_continue_train,
                 )
 
                 # Load priority policy and critic if prioritized (dual) MARL is enabled
@@ -572,6 +610,8 @@ def mappo_cavs(parameters: Parameters):
     collision_agents_rate_list = []
     collision_lanelets_rate_list = []
     collision_total_rate_list = []
+    last_nod_metrics = {}
+    nod_metrics_list = []
 
     t_start = time.time()
     for tensordict_data in collector:
@@ -623,6 +663,11 @@ def mappo_cavs(parameters: Parameters):
                     params=priority_module.loss_module.critic_params,
                     target_params=priority_module.loss_module.target_critic_params,
                 )
+
+        # NOD phases 1-3 are trained from detached rollout fields with a
+        # dedicated optimizer.  No NOD tensor is inserted into PPO data.
+        last_nod_metrics = nod_manager.train_on_rollout(tensordict_data)
+        nod_metrics_list.append(dict(last_nod_metrics))
 
         # ---- 拓扑分支：生成 e_ij 标签并进行一次 BCE 验证训练 ----
         # 从 scenario.info() 中取出预置的结构化输入
@@ -1560,6 +1605,7 @@ def mappo_cavs(parameters: Parameters):
             save_data.collision_agents_rate_list = collision_agents_rate_list
             save_data.collision_lanelets_rate_list = collision_lanelets_rate_list
             save_data.collision_total_rate_list = collision_total_rate_list
+            save_data.nod_metrics_list = nod_metrics_list
 
             if episode_reward_mean > parameters.episode_reward_intermediate:
                 # Save the model if it improves the mean episode reward sufficiently enough
@@ -1578,6 +1624,9 @@ def mappo_cavs(parameters: Parameters):
                         priority_critic=priority_module.critic,
                         topology_model=topology_manager.learner,
                         topology_action_predictor=topology_manager.action_predictor,
+                        nod_checkpoint=nod_manager.checkpoint_state()
+                        if nod_manager.enabled
+                        else None,
                     )
                 else:
                     save(
@@ -1587,6 +1636,9 @@ def mappo_cavs(parameters: Parameters):
                         critic=critic,
                         topology_model=topology_manager.learner,
                         topology_action_predictor=topology_manager.action_predictor,
+                        nod_checkpoint=nod_manager.checkpoint_state()
+                        if nod_manager.enabled
+                        else None,
                     )
             else:
                 # Save only the mean episode reward list and parameters
@@ -1602,6 +1654,7 @@ def mappo_cavs(parameters: Parameters):
                     priority_critic=None,
                     topology_model=None,
                     topology_action_predictor=None,
+                    nod_checkpoint=None,
                 )
 
         # Learning rate schedule
@@ -1661,6 +1714,8 @@ def mappo_cavs(parameters: Parameters):
                     log_payload["optim_action/lr"] = float(
                         topology_manager.action_optim.param_groups[0]["lr"]
                     )
+            for metric_name, metric_value in last_nod_metrics.items():
+                log_payload[f"nod/{metric_name}"] = metric_value
             wandb.log(log_payload, step=pbar.n)
 
         pbar.update()
@@ -1668,6 +1723,11 @@ def mappo_cavs(parameters: Parameters):
     # Save the final model
     torch.save(policy.state_dict(), parameters.where_to_save + "final_policy.pth")
     torch.save(critic.state_dict(), parameters.where_to_save + "final_critic.pth")
+    if nod_manager.enabled:
+        torch.save(
+            nod_manager.checkpoint_state(),
+            parameters.where_to_save + "final_nod.pth",
+        )
     # Save final topology model if available
     if "topology_manager" in locals() and topology_manager.learner is not None:
         try:

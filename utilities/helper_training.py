@@ -22,9 +22,18 @@ from torchrl.envs.utils import (
     _terminated_or_truncated,
     step_mdp,
     _aggregate_end_of_traj,
-    _convert_exploration_type,
     ExplorationType,
 )
+try:
+    from torchrl.envs.utils import _convert_exploration_type
+except ImportError:
+    # TorchRL >= 0.10 removed this private compatibility helper.
+    def _convert_exploration_type(exploration_mode=None, exploration_type=None):
+        if exploration_mode is not None:
+            return ExplorationType(exploration_mode)
+        return exploration_type
+
+
 from torchrl.envs.common import EnvBase
 from torchrl.envs.libs.vmas import VmasEnv
 
@@ -872,6 +881,32 @@ class Parameters:
         # Topology-based neighbor selection (policy-side)
         use_topology_neighbor_selection: bool = False,  # Enable using topology learner to select policy neighbors
         topology_selection_threshold: float = 0.5,  # Probability threshold for selecting neighbors
+        # NOD phases 1-3: auxiliary only; no policy/reward/PPO behavior change
+        is_using_nod_opinion: bool = True,
+        nod_hidden_dim: int = 64,
+        nod_lr: float = 1e-3,
+        nod_tau: float = 0.25,
+        nod_bifurcation_gain: float = 2.0,
+        nod_observation_weight: float = 1.0,
+        nod_z_epsilon: float = 1e-4,
+        nod_root_iterations: int = 48,
+        nod_root_tolerance: float = 1e-7,
+        nod_edge_retention_steps: int = 2,
+        nod_risk_temperature: float = 2.0,
+        nod_risk_threshold: float = 1.25,
+        nod_min_log_sigma: float = -2.5,
+        nod_max_log_sigma: float = 0.0,
+        nod_sensing_range: float = 0.8,
+        nod_interaction_distance: float = 0.48,
+        nod_conflict_radius: float = 0.08,
+        nod_ttc_limit: float = 2.0,
+        nod_counterfactual_horizon: int = 8,
+        nod_safe_distance: float = 0.25,
+        nod_label_slope: float = 12.0,
+        nod_label_margin: float = 0.02,
+        nod_nll_weight: float = 1.0,
+        nod_calibration_weight: float = 1.0,
+        nod_max_grad_norm: float = 1.0,
         # Visu
         is_visualize_short_term_path: bool = True,  # Whether to visualize short-term reference paths
         is_visualize_lane_boundary: bool = False,  # Whether to visualize lane boundary
@@ -986,6 +1021,31 @@ class Parameters:
         # Topology-based neighbor selection controls
         self.use_topology_neighbor_selection = use_topology_neighbor_selection
         self.topology_selection_threshold = topology_selection_threshold
+        self.is_using_nod_opinion = is_using_nod_opinion
+        self.nod_hidden_dim = nod_hidden_dim
+        self.nod_lr = nod_lr
+        self.nod_tau = nod_tau
+        self.nod_bifurcation_gain = nod_bifurcation_gain
+        self.nod_observation_weight = nod_observation_weight
+        self.nod_z_epsilon = nod_z_epsilon
+        self.nod_root_iterations = nod_root_iterations
+        self.nod_root_tolerance = nod_root_tolerance
+        self.nod_edge_retention_steps = nod_edge_retention_steps
+        self.nod_risk_temperature = nod_risk_temperature
+        self.nod_risk_threshold = nod_risk_threshold
+        self.nod_min_log_sigma = nod_min_log_sigma
+        self.nod_max_log_sigma = nod_max_log_sigma
+        self.nod_sensing_range = nod_sensing_range
+        self.nod_interaction_distance = nod_interaction_distance
+        self.nod_conflict_radius = nod_conflict_radius
+        self.nod_ttc_limit = nod_ttc_limit
+        self.nod_counterfactual_horizon = nod_counterfactual_horizon
+        self.nod_safe_distance = nod_safe_distance
+        self.nod_label_slope = nod_label_slope
+        self.nod_label_margin = nod_label_margin
+        self.nod_nll_weight = nod_nll_weight
+        self.nod_calibration_weight = nod_calibration_weight
+        self.nod_max_grad_norm = nod_max_grad_norm
         self.is_observe_distance_to_boundaries = is_observe_distance_to_boundaries
         self.is_observe_distance_to_center_line = is_observe_distance_to_center_line
         self.is_observe_vertices = is_observe_vertices
@@ -1062,12 +1122,14 @@ class SaveData:
         collision_agents_rate_list: [] = None,
         collision_lanelets_rate_list: [] = None,
         collision_total_rate_list: [] = None,
+        nod_metrics_list: [] = None,
     ):
         self.parameters = parameters
         self.episode_reward_mean_list = episode_reward_mean_list
         self.collision_agents_rate_list = collision_agents_rate_list
         self.collision_lanelets_rate_list = collision_lanelets_rate_list
         self.collision_total_rate_list = collision_total_rate_list
+        self.nod_metrics_list = nod_metrics_list
 
     def to_dict(self):
         return {
@@ -1076,6 +1138,7 @@ class SaveData:
             "collision_agents_rate_list": self.collision_agents_rate_list,
             "collision_lanelets_rate_list": self.collision_lanelets_rate_list,
             "collision_total_rate_list": self.collision_total_rate_list,
+            "nod_metrics_list": self.nod_metrics_list,
         }
 
     @classmethod
@@ -1091,6 +1154,7 @@ class SaveData:
                 "collision_lanelets_rate_list", None
             ),
             collision_total_rate_list=dict_data.get("collision_total_rate_list", None),
+            nod_metrics_list=dict_data.get("nod_metrics_list", None),
         )
 
 
@@ -1386,6 +1450,7 @@ def save(
     priority_critic=None,
     topology_model=None,
     topology_action_predictor=None,
+    nod_checkpoint=None,
 ):
     # Get paths
     paths = get_path_to_save_model(parameters=parameters)
@@ -1462,6 +1527,12 @@ def save(
                 + "_action_predictor.pth"
             )
             torch.save(topology_action_predictor.state_dict(), PATH_ACTION_PREDICTOR)
+
+        # NOD is stored as a sidecar so existing policy/critic checkpoint files
+        # and all external load commands remain backward compatible.
+        if nod_checkpoint is not None:
+            PATH_NOD = parameters.where_to_save + parameters.model_name + "_nod.pth"
+            torch.save(nod_checkpoint, PATH_NOD)
 
         # Delete files with lower mean episode reward
         delete_files_with_lower_mean_reward(parameters=parameters)

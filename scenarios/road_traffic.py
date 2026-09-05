@@ -34,6 +34,7 @@ from vmas.simulator.scenario import BaseScenario
 from utilities.kinematic_bicycle import KinematicBicycle
 from utilities.colors import Color, colors
 from utilities.topology_labels import generate_e_labels_with_corridor
+from utilities.nod_marl.interaction import build_directed_interactions
 
 from utilities.helper_training import Parameters
 
@@ -115,6 +116,11 @@ class ScenarioRoadTraffic(BaseScenario):
         self.n_agents = SCENARIOS[scenario_type]["n_agents"]  # Number of agents
         self.agent_width = AGENTS["width"]  # The width of the agent in [m]
         self.agent_length = AGENTS["length"]  # The length of the agent in [m]
+        # Monotone identity generations prevent a reset agent from inheriting
+        # the edge history of the previous vehicle occupying the same slot.
+        self.nod_agent_generation = torch.zeros(
+            (batch_dim, self.n_agents), device=device, dtype=torch.long
+        )
         lane_width = SCENARIOS[scenario_type][
             "lane_width"
         ]  # The (rough) width of each lane in [m]
@@ -1088,6 +1094,16 @@ class ScenarioRoadTraffic(BaseScenario):
         for env_i in (
             [env_index] if env_index is not None else range(self.world.batch_dim)
         ):
+            if is_reset_single_agent:
+                reset_agent_index = int(
+                    agent_index.item()
+                    if isinstance(agent_index, torch.Tensor)
+                    else agent_index
+                )
+                self.nod_agent_generation[env_i, reset_agent_index] += 1
+            else:
+                self.nod_agent_generation[env_i] += 1
+
             # Begining of a new simulation (only record for the first env)
             if env_i == 0:
                 self.timer.step_duration[:] = 0
@@ -3537,6 +3553,54 @@ class ScenarioRoadTraffic(BaseScenario):
                 B, K_topo * T_points * 2
             )
 
+        # --- NOD auxiliary branch: stable directed candidates and physical data ---
+        # These fields are diagnostics/training targets only.  They are not
+        # concatenated to the actor observation in phases 1-3.
+        with torch.no_grad():
+            nod_positions = torch.stack(
+                [world_agent.state.pos for world_agent in self.world.agents], dim=1
+            )
+            nod_velocities = torch.stack(
+                [world_agent.state.vel for world_agent in self.world.agents], dim=1
+            )
+            nod_yaws = torch.stack(
+                [world_agent.state.rot for world_agent in self.world.agents], dim=1
+            )
+            nod_interaction = build_directed_interactions(
+                positions=nod_positions,
+                velocities=nod_velocities,
+                yaws=nod_yaws,
+                short_term_paths=self.ref_paths_agent_related.short_term,
+                ego_index=agent_index,
+                sensing_range=float(
+                    getattr(
+                        self.parameters,
+                        "nod_sensing_range",
+                        self.agent_length * 5,
+                    )
+                ),
+                interaction_distance=float(
+                    getattr(
+                        self.parameters,
+                        "nod_interaction_distance",
+                        self.agent_length * 3,
+                    )
+                ),
+                ttc_limit=float(getattr(self.parameters, "nod_ttc_limit", 2.0)),
+                conflict_radius=float(
+                    getattr(
+                        self.parameters,
+                        "nod_conflict_radius",
+                        self.agent_width,
+                    )
+                ),
+                max_speed=float(self.max_speed),
+            )
+            nod_neighbor_indices = nod_interaction["neighbor_indices"]
+            nod_neighbor_generation = torch.gather(
+                self.nod_agent_generation, dim=1, index=nod_neighbor_indices
+            )
+
         info = {
             "pos": agent.state.pos / self.normalizers.pos_world,
             "rot": angle_eliminate_two_pi(agent.state.rot) / self.normalizers.rot,
@@ -3619,6 +3683,18 @@ class ScenarioRoadTraffic(BaseScenario):
             ),
             # 策略分支使用的 K 个近邻编号（用于对比）
             "neighbors_indices": neighbor_idx_local,
+            # NOD fields remain separate from the policy observation.
+            "nod_pair_features": nod_interaction["features"],
+            "nod_edge_mask": nod_interaction["edge_mask"],
+            "nod_neighbor_indices": nod_neighbor_indices,
+            "nod_ego_generation": self.nod_agent_generation[:, agent_index],
+            "nod_neighbor_generation": nod_neighbor_generation,
+            "nod_conflict_valid": nod_interaction["conflict_valid"],
+            "nod_ttc": nod_interaction["ttc"],
+            "nod_eta_gap": nod_interaction["eta_gap"],
+            "nod_overlap_risk": nod_interaction["overlap_risk"],
+            "nod_world_pos": agent.state.pos,
+            "nod_world_vel": agent.state.vel,
         }
 
         return info
