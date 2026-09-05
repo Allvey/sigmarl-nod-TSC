@@ -907,6 +907,12 @@ class Parameters:
         nod_nll_weight: float = 1.0,
         nod_calibration_weight: float = 1.0,
         nod_max_grad_norm: float = 1.0,
+        nod_num_epochs: int = 4,
+        nod_sequence_length: int = 32,
+        nod_sequence_minibatch_size: int = 8,
+        nod_history_mode: str = "gru",
+        nod_high_risk_score: float = 1.25,
+        nod_low_risk_score: float = 0.5,
         # Visu
         is_visualize_short_term_path: bool = True,  # Whether to visualize short-term reference paths
         is_visualize_lane_boundary: bool = False,  # Whether to visualize lane boundary
@@ -1046,6 +1052,12 @@ class Parameters:
         self.nod_nll_weight = nod_nll_weight
         self.nod_calibration_weight = nod_calibration_weight
         self.nod_max_grad_norm = nod_max_grad_norm
+        self.nod_num_epochs = nod_num_epochs
+        self.nod_sequence_length = nod_sequence_length
+        self.nod_sequence_minibatch_size = nod_sequence_minibatch_size
+        self.nod_history_mode = nod_history_mode
+        self.nod_high_risk_score = nod_high_risk_score
+        self.nod_low_risk_score = nod_low_risk_score
         self.is_observe_distance_to_boundaries = is_observe_distance_to_boundaries
         self.is_observe_distance_to_center_line = is_observe_distance_to_center_line
         self.is_observe_vertices = is_observe_vertices

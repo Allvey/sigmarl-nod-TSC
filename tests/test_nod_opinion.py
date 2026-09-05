@@ -122,3 +122,85 @@ def test_short_edge_gap_retains_identity_and_marks_resume():
 
     assert outputs["resumed_edges"].item() == 1.0
     assert outputs["learning_valid"][0, 2, 0, 0]
+
+
+def test_history_uses_relation_and_action_without_current_evidence_leakage():
+    model = NODOpinionModel(
+        pair_feature_dim=20,
+        relation_feature_dim=7,
+        action_dim=2,
+        hidden_dim=8,
+    )
+    pair_a = torch.zeros(1, 2, 2, 1, 20)
+    pair_b = pair_a.clone()
+    pair_b[:, 1, :, :, 6] = 0.9
+    pair_b[:, 1, :, :, 8] = 0.1
+    relation = torch.randn(1, 2, 2, 1, 7)
+    actions = torch.randn(1, 2, 2, 1, 2)
+    edge_mask = torch.ones(1, 2, 2, 1, dtype=torch.bool)
+    generations = torch.ones(1, 2, 2, dtype=torch.long)
+    neighbor_generations = torch.ones(1, 2, 2, 1, dtype=torch.long)
+
+    _, state_a = model.forward_sequence(
+        pair_a,
+        edge_mask,
+        generations,
+        neighbor_generations,
+        relation_features=relation,
+        predicted_actions=actions,
+    )
+    _, state_b = model.forward_sequence(
+        pair_b,
+        edge_mask,
+        generations,
+        neighbor_generations,
+        relation_features=relation,
+        predicted_actions=actions,
+    )
+
+    assert model.history.input_size == 9
+    assert torch.allclose(state_a["hidden"], state_b["hidden"])
+
+
+def test_risk_attention_is_monotone_in_physical_risk_components():
+    model = NODOpinionModel(pair_feature_dim=20, hidden_dim=8)
+    safer = torch.zeros(1, 20)
+    safer[..., 6] = 1.0
+    safer[..., 8] = 1.0
+    riskier = safer.clone()
+    riskier[..., 6] = 0.2
+    riskier[..., 8] = 0.2
+    riskier[..., 9] = 1.0
+    riskier[..., 15] = 0.8
+    riskier[..., 16] = 0.8
+
+    assert model.risk_attention(riskier).item() > model.risk_attention(safer).item()
+    assert torch.all(model.risk_weights >= 0.0)
+
+
+def test_history_can_be_disabled_without_removing_opinion_dynamics():
+    model = NODOpinionModel(
+        pair_feature_dim=20,
+        relation_feature_dim=7,
+        action_dim=2,
+        hidden_dim=8,
+        history_mode="none",
+    )
+    pair = torch.zeros(1, 2, 2, 1, 20)
+    relation = torch.randn(1, 2, 2, 1, 7)
+    actions = torch.randn(1, 2, 2, 1, 2)
+    edge_mask = torch.ones(1, 2, 2, 1, dtype=torch.bool)
+    generations = torch.ones(1, 2, 2, dtype=torch.long)
+    neighbor_generations = torch.ones(1, 2, 2, 1, dtype=torch.long)
+
+    outputs, _ = model.forward_sequence(
+        pair,
+        edge_mask,
+        generations,
+        neighbor_generations,
+        relation_features=relation,
+        predicted_actions=actions,
+    )
+
+    assert outputs["z"].shape == (1, 2, 2, 1)
+    assert torch.isfinite(outputs["z"]).all()

@@ -16,6 +16,7 @@ The core components are:
 import torch
 from torch import nn
 import math
+import weakref
 from .topology_labels import (
     generate_e_labels_from_refs,
     generate_e_labels_with_corridor,
@@ -142,13 +143,15 @@ class NeighborActionHead(nn.Module):
 
 class TopologyActionPredictor(nn.Module):
     """
-    一个轻量包装器，用于基于拓扑结构的关系表征进行邻居动作预测。
+    Predict neighbor actions from the *existing* topology relation latent.
 
-    支持两种模式：
-    - 参数共享（share_decoder=True）：复用已有 `TopologyLearner.decoder` 的参数与结构。
-    - 参数独立（share_decoder=False）：新建一个同结构的 `TopoDecoder`，独立训练，避免与拓扑网络相互干扰。
+    The topology learner is held through a weak reference so that this wrapper
+    does not register (and duplicate) the whole topology network in its state
+    dict.  The latent is detached before the action head: topology is trained by
+    its edge BCE, while action MSE only trains this lightweight head.
 
-    最小侵入：不改动 `TopologyLearner`，仅复用其结构信息来构造独立分支。
+    ``share_decoder`` remains in the signature for checkpoint/config API
+    compatibility.  Both values now use the shared topology representation.
     """
 
     def __init__(
@@ -159,8 +162,10 @@ class TopologyActionPredictor(nn.Module):
         share_decoder: bool = False,
     ):
         super().__init__()
-        self.topology_learner = topology_learner
-        self._share_decoder = share_decoder
+        object.__setattr__(
+            self, "_topology_learner_ref", weakref.ref(topology_learner)
+        )
+        self._share_decoder = True
 
         # 从拓扑头推断 d_latent，保证与拓扑结构的潜在维度一致
         d_latent = topology_learner.head.mlp[0].in_features
@@ -169,12 +174,29 @@ class TopologyActionPredictor(nn.Module):
             d_latent=d_latent, action_dim=action_dim, hidden_ratio=hidden_ratio
         )
 
-        # 若选择参数独立，则记录结构信息，解码器在首次前向时按输入维度“惰性初始化”
-        if not self._share_decoder:
-            dec = topology_learner.decoder
-            self._num_layers = len(dec.layers)
-            # d_rel 可由 initial_mapper 的输入维度得到；d_latent 已上面推断
-            self._independent_decoder = None  # 将在 forward 中依据输入维度构建
+    @property
+    def topology_learner(self) -> TopologyLearner:
+        learner = self._topology_learner_ref()
+        if learner is None:
+            raise RuntimeError("The referenced topology learner no longer exists")
+        return learner
+
+    def encode_relations(
+        self,
+        ego_observation: torch.Tensor,
+        neighbors_observation: torch.Tensor,
+        relative_features: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.topology_learner.decoder(
+            ego_observation, neighbors_observation, relative_features
+        )
+
+    def predict_from_latent(
+        self, q_R_final: torch.Tensor, *, detach_latent: bool = True
+    ) -> torch.Tensor:
+        if detach_latent:
+            q_R_final = q_R_final.detach()
+        return self.action_head(q_R_final)
 
     def forward(
         self,
@@ -194,42 +216,30 @@ class TopologyActionPredictor(nn.Module):
             If return_edges is False: action_pred [B, K, A]
             If return_edges is True: (action_pred [B, K, A], edge_logits [B, K, 1])
         """
-        if self._share_decoder:
-            q_R_final = self.topology_learner.decoder(
-                ego_observation, neighbors_observation, relative_features
-            )
-            action_pred = self.action_head(q_R_final)
-            if return_edges:
-                edge_logits = self.topology_learner.head(q_R_final)
-                return action_pred, edge_logits
-            return action_pred
-
-        # 参数独立：首次调用时按输入维度构建一个同结构的新解码器
-        if self._independent_decoder is None:
-            d_ego = ego_observation.shape[-1]
-            d_nei = neighbors_observation.shape[-1]
-            d_rel = relative_features.shape[-1]
-            self._independent_decoder = TopoDecoder(
-                num_layers=self._num_layers,
-                d_latent=self._d_latent,
-                d_ego=d_ego,
-                d_nei=d_nei,
-                d_rel=d_rel,
-            ).to(ego_observation.device)
-
-        q_R_final_ind = self._independent_decoder(
+        q_R_final = self.encode_relations(
             ego_observation, neighbors_observation, relative_features
         )
-        action_pred = self.action_head(q_R_final_ind)
-
+        action_pred = self.predict_from_latent(q_R_final)
         if return_edges:
-            # 为避免干扰，边缘 logits 始终使用原拓扑网络路径计算
-            q_R_topo = self.topology_learner.decoder(
-                ego_observation, neighbors_observation, relative_features
-            )
-            edge_logits = self.topology_learner.head(q_R_topo)
+            edge_logits = self.topology_learner.head(q_R_final)
             return action_pred, edge_logits
         return action_pred
+
+    def load_state_dict(self, state_dict, strict: bool = True):
+        """Load both the new head-only and legacy duplicated checkpoints."""
+
+        head_state = {
+            key: value
+            for key, value in state_dict.items()
+            if key.startswith("action_head.")
+        }
+        if not head_state and any(key.startswith("mlp.") for key in state_dict):
+            head_state = {
+                f"action_head.{key}": value
+                for key, value in state_dict.items()
+                if key.startswith("mlp.")
+            }
+        return super().load_state_dict(head_state, strict=strict)
 
 
 class TopologyManager:
@@ -243,6 +253,10 @@ class TopologyManager:
         self._num_layers = 2
         self._d_latent = 128
         self.action_dim = int(getattr(parameters, "topology_action_dim", 2) or 2)
+
+    @property
+    def relation_dim(self) -> int:
+        return self._d_latent
 
     def ensure_initialized(
         self, ego_observation, neighbors_flat, relative_features, k_neighbors: int
@@ -276,10 +290,10 @@ class TopologyManager:
                 hidden_ratio=float(
                     getattr(self.parameters, "topology_action_hidden_ratio", 0.5)
                 ),
-                share_decoder=False,
+                share_decoder=True,
             ).to(self.parameters.device)
             self.action_optim = torch.optim.Adam(
-                self.action_predictor.parameters(),
+                self.action_predictor.action_head.parameters(),
                 lr=float(
                     getattr(self.parameters, "lr_action_predictor", self.parameters.lr)
                 ),
@@ -425,13 +439,78 @@ class TopologyManager:
         assert nei_b is not None
         pred_ap = self.action_predictor(ego_b, nei_b, rel_b)
         action_loss = torch.nn.functional.mse_loss(pred_ap, labels_b_ap)
-        self.action_optim.zero_grad()
+        self.action_optim.zero_grad(set_to_none=True)
         action_loss.backward()
         torch.nn.utils.clip_grad_norm_(
-            self.action_predictor.parameters(), self.parameters.max_grad_norm
+            self.action_predictor.action_head.parameters(), self.parameters.max_grad_norm
         )
         self.action_optim.step()
         return float(action_loss.detach().item())
+
+    @torch.no_grad()
+    def encode_nod_inputs(
+        self, tensordict, target_neighbor_indices: torch.Tensor
+    ):
+        """Align topology latents/actions to NOD's stable directed edge slots.
+
+        Topology candidates may be distance ordered, while NOD candidate slots
+        are ordered by global agent id.  Explicit id matching avoids history
+        corruption whenever the topology ordering changes between frames.
+        """
+
+        if self.learner is None or self.action_predictor is None:
+            return None
+        ego_obs = tensordict.get(("agents", "info", "ego_observation"), default=None)
+        neighbors_flat = tensordict.get(
+            ("agents", "info", "topology_neighbors_observation_flat"),
+            default=None,
+        )
+        relative_feats = tensordict.get(
+            ("agents", "info", "topology_relative_features"), default=None
+        )
+        source_indices = tensordict.get(
+            ("agents", "info", "topology_neighbors_indices"), default=None
+        )
+        if any(
+            value is None
+            for value in (ego_obs, neighbors_flat, relative_feats, source_indices)
+        ):
+            return None
+
+        source_indices = source_indices.detach().long()
+        target_neighbor_indices = target_neighbor_indices.detach().long()
+        k_source = int(source_indices.shape[-1])
+        sample_shape = tuple(ego_obs.shape[:-1])
+        batch_total = int(math.prod(sample_shape))
+        d_ego = int(ego_obs.shape[-1])
+        d_nei = int(neighbors_flat.shape[-1] // k_source)
+        d_rel = int(relative_feats.shape[-1])
+        ego_b = ego_obs.detach().contiguous().view(batch_total, d_ego)
+        nei_b = neighbors_flat.detach().contiguous().view(
+            batch_total, k_source, d_nei
+        )
+        rel_b = relative_feats.detach().contiguous().view(
+            batch_total, k_source, d_rel
+        )
+        relation_b = self.learner.decoder(ego_b, nei_b, rel_b)
+        action_b = self.action_predictor.predict_from_latent(relation_b)
+        relation = relation_b.view(*sample_shape, k_source, self.relation_dim)
+        action = action_b.view(*sample_shape, k_source, self.action_dim)
+
+        matches = target_neighbor_indices.unsqueeze(-1) == source_indices.unsqueeze(-2)
+        available = matches.any(dim=-1)
+        match_weights = matches.to(relation.dtype)
+        aligned_relation = torch.einsum(
+            "...ks,...sd->...kd", match_weights, relation
+        )
+        aligned_action = torch.einsum(
+            "...ks,...sa->...ka", match_weights, action
+        )
+        return {
+            "relation_features": aligned_relation,
+            "predicted_actions": aligned_action,
+            "available": available,
+        }
 
     def generate_action_labels(self, td: torch.Tensor) -> torch.Tensor:
         neighbors_flat = td.get(

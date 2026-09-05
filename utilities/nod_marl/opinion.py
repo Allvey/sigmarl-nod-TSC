@@ -6,6 +6,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 from torch import Tensor, nn
+import torch.nn.functional as F
 
 from .interaction import (
     APPROACH_CONFIDENCE,
@@ -257,15 +258,19 @@ def kl_objective(
 
 
 class NODOpinionModel(nn.Module):
-    """Shared edge history, physical attention, and bounded opinions."""
+    """Topology-conditioned edge history and bounded directed opinions."""
 
     evidence_dim = 5
+    risk_dim = 6
 
     def __init__(
         self,
         pair_feature_dim: int,
         hidden_dim: int = 64,
         *,
+        relation_feature_dim: Optional[int] = None,
+        action_dim: int = 0,
+        history_mode: str = "gru",
         bifurcation_gain: float = 2.0,
         observation_weight: float = 1.0,
         kl_weight: float = 5.0,
@@ -280,6 +285,15 @@ class NODOpinionModel(nn.Module):
     ):
         super().__init__()
         self.pair_feature_dim = int(pair_feature_dim)
+        self.relation_feature_dim = int(
+            pair_feature_dim
+            if relation_feature_dim is None
+            else relation_feature_dim
+        )
+        self.action_dim = int(action_dim)
+        self.history_mode = str(history_mode).lower()
+        if self.history_mode not in {"gru", "none"}:
+            raise ValueError("history_mode must be one of {'gru', 'none'}")
         self.hidden_dim = int(hidden_dim)
         self.bifurcation_gain = float(bifurcation_gain)
         self.observation_weight = float(observation_weight)
@@ -293,8 +307,12 @@ class NODOpinionModel(nn.Module):
         self.min_log_sigma = float(min_log_sigma)
         self.max_log_sigma = float(max_log_sigma)
 
+        # The current evidence is deliberately excluded from the recurrent
+        # input.  Otherwise the likelihood head could learn to copy the target
+        # it is meant to explain.  In the integrated path this input is the
+        # shared topology relation latent plus the neighbor-action prediction.
         self.history = nn.GRUCell(
-            self.pair_feature_dim + self.evidence_dim, self.hidden_dim
+            self.relation_feature_dim + self.action_dim, self.hidden_dim
         )
         self.likelihood_head = nn.Sequential(
             nn.Linear(self.hidden_dim, self.hidden_dim),
@@ -302,27 +320,55 @@ class NODOpinionModel(nn.Module):
             nn.Linear(self.hidden_dim, 3),
         )
 
-    def risk_attention(
-        self, pair_features: Tensor, evidence_components: Optional[Tensor] = None
-    ) -> Tensor:
-        """Continuous attention from current risk and past-to-current trend."""
+        initial_risk_weights = torch.tensor(
+            [0.75, 0.75, 0.50, 0.50, 0.50, 0.75], dtype=torch.float32
+        )
+        self.raw_risk_weights = nn.Parameter(
+            torch.log(torch.expm1(initial_risk_weights))
+        )
 
+    @property
+    def risk_weights(self) -> Tensor:
+        """Nonnegative weights make attention monotone in every risk input."""
+
+        return F.softplus(self.raw_risk_weights)
+
+    @staticmethod
+    def risk_components(pair_features: Tensor) -> Tensor:
         conflict = pair_features[..., CONFLICT_VALID].clamp(0.0, 1.0)
         inverse_ttc = 1.0 - pair_features[..., TTC].clamp(0.0, 1.0)
         proximity = 1.0 - pair_features[..., DISTANCE].clamp(0.0, 1.0)
         overlap = pair_features[..., OVERLAP_RISK].clamp(0.0, 1.0)
         approaching = pair_features[..., APPROACH_CONFIDENCE].clamp(0.0, 1.0)
-        risk_score = (
-            0.75 * proximity
-            + 0.75 * approaching
-            + conflict * (0.5 + 0.5 * inverse_ttc)
-            + 0.75 * overlap
+        eta_urgency = conflict * (
+            1.0 - pair_features[..., ETA_GAP].abs().clamp(0.0, 1.0)
         )
-        if evidence_components is not None:
-            # Evidence is positive for mitigation, so its negative part is a
-            # physically interpretable risk-deterioration term.
-            deterioration = (-evidence_components.mean(dim=-1)).clamp(0.0, 1.0)
-            risk_score = risk_score + 0.5 * deterioration
+        return torch.stack(
+            [
+                proximity,
+                approaching,
+                inverse_ttc,
+                conflict,
+                eta_urgency,
+                overlap,
+            ],
+            dim=-1,
+        )
+
+    def risk_score(self, pair_features: Tensor) -> Tensor:
+        return (self.risk_components(pair_features) * self.risk_weights).sum(dim=-1)
+
+    def risk_attention(
+        self, pair_features: Tensor, evidence_components: Optional[Tensor] = None
+    ) -> Tensor:
+        """Monotone learnable attention from current physical risk only.
+
+        ``evidence_components`` is accepted for source compatibility but is
+        intentionally ignored, preventing the current likelihood target from
+        leaking into the attention or recurrent encoder.
+        """
+
+        risk_score = self.risk_score(pair_features)
         return torch.sigmoid(
             self.risk_temperature * (risk_score - self.risk_threshold)
         )
@@ -386,6 +432,9 @@ class NODOpinionModel(nn.Module):
         ego_generations: Tensor,
         neighbor_generations: Tensor,
         initial_state: Optional[Dict[str, Tensor]] = None,
+        *,
+        relation_features: Optional[Tensor] = None,
+        predicted_actions: Optional[Tensor] = None,
     ) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
         """Unroll edge state with identity-aware reset and short-gap retention."""
 
@@ -395,6 +444,31 @@ class NODOpinionModel(nn.Module):
             raise ValueError(
                 f"Expected pair feature dim {self.pair_feature_dim}, "
                 f"got {pair_features.shape[-1]}"
+            )
+        if relation_features is None:
+            if self.relation_feature_dim != self.pair_feature_dim:
+                raise ValueError(
+                    "relation_features are required when relation_feature_dim "
+                    "differs from pair_feature_dim"
+                )
+            relation_features = pair_features
+        if relation_features.shape[:-1] != pair_features.shape[:-1]:
+            raise ValueError("relation_features must share [B,T,N,K] dimensions")
+        if relation_features.shape[-1] != self.relation_feature_dim:
+            raise ValueError(
+                f"Expected relation feature dim {self.relation_feature_dim}, "
+                f"got {relation_features.shape[-1]}"
+            )
+        if predicted_actions is None:
+            predicted_actions = pair_features.new_zeros(
+                *pair_features.shape[:-1], self.action_dim
+            )
+        if predicted_actions.shape[:-1] != pair_features.shape[:-1]:
+            raise ValueError("predicted_actions must share [B,T,N,K] dimensions")
+        if predicted_actions.shape[-1] != self.action_dim:
+            raise ValueError(
+                f"Expected predicted action dim {self.action_dim}, "
+                f"got {predicted_actions.shape[-1]}"
             )
         edge_mask = edge_mask.bool()
         state = (
@@ -416,6 +490,7 @@ class NODOpinionModel(nn.Module):
                 "z",
                 "rho",
                 "attention",
+                "risk_score",
                 "evidence",
                 "mean",
                 "variance",
@@ -433,6 +508,8 @@ class NODOpinionModel(nn.Module):
 
         for time_index in range(pair_features.shape[1]):
             current = pair_features[:, time_index]
+            current_relation = relation_features[:, time_index]
+            current_action = predicted_actions[:, time_index]
             active = edge_mask[:, time_index]
             ego_generation = (
                 ego_generations[:, time_index].unsqueeze(-1).expand_as(active)
@@ -456,9 +533,15 @@ class NODOpinionModel(nn.Module):
                 torch.zeros_like(evidence_vector),
             )
             evidence = evidence_vector.mean(dim=-1)
-            history_input = torch.cat([current, evidence_vector], dim=-1)
-            history_previous = torch.where(
-                retained.unsqueeze(-1), hidden, torch.zeros_like(hidden)
+            history_input = torch.cat(
+                [current_relation, current_action], dim=-1
+            )
+            history_previous = (
+                torch.where(
+                    retained.unsqueeze(-1), hidden, torch.zeros_like(hidden)
+                )
+                if self.history_mode == "gru"
+                else torch.zeros_like(hidden)
             )
             hidden_candidate = self.history(
                 history_input.reshape(-1, history_input.shape[-1]),
@@ -474,7 +557,10 @@ class NODOpinionModel(nn.Module):
                 ),
             )
             mean_intercept, slope, variance = self.likelihood_parameters(hidden)
-            attention = self.risk_attention(current, evidence_vector)
+            risk_score = self.risk_score(current)
+            attention = torch.sigmoid(
+                self.risk_temperature * (risk_score - self.risk_threshold)
+            )
             z_before_update = z_state
             solved_z = kl_proximal_update(
                 z_before_update,
@@ -530,6 +616,7 @@ class NODOpinionModel(nn.Module):
             output_lists["z"].append(output_z)
             output_lists["rho"].append(0.5 * (1.0 + output_z))
             output_lists["attention"].append(attention)
+            output_lists["risk_score"].append(risk_score)
             output_lists["evidence"].append(evidence)
             output_lists["mean"].append(mean_intercept + slope * output_z)
             output_lists["variance"].append(variance)

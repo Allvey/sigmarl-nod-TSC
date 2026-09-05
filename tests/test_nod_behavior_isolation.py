@@ -65,3 +65,21 @@ def test_manager_initialization_does_not_advance_global_rng():
     NODOpinionManager(parameters)
     actual = torch.rand(5)
     assert torch.equal(actual, expected)
+
+
+def test_v1_checkpoint_is_ignored_instead_of_breaking_training_interface():
+    parameters = SimpleNamespace(
+        device="cpu",
+        dt=0.1,
+        is_using_nod_opinion=True,
+        nod_hidden_dim=8,
+    )
+    manager = NODOpinionManager(
+        parameters, relation_feature_dim=16, action_dim=2
+    )
+
+    loaded = manager.load_checkpoint({"version": 1, "model": {}})
+
+    assert not loaded
+    assert "legacy NOD checkpoint ignored" in manager.last_load_info
+    assert manager.online_state is None

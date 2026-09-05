@@ -51,6 +51,134 @@ def _cumulative_path_distance(path: Tensor) -> Tensor:
     return torch.cat([zeros, torch.cumsum(segment_lengths, dim=-1)], dim=-1)
 
 
+def _cross_2d(first: Tensor, second: Tensor) -> Tensor:
+    return first[..., 0] * second[..., 1] - first[..., 1] * second[..., 0]
+
+
+def _closest_path_approach(
+    ego_path: Tensor, neighbor_path: Tensor, eps: float
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Exact polyline intersection plus minimum segment-corridor distance.
+
+    Args:
+        ego_path: ``[B,K,P,2]``.
+        neighbor_path: ``[B,K,Q,2]``.
+
+    Returns:
+        Minimum distance, distance travelled by ego and neighbor to the closest
+        approach, and whether any pair of segments intersects.  Endpoint to
+        segment projections cover non-intersecting parallel/merging paths;
+        explicit line intersection prevents sparse path samples from missing a
+        crossing between sample points.
+    """
+
+    p0 = ego_path[..., :-1, :].unsqueeze(-2)
+    p1 = ego_path[..., 1:, :].unsqueeze(-2)
+    q0 = neighbor_path[..., :-1, :].unsqueeze(-3)
+    q1 = neighbor_path[..., 1:, :].unsqueeze(-3)
+    r = p1 - p0
+    s = q1 - q0
+    qp = q0 - p0
+    denominator = _cross_2d(r, s)
+    non_parallel = denominator.abs() > eps
+    safe_denominator = torch.where(
+        non_parallel, denominator, torch.ones_like(denominator)
+    )
+    t_intersection = _cross_2d(qp, s) / safe_denominator
+    u_intersection = _cross_2d(qp, r) / safe_denominator
+    intersects = (
+        non_parallel
+        & (t_intersection >= 0.0)
+        & (t_intersection <= 1.0)
+        & (u_intersection >= 0.0)
+        & (u_intersection <= 1.0)
+    )
+
+    r_length_sq = r.square().sum(dim=-1).clamp_min(eps)
+    s_length_sq = s.square().sum(dim=-1).clamp_min(eps)
+    r_length = r_length_sq.sqrt()
+    s_length = s_length_sq.sqrt()
+
+    def point_to_q(point: Tensor):
+        fraction = ((point - q0) * s).sum(dim=-1) / s_length_sq
+        fraction = fraction.clamp(0.0, 1.0)
+        closest = q0 + fraction.unsqueeze(-1) * s
+        distance = torch.linalg.vector_norm(point - closest, dim=-1)
+        return distance, fraction
+
+    def point_to_p(point: Tensor):
+        fraction = ((point - p0) * r).sum(dim=-1) / r_length_sq
+        fraction = fraction.clamp(0.0, 1.0)
+        closest = p0 + fraction.unsqueeze(-1) * r
+        distance = torch.linalg.vector_norm(point - closest, dim=-1)
+        return distance, fraction
+
+    distance_p0_q, fraction_p0_q = point_to_q(p0)
+    distance_p1_q, fraction_p1_q = point_to_q(p1)
+    distance_q0_p, fraction_q0_p = point_to_p(q0)
+    distance_q1_p, fraction_q1_p = point_to_p(q1)
+    distance_intersection = torch.where(
+        intersects,
+        torch.zeros_like(denominator),
+        torch.full_like(denominator, float("inf")),
+    )
+
+    ego_cumulative = _cumulative_path_distance(ego_path)
+    neighbor_cumulative = _cumulative_path_distance(neighbor_path)
+    ego_start = ego_cumulative[..., :-1].unsqueeze(-1)
+    ego_end = ego_cumulative[..., 1:].unsqueeze(-1)
+    neighbor_start = neighbor_cumulative[..., :-1].unsqueeze(-2)
+    neighbor_end = neighbor_cumulative[..., 1:].unsqueeze(-2)
+
+    distance_candidates = torch.stack(
+        [
+            distance_intersection,
+            distance_p0_q,
+            distance_p1_q,
+            distance_q0_p,
+            distance_q1_p,
+        ],
+        dim=-1,
+    )
+    ego_progress_candidates = torch.stack(
+        [
+            ego_start + t_intersection.clamp(0.0, 1.0) * r_length,
+            ego_start.expand_as(distance_p0_q),
+            ego_end.expand_as(distance_p1_q),
+            ego_start + fraction_q0_p * r_length,
+            ego_start + fraction_q1_p * r_length,
+        ],
+        dim=-1,
+    )
+    neighbor_progress_candidates = torch.stack(
+        [
+            neighbor_start + u_intersection.clamp(0.0, 1.0) * s_length,
+            neighbor_start + fraction_p0_q * s_length,
+            neighbor_start + fraction_p1_q * s_length,
+            neighbor_start.expand_as(distance_q0_p),
+            neighbor_end.expand_as(distance_q1_p),
+        ],
+        dim=-1,
+    )
+
+    flat_distance = distance_candidates.flatten(start_dim=-3)
+    min_distance, flat_index = flat_distance.min(dim=-1)
+    flat_ego_progress = ego_progress_candidates.flatten(start_dim=-3)
+    flat_neighbor_progress = neighbor_progress_candidates.flatten(start_dim=-3)
+    ego_progress = torch.gather(
+        flat_ego_progress, -1, flat_index.unsqueeze(-1)
+    ).squeeze(-1)
+    neighbor_progress = torch.gather(
+        flat_neighbor_progress, -1, flat_index.unsqueeze(-1)
+    ).squeeze(-1)
+    return (
+        min_distance,
+        ego_progress,
+        neighbor_progress,
+        intersects.flatten(start_dim=-2).any(dim=-1),
+    )
+
+
 def build_directed_interactions(
     positions: Tensor,
     velocities: Tensor,
@@ -135,26 +263,15 @@ def build_directed_interactions(
     neighbor_paths = torch.cat([neighbor_pos.unsqueeze(2), neighbor_paths], dim=2)
     ego_path = ego_path.unsqueeze(1).expand(-1, candidate_ids.shape[1], -1, -1)
 
-    # A path-conflict proxy based on the closest pair of short-horizon path
-    # points.  It is stable for crossings as well as nearly collinear merges,
-    # unlike a segment-only intersection test.
-    point_delta = ego_path.unsqueeze(-2) - neighbor_paths.unsqueeze(-3)
-    point_distance = torch.linalg.vector_norm(point_delta, dim=-1)
-    flat_distance = point_distance.flatten(start_dim=-2)
-    min_path_distance, flat_index = flat_distance.min(dim=-1)
-    n_neighbor_points = neighbor_paths.shape[-2]
-    ego_point_index = torch.div(flat_index, n_neighbor_points, rounding_mode="floor")
-    neighbor_point_index = flat_index.remainder(n_neighbor_points)
-    conflict_valid = min_path_distance <= float(conflict_radius)
-
-    ego_cumulative = _cumulative_path_distance(ego_path)
-    neighbor_cumulative = _cumulative_path_distance(neighbor_paths)
-    ego_conflict_distance = torch.gather(
-        ego_cumulative, -1, ego_point_index.unsqueeze(-1)
-    ).squeeze(-1)
-    neighbor_conflict_distance = torch.gather(
-        neighbor_cumulative, -1, neighbor_point_index.unsqueeze(-1)
-    ).squeeze(-1)
+    (
+        min_path_distance,
+        ego_conflict_distance,
+        neighbor_conflict_distance,
+        path_intersects,
+    ) = _closest_path_approach(ego_path, neighbor_paths, eps)
+    conflict_valid = path_intersects | (
+        min_path_distance <= float(conflict_radius)
+    )
     ego_speed = torch.linalg.vector_norm(ego_vel, dim=-1).expand_as(distance)
     neighbor_speed = torch.linalg.vector_norm(neighbor_vel, dim=-1)
     ego_eta = ego_conflict_distance / ego_speed.clamp_min(eps)
@@ -213,6 +330,7 @@ def build_directed_interactions(
         "edge_mask": edge_mask,
         "neighbor_indices": candidate_ids,
         "conflict_valid": conflict_valid,
+        "path_intersects": path_intersects,
         "ttc": ttc,
         "eta_gap": eta_gap,
         "overlap_risk": overlap_risk,

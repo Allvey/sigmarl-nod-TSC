@@ -73,3 +73,26 @@ def test_pair_features_are_directed_in_ego_coordinates():
     )
     assert result_0["features"][0, 0, 0] > 0
     assert result_1["features"][0, 0, 0] < 0
+
+
+def test_segment_intersection_is_detected_between_sparse_path_points():
+    positions = torch.tensor([[[-1.0, 0.0], [0.0, -1.0]]])
+    velocities = torch.zeros_like(positions)
+    paths = torch.tensor([[[[1.0, 0.0]], [[0.0, 1.0]]]])
+
+    result = build_directed_interactions(
+        positions,
+        velocities,
+        torch.zeros(1, 2),
+        paths,
+        ego_index=0,
+        sensing_range=3.0,
+        interaction_distance=0.1,
+        ttc_limit=2.0,
+        conflict_radius=0.01,
+        max_speed=1.0,
+    )
+
+    assert result["path_intersects"][0, 0]
+    assert result["conflict_valid"][0, 0]
+    assert result["edge_mask"][0, 0]

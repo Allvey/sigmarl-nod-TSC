@@ -168,7 +168,17 @@ def _load_nod_if_available(
     if not nod_manager.enabled or not os.path.exists(path_nod):
         return False
     checkpoint = torch.load(path_nod, map_location=parameters.device)
-    nod_manager.load_checkpoint(checkpoint, load_optimizer=load_optimizer)
+    loaded = nod_manager.load_checkpoint(
+        checkpoint, load_optimizer=load_optimizer
+    )
+    if not loaded:
+        print(
+            colored(
+                f"[WARN] {nod_manager.last_load_info}; starting NOD v2 fresh.",
+                "yellow",
+            )
+        )
+        return False
     print(colored(f"[INFO] Loaded NOD opinion model: {path_nod}", "blue"))
     return True
 
@@ -302,7 +312,11 @@ def mappo_cavs(parameters: Parameters):
         priority_module = None
 
     topology_manager = TopologyManager(parameters=parameters, scenario=scenario)
-    nod_manager = NODOpinionManager(parameters=parameters)
+    nod_manager = NODOpinionManager(
+        parameters=parameters,
+        relation_feature_dim=topology_manager.relation_dim,
+        action_dim=topology_manager.action_dim,
+    )
     scenario.nod_manager = nod_manager
     policy_parameter_ids = {id(parameter) for parameter in policy.parameters()}
     nod_parameter_ids = {id(parameter) for parameter in nod_manager.model.parameters()}
@@ -663,11 +677,6 @@ def mappo_cavs(parameters: Parameters):
                     params=priority_module.loss_module.critic_params,
                     target_params=priority_module.loss_module.target_critic_params,
                 )
-
-        # NOD phases 1-3 are trained from detached rollout fields with a
-        # dedicated optimizer.  No NOD tensor is inserted into PPO data.
-        last_nod_metrics = nod_manager.train_on_rollout(tensordict_data)
-        nod_metrics_list.append(dict(last_nod_metrics))
 
         # ---- 拓扑分支：生成 e_ij 标签并进行一次 BCE 验证训练 ----
         # 从 scenario.info() 中取出预置的结构化输入
@@ -1539,6 +1548,14 @@ def mappo_cavs(parameters: Parameters):
                     new_td_errors = compute_td_error(mini_batch_data, gamma=0.9)
                     mini_batch_data.set("td_error", new_td_errors)
                     replay_buffer.update_tensordict_priority(mini_batch_data)
+        # Train NOD only after topology and action-head updates.  NOD consumes
+        # their detached, id-aligned relation features and cannot alter PPO or
+        # topology behavior in phases 1-3.
+        last_nod_metrics = nod_manager.train_on_rollout(
+            tensordict_data, topology_manager=topology_manager
+        )
+        nod_metrics_list.append(dict(last_nod_metrics))
+
         collector.update_policy_weights_()  # Updates the policy weights if the policy of the data collector and the trained policy live on different devices
 
         # Logging
