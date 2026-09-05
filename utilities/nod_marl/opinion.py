@@ -258,7 +258,7 @@ def kl_objective(
 
 
 class NODOpinionModel(nn.Module):
-    """Topology-conditioned edge history and bounded directed opinions."""
+    """Physical pair-history encoder with bounded directed opinions."""
 
     evidence_dim = 5
     risk_dim = 6
@@ -268,8 +268,6 @@ class NODOpinionModel(nn.Module):
         pair_feature_dim: int,
         hidden_dim: int = 64,
         *,
-        relation_feature_dim: Optional[int] = None,
-        action_dim: int = 0,
         history_mode: str = "gru",
         bifurcation_gain: float = 2.0,
         observation_weight: float = 1.0,
@@ -282,15 +280,10 @@ class NODOpinionModel(nn.Module):
         risk_threshold: float = 1.25,
         min_log_sigma: float = -2.5,
         max_log_sigma: float = 0.0,
+        max_risk_weight: float = 1.0,
     ):
         super().__init__()
         self.pair_feature_dim = int(pair_feature_dim)
-        self.relation_feature_dim = int(
-            pair_feature_dim
-            if relation_feature_dim is None
-            else relation_feature_dim
-        )
-        self.action_dim = int(action_dim)
         self.history_mode = str(history_mode).lower()
         if self.history_mode not in {"gru", "none"}:
             raise ValueError("history_mode must be one of {'gru', 'none'}")
@@ -306,14 +299,13 @@ class NODOpinionModel(nn.Module):
         self.risk_threshold = float(risk_threshold)
         self.min_log_sigma = float(min_log_sigma)
         self.max_log_sigma = float(max_log_sigma)
+        self.max_risk_weight = float(max_risk_weight)
+        if self.max_risk_weight <= 0.75:
+            raise ValueError("max_risk_weight must be greater than 0.75")
 
-        # The current evidence is deliberately excluded from the recurrent
-        # input.  Otherwise the likelihood head could learn to copy the target
-        # it is meant to explain.  In the integrated path this input is the
-        # shared topology relation latent plus the neighbor-action prediction.
-        self.history = nn.GRUCell(
-            self.relation_feature_dim + self.action_dim, self.hidden_dim
-        )
+        # The history encoder consumes only the observation-derived physical
+        # pair vector. There is no topology latent or predicted-action branch.
+        self.history = nn.GRUCell(self.pair_feature_dim, self.hidden_dim)
         self.likelihood_head = nn.Sequential(
             nn.Linear(self.hidden_dim, self.hidden_dim),
             nn.Tanh(),
@@ -324,14 +316,14 @@ class NODOpinionModel(nn.Module):
             [0.75, 0.75, 0.50, 0.50, 0.50, 0.75], dtype=torch.float32
         )
         self.raw_risk_weights = nn.Parameter(
-            torch.log(torch.expm1(initial_risk_weights))
+            torch.logit(initial_risk_weights / self.max_risk_weight)
         )
 
     @property
     def risk_weights(self) -> Tensor:
         """Nonnegative weights make attention monotone in every risk input."""
 
-        return F.softplus(self.raw_risk_weights)
+        return self.max_risk_weight * torch.sigmoid(self.raw_risk_weights)
 
     @staticmethod
     def risk_components(pair_features: Tensor) -> Tensor:
@@ -432,9 +424,6 @@ class NODOpinionModel(nn.Module):
         ego_generations: Tensor,
         neighbor_generations: Tensor,
         initial_state: Optional[Dict[str, Tensor]] = None,
-        *,
-        relation_features: Optional[Tensor] = None,
-        predicted_actions: Optional[Tensor] = None,
     ) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
         """Unroll edge state with identity-aware reset and short-gap retention."""
 
@@ -444,31 +433,6 @@ class NODOpinionModel(nn.Module):
             raise ValueError(
                 f"Expected pair feature dim {self.pair_feature_dim}, "
                 f"got {pair_features.shape[-1]}"
-            )
-        if relation_features is None:
-            if self.relation_feature_dim != self.pair_feature_dim:
-                raise ValueError(
-                    "relation_features are required when relation_feature_dim "
-                    "differs from pair_feature_dim"
-                )
-            relation_features = pair_features
-        if relation_features.shape[:-1] != pair_features.shape[:-1]:
-            raise ValueError("relation_features must share [B,T,N,K] dimensions")
-        if relation_features.shape[-1] != self.relation_feature_dim:
-            raise ValueError(
-                f"Expected relation feature dim {self.relation_feature_dim}, "
-                f"got {relation_features.shape[-1]}"
-            )
-        if predicted_actions is None:
-            predicted_actions = pair_features.new_zeros(
-                *pair_features.shape[:-1], self.action_dim
-            )
-        if predicted_actions.shape[:-1] != pair_features.shape[:-1]:
-            raise ValueError("predicted_actions must share [B,T,N,K] dimensions")
-        if predicted_actions.shape[-1] != self.action_dim:
-            raise ValueError(
-                f"Expected predicted action dim {self.action_dim}, "
-                f"got {predicted_actions.shape[-1]}"
             )
         edge_mask = edge_mask.bool()
         state = (
@@ -508,8 +472,6 @@ class NODOpinionModel(nn.Module):
 
         for time_index in range(pair_features.shape[1]):
             current = pair_features[:, time_index]
-            current_relation = relation_features[:, time_index]
-            current_action = predicted_actions[:, time_index]
             active = edge_mask[:, time_index]
             ego_generation = (
                 ego_generations[:, time_index].unsqueeze(-1).expand_as(active)
@@ -533,9 +495,7 @@ class NODOpinionModel(nn.Module):
                 torch.zeros_like(evidence_vector),
             )
             evidence = evidence_vector.mean(dim=-1)
-            history_input = torch.cat(
-                [current_relation, current_action], dim=-1
-            )
+            history_input = current
             history_previous = (
                 torch.where(
                     retained.unsqueeze(-1), hidden, torch.zeros_like(hidden)

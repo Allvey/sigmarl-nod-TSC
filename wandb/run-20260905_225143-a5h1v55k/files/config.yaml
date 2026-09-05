@@ -1,0 +1,51 @@
+_wandb:
+    value:
+        cli_version: 0.26.1
+        e:
+            965ohexxelyrq70jwbqsfjd1hbzxv5k7:
+                apple:
+                    ecpuCores: 4
+                    gpuCores: 10
+                    macModel: Mac15,12
+                    memoryGb: 24
+                    name: Apple M3
+                    pcpuCores: 4
+                    ramTotalBytes: "25769803776"
+                    swapTotalBytes: "8589934592"
+                codePath: main_training.py
+                codePathLocal: main_training.py
+                cpu_count: 8
+                cpu_count_logical: 8
+                disk:
+                    /:
+                        total: "494384795648"
+                        used: "386313162752"
+                email: 532373844@qq.com
+                executable: /Users/zhangxiaotong/anaconda3/envs/sigmarl-nod/bin/python
+                git:
+                    commit: b253aee6e4b85408b622894d3f3bfb565a2623db
+                    remote: https://github.com/Allvey/sigmarl-nod-TSC.git
+                host: zhangxiaotongdeMacBook-Air.local
+                memory:
+                    total: "25769803776"
+                os: macOS-15.6.1-arm64-arm-64bit
+                program: /Users/zhangxiaotong/Code/sigmarl-nod-TSC/main_training.py
+                python: CPython 3.9.25
+                root: /Users/zhangxiaotong/Code/sigmarl-nod-TSC
+                startedAt: "2026-09-05T14:51:43.388237Z"
+                writerId: 965ohexxelyrq70jwbqsfjd1hbzxv5k7
+        m: []
+        python_version: 3.9.25
+        t:
+            "1":
+                - 1
+            "2":
+                - 1
+            "3":
+                - 2
+                - 13
+                - 61
+            "4": 3.9.25
+            "5": 0.26.1
+            "12": 0.26.1
+            "13": darwin-arm64

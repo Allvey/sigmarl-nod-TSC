@@ -1,5 +1,7 @@
 # SigmaRL Traffic 网络结构与维度说明
 
+> 历史快照：本文记录的是简化前的 Topology/动作预测版本，相关网络现已从有效代码中删除。当前可训练结构及实际维度请以 [MODEL_STRUCTURE.md](MODEL_STRUCTURE.md) 为准。
+
 本文档基于当前仓库源码和根目录 `config.json`，整理项目中各个神经网络模块的结构、隐藏层、输入输出维度。
 
 主要参考文件：
@@ -583,4 +585,3 @@ relative: 4 维 / 候选邻居
 ```text
 [B_total, 5, 2]
 ```
-

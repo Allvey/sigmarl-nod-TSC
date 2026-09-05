@@ -124,19 +124,12 @@ def test_short_edge_gap_retains_identity_and_marks_resume():
     assert outputs["learning_valid"][0, 2, 0, 0]
 
 
-def test_history_uses_relation_and_action_without_current_evidence_leakage():
-    model = NODOpinionModel(
-        pair_feature_dim=20,
-        relation_feature_dim=7,
-        action_dim=2,
-        hidden_dim=8,
-    )
+def test_history_consumes_direct_physical_pair_features():
+    model = NODOpinionModel(pair_feature_dim=20, hidden_dim=8)
     pair_a = torch.zeros(1, 2, 2, 1, 20)
     pair_b = pair_a.clone()
     pair_b[:, 1, :, :, 6] = 0.9
     pair_b[:, 1, :, :, 8] = 0.1
-    relation = torch.randn(1, 2, 2, 1, 7)
-    actions = torch.randn(1, 2, 2, 1, 2)
     edge_mask = torch.ones(1, 2, 2, 1, dtype=torch.bool)
     generations = torch.ones(1, 2, 2, dtype=torch.long)
     neighbor_generations = torch.ones(1, 2, 2, 1, dtype=torch.long)
@@ -146,20 +139,16 @@ def test_history_uses_relation_and_action_without_current_evidence_leakage():
         edge_mask,
         generations,
         neighbor_generations,
-        relation_features=relation,
-        predicted_actions=actions,
     )
     _, state_b = model.forward_sequence(
         pair_b,
         edge_mask,
         generations,
         neighbor_generations,
-        relation_features=relation,
-        predicted_actions=actions,
     )
 
-    assert model.history.input_size == 9
-    assert torch.allclose(state_a["hidden"], state_b["hidden"])
+    assert model.history.input_size == 20
+    assert not torch.allclose(state_a["hidden"], state_b["hidden"])
 
 
 def test_risk_attention_is_monotone_in_physical_risk_components():
@@ -180,15 +169,9 @@ def test_risk_attention_is_monotone_in_physical_risk_components():
 
 def test_history_can_be_disabled_without_removing_opinion_dynamics():
     model = NODOpinionModel(
-        pair_feature_dim=20,
-        relation_feature_dim=7,
-        action_dim=2,
-        hidden_dim=8,
-        history_mode="none",
+        pair_feature_dim=20, hidden_dim=8, history_mode="none"
     )
     pair = torch.zeros(1, 2, 2, 1, 20)
-    relation = torch.randn(1, 2, 2, 1, 7)
-    actions = torch.randn(1, 2, 2, 1, 2)
     edge_mask = torch.ones(1, 2, 2, 1, dtype=torch.bool)
     generations = torch.ones(1, 2, 2, dtype=torch.long)
     neighbor_generations = torch.ones(1, 2, 2, 1, dtype=torch.long)
@@ -198,8 +181,6 @@ def test_history_can_be_disabled_without_removing_opinion_dynamics():
         edge_mask,
         generations,
         neighbor_generations,
-        relation_features=relation,
-        predicted_actions=actions,
     )
 
     assert outputs["z"].shape == (1, 2, 2, 1)

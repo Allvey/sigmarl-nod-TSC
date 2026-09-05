@@ -1,5 +1,7 @@
 # SigmaRL Traffic 观测空间组成说明
 
+> 历史快照：本文记录的是带对手动作占位的旧观测结构。当前环境 observation 为 32 维，不再追加动作预测占位；当前 Actor 的完整 66 维输入见 [MODEL_STRUCTURE.md](MODEL_STRUCTURE.md)。
+
 本文档专门说明当前项目中智能体观测空间的组成、维度、坐标系和归一化方式。
 
 基于当前 `config.json`：
@@ -284,4 +286,3 @@ ego 局部坐标下的邻居顶点 / [1.6, 1.6]
 ```text
 distance_to_boundary / (lane_width * 3)
 ```
-

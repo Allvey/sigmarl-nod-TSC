@@ -1,138 +1,109 @@
-# SigmaRL 模型结构概览
+# 最初版本与当前版本网络结构对比
 
-- 目标：用于联网自动驾驶（CAVs）的分散式多智能体强化学习框架，集成优先级学习、拓扑关系学习与对手建模。
-- 基础库：TorchRL（多智能体模块、PPO、GAE、ProbabilisticActor）、VMAS（可微仿真）、TensorDict。
-- 核心组件：策略 Actor、价值 Critic、优先级模块、拓扑学习网络、邻居动作预测、对手建模与优先化动作传播。
+本文以根目录 `config.json` 的当前设置为准。训练和测试入口保持不变：
 
-## 组件总览
-- 主策略 Actor
-  - 使用 `MultiAgentMLP` 构建分散式策略网络，输出高斯分布的参数（均值与尺度）。
-  - 分布经 `TanhNormal` 采样，输出动作与 `log_prob`。
-- 价值 Critic
-  - 使用 `MultiAgentMLP` 构建中心化价值网络（MAPPO），输出每智能体状态价值。
-- 优先级模块（PriorityModule）
-  - 独立的优先级 Actor/Critic（结构同主网），学习“优先级得分”，供排序与动作传播使用。
-- 拓扑学习（TopologyLearner）
-  - 解码器堆栈编码智能体之间关系，MLP 头输出边关系 logits。
-- 邻居动作预测（TopologyActionPredictor）
-  - 将拓扑关系潜在向量映射为每邻居动作预测，用于对手建模的动作填充。
+```bash
+python main_training.py
+python main_testing.py
+```
 
-## 数据流与关键键
-- 观测键
-  - 基础观测：`("agents","observation")`
-  - 优先化传播期间的基础观测：`("agents","info","base_observation")`
-  - 对手建模的评估观测（critic）：`("agents","info","critic_observation")`
-- 拓扑相关键
-  - 结构化输入：`("agents","info","ego_observation")`、`("agents","info","neighbors_observation_flat")`、`("agents","info","relative_features")`
-  - 参考路径：`("agents","info","ref_local")`、`("agents","info","ref_neighbors_local")`
-  - 邻居索引与距离：`("agents","info","neighbors_indices")`、`("agents","info","neighbors_distance")`
-- 优先级排序输出（对手建模）
-  - 软标签排序：`("agents","info","soft_label_priority_ordering")`
-  - 随机排序：`("agents","info","random_priority_ordering")`
+## 1. 最初版本（任何 NOD 修改之前）
 
-## 主策略（Actor）
-- 网络结构
-  - `MultiAgentMLP(depth=2, num_cells=256, activation=tanh, share_params=True, centralised=False)`
-  - 输出维度：`2 * action_dim`（高斯 `loc/scale`），经 `NormalParamExtractor` 拆分。
-  - 分布：`TanhNormal`（边界由环境动作空间设定），返回 `log_prob`。
-- 代码位置
-  - `utilities/mappo_cavs.py:120-135`（Actor MLP + NormalParamExtractor）
-  - `utilities/mappo_cavs.py:139-146`（TensorDictModule 封装）
-  - `utilities/mappo_cavs.py:148-165`（ProbabilisticActor 配置）
+```text
+环境状态
+  │
+  ├─ 基础 observation：32 维
+  │    └─ 对手建模动作占位：2 个邻居 × 2 维动作
+  │
+  ├─ TopologyLearner
+  │    ├─ ego observation
+  │    ├─ neighbor observation
+  │    ├─ relative features
+  │    └─ 输出有向边概率，参与 BCE 训练和邻居选择
+  │
+  ├─ TopologyActionPredictor
+  │    └─ 复用拓扑表示，预测邻居动作并填充 Critic 观测尾部
+  │
+  └─ Actor / Critic
+       ├─ Actor：局部观测 → 256 → 256 → loc/scale → 二维动作
+       └─ Critic：带预测动作的集中式观测 → 256 → 256 → value
+```
 
-## 价值网络（Critic）
-- 网络结构
-  - `MultiAgentMLP(depth=2, num_cells=256, activation=tanh, share_params=True, centralised=True)`
-  - 输出维度：每智能体 1 个状态价值。
-- 输入选择
-  - 对手建模开启时使用 `("agents","info","critic_observation")`，否则与 Actor 相同观测。
-- 代码位置
-  - `utilities/mappo_cavs.py:168-180`（Critic MLP）
-  - `utilities/mappo_cavs.py:182-186`（TensorDictModule 封装）
-  - `utilities/mappo_cavs.py:113-118`（critic 观测键选择）
+这条路径同时维护策略、拓扑分类和动作预测三个学习目标，Topology 输出还会改变策略所看到的邻居集合。
 
-## 优先级模块（PriorityModule）
-- 优先级 Actor
-  - `MultiAgentMLP(depth=2, num_cells=256, activation=tanh, share_params=True, centralised=False)`
-  - 输出维度：`2 * 1`（优先级得分分布的 `loc/scale`）
-  - 通过 `ProbabilisticActor(TanhNormal)` 采样得分，返回 `sample_log_prob`
-- 优先级 Critic
-  - 结构同主 Critic，输出每智能体状态价值。
-- 损失与 GAE
-  - `ClipPPOLoss`（独立键集） + `make_value_estimator(GAE)`
-- 代码位置
-  - `utilities/helper_training.py:1029-1042`（优先级 Actor MLP + NormalParamExtractor）
-  - `utilities/helper_training.py:1044-1059`（ProbabilisticActor 配置）
-  - `utilities/helper_training.py:1061-1073`（优先级 Critic）
-  - `utilities/helper_training.py:1086-1114`（PPO Loss 与 GAE）
+## 2. 当前简化版本
 
-## 拓扑学习网络（TopologyLearner）
-- 解码器层（TopoDecoderLayer）
-  - 输入拼接：`q_ego`、`s_neighbors`、`r_relative`、`q_R_in`，两层线性 + `ReLU`，残差连接输出。
-- 解码器堆栈（TopoDecoder）
-  - 初始映射：`nn.Linear(d_rel, d_latent)`，随后堆叠若干 `TopoDecoderLayer`。
-- 拓扑头（TopologyHead）
-  - `MLP: d_latent → d_latent/2 → 1`，输出边关系 logits。
-- 代码位置
-  - `utilities/topology_module.py:21-44`（TopoDecoderLayer）
-  - `utilities/topology_module.py:50-63`（TopoDecoder）
-  - `utilities/topology_module.py:65-75`（TopologyHead）
+```text
+环境状态
+  │
+  ├─ 原始局部 observation：32 维 ─────────────────────────────┐
+  │                                                           │
+  ├─ 每条有向交互边的物理特征：20 维                           │
+  │    ├─ 相对位置、速度、朝向、距离                            │
+  │    ├─ TTC、冲突点、ETA 差、接近程度、重叠风险等             │
+  │    └─ 固定 agent identity + generation mask               │
+  │          │                                                 │
+  │          ▼                                                 │
+  │       GRUCell：20 → 64（`nod_history_mode="none"` 可关闭历史）
+  │          │
+  │          ├─ 6 维单调物理风险量
+  │          ├─ 1 维风险注意力
+  │          └─ 1 维有界意见 z
+  │          │
+  │          ▼
+  │       每边 context：64 + 6 + 1 + 1 = 72 维
+  │          │
+  │          ▼
+  │       LayerNorm → 72 → 64 → 32 → masked attention sum
+  │          │
+  │          └─ 32 维消息，逐元素限制在 [-0.1, 0.1]
+  │                                                           │
+  └──────────────────────┬────────────────────────────────────┘
+                         ▼
+       Actor 输入：[原始 observation 32，NOD 消息 32，上一步动作 2]
+                  = 66 维
+                         │
+                         ▼
+       分散式共享 Actor：66 → 256 → 256 → 4
+                         │                └─ loc 2 + scale 2
+                         ▼
+                  TanhNormal → 二维车辆动作
 
-## 邻居动作预测（TopologyActionPredictor）
-- 轻量动作头（NeighborActionHead）
-  - `MLP: d_latent → hidden → action_dim`，根据关系潜在向量预测邻居动作。
-- 参数共享/独立模式
-  - 支持复用拓扑解码器参数或构建同结构的独立解码器（默认独立，避免相互干扰）。
-- 管理器初始化
-  - `TopologyManager.ensure_initialized()` 构建 `TopologyLearner(d_latent=128, num_layers=2)` 与 `TopologyActionPredictor(action_dim=2)` 并设置优化器。
-- 代码位置
-  - `utilities/topology_module.py:104-111`（NeighborActionHead）
-  - `utilities/topology_module.py:123-209`（TopologyActionPredictor）
-  - `utilities/topology_module.py:224-251`（TopologyManager.ensure_initialized）
+       集中式 Critic：每车原始 observation 32 → 256 → 256 → value
+```
 
-## 对手建模（opponent_modeling）
-- 作用
-  - 若提供拓扑动作预测器，则用邻居动作预测填充智能体观测尾部；否则退化为策略一次前向的近邻动作填充。
-- 软标签优先级与随机优先级并行输出
-  - 生成软标签全序 `soft_label_priority_ordering` 与随机全序 `random_priority_ordering` 写入 `tensordict`。
-  - 控制台打印一组样例，便于对比。
-- 代码位置
-  - `utilities/helper_training.py:1443-1573`（对手建模主流程）
-  - `utilities/helper_training.py:1496-1527`（软标签优先级拓扑排序）
-  - `utilities/helper_training.py:1531-1537`（双排序写入与打印）
+当前有效网络中不存在 TopologyLearner、动作预测器和对手建模分支；策略邻居仍由原项目的最近邻观测逻辑产生，NOD 则使用独立的稳定有向物理边。
 
-## 优先化动作传播（prioritized_ap_policy）
-- 流程
-  - 生成智能体优先顺序（来源可选：优先级模块、随机、软标签）。
-  - 依次处理当前轮到的智能体，将已产生的邻居动作拼接到观测尾部，调用策略生成当前动作并回填。
-  - 完成全体智能体动作后，写回组合动作与观测。
-- 代码位置
-  - `utilities/helper_training.py:1588-1768`（函数主体）
-  - 软标签排序分支：`utilities/helper_training.py:1649-1689`
+## 3. 当前训练关系
 
-## 训练损失与优化
-- 主策略
-  - `ClipPPOLoss(actor, critic, clip_epsilon, entropy_coef, normalize_advantage=False)`：`utilities/mappo_cavs.py:381-388`
-  - 键设置 `reward/action/log_prob/value/done/terminated`：`utilities/mappo_cavs.py:389-397`
-  - `make_value_estimator(ValueEstimators.GAE, gamma, lmbda)`：`utilities/mappo_cavs.py:399-404`
-  - 优化器：`Adam(loss_module.parameters(), lr)`：`utilities/mappo_cavs.py:404`
-- 优先级策略
-  - 独立 `ClipPPOLoss` 与 `GAE`，键与学习率配置见：`utilities/helper_training.py:1086-1119`
-- 拓扑分支
-  - BCE：`binary_cross_entropy_with_logits(edge_logits, e_labels)`：`utilities/topology_module.py:300-308`
-  - 权重融合与训练循环集成：`utilities/mappo_cavs.py:542-559`
+```text
+PPO task loss
+  ├─ 更新 Actor MLP
+  ├─ 更新 32 维消息聚合器（独立较小学习率 5e-5）
+  └─ 更新集中式 Critic
 
-## 参考位置索引
-- 主策略 Actor/Critic
-  - `utilities/mappo_cavs.py:120-165`（Actor 组网与分布）
-  - `utilities/mappo_cavs.py:168-186`（Critic 组网）
-  - `utilities/mappo_cavs.py:381-404`（PPO + GAE + 优化器）
-- 优先级模块
-  - `utilities/helper_training.py:1008-1121`（优先级 Actor/Critic/PPO/GAE）
-- 拓扑学习与动作预测
-  - `utilities/topology_module.py:21-75`（解码器层、堆栈与头）
-  - `utilities/topology_module.py:123-209`（动作预测器）
-  - `utilities/topology_module.py:224-251`（初始化）
-- 对手建模与优先化传播
-  - `utilities/helper_training.py:1443-1573`（对手建模）
-  - `utilities/helper_training.py:1588-1768`（优先化动作传播）
+NOD auxiliary loss（默认每 10 个 rollout 更新一次）
+  ├─ 时序似然 NLL
+  ├─ 反事实风险标定 BCE
+  └─ 更新物理特征 GRU、似然头和有界风险权重
+```
+
+NOD 的循环状态在采集时按时间顺序推进，并以 detached context 存入 rollout。PPO 打乱 minibatch 时只重新计算无状态消息聚合器，不会按乱序重放 GRU。NOD 参数和 PPO 参数不共享梯度。
+
+## 4. 为缓解此前策略坍塌加入的约束
+
+- PPO 每批训练轮数由 60 降为 15。
+- NOD 默认每 10 个 rollout 更新一次，降低表示非平稳性。
+- 消息聚合器使用单独的 `5e-5` 学习率。
+- 32 维消息逐元素限制到 `[-0.1, 0.1]`。
+- 六个风险权重被限制在 `[0, 1]`，避免注意力权重持续无界增长。
+- Actor 始终直接保留原始 32 维物理观测，不依赖 NOD 消息才能行动。
+
+这些约束提高了训练稳定性的可控性，但最终性能仍需要用新的完整训练曲线判断。
+
+## 5. Checkpoint 兼容性
+
+- 原有训练、测试命令和 policy/critic 文件命名不变。
+- 旧 Actor checkpoint 会自动迁移可复用的 MLP 权重；新消息聚合器保持新初始化。
+- 旧版 NOD checkpoint 的输入合同不同，因此会被明确忽略并重新初始化。
+- 已存在的旧 Topology/动作预测 checkpoint 不会删除，但当前代码不再读取或写入它们。

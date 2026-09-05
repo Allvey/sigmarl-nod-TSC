@@ -81,14 +81,6 @@ DEFAULT_EXPLORATION_TYPE: ExplorationType = ExplorationType.RANDOM
 import warnings
 
 from utilities.constants import AGENTS
-from utilities.topology_labels import (
-    generate_soft_labels_full_graph,
-    break_cycles_min_cost,
-    enforce_transitivity,
-    complete_total_order,
-)
-
-
 def get_model_name(parameters):
     # model_name = f"nags{parameters.n_agents}_it{parameters.n_iters}_fpb{parameters.frames_per_batch}_tfrms{parameters.total_frames}_neps{parameters.num_epochs}_mnbsz{parameters.minibatch_size}_lr{parameters.lr}_mgn{parameters.max_grad_norm}_clp{parameters.clip_epsilon}_gm{parameters.gamma}_lmbda{parameters.lmbda}_etp{parameters.entropy_eps}_mstp{parameters.max_steps}_nenvs{parameters.num_vmas_envs}"
     model_name = f"reward{parameters.episode_reward_mean_current:.2f}"
@@ -224,22 +216,6 @@ class TransformedEnvCustom(TransformedEnv):
             if auto_cast_to_device:
                 tensordict = tensordict.to(policy_device, non_blocking=True)
 
-            # Possibly predict the actions of surrounding agents using opponent modeling
-            if (
-                self.base_env.scenario.parameters.is_using_opponent_modeling
-                and not self.base_env.scenario.parameters.is_testing_mode
-            ):
-                opponent_modeling(
-                    tensordict=tensordict,
-                    policy=policy,
-                    n_nearing_agents_observed=self.base_env.scenario.parameters.n_nearing_agents_observed,
-                    nearing_agents_indices=self.base_env.scenario.observations.nearing_agents_indices,
-                    action_predictor=getattr(
-                        self.base_env.scenario, "topology_action_predictor", None
-                    ),
-                    parameters=self.base_env.scenario.parameters,
-                )
-
             if (
                 self.base_env.scenario.parameters.is_using_prioritized_marl
                 and priority_module
@@ -316,22 +292,6 @@ class TransformedEnvCustom(TransformedEnv):
             if auto_cast_to_device:
                 tensordict_ = tensordict_.to(policy_device, non_blocking=True)
 
-            # Possibly predict the actions of surrounding agents using opponent modeling
-            if (
-                self.base_env.scenario.parameters.is_using_opponent_modeling
-                and not self.base_env.scenario.parameters.is_testing_mode
-            ):
-                opponent_modeling(
-                    tensordict=tensordict_,
-                    policy=policy,
-                    n_nearing_agents_observed=self.base_env.scenario.parameters.n_nearing_agents_observed,
-                    nearing_agents_indices=self.base_env.scenario.observations.nearing_agents_indices,
-                    action_predictor=getattr(
-                        self.base_env.scenario, "topology_action_predictor", None
-                    ),
-                    parameters=self.base_env.scenario.parameters,
-                )
-
             if (
                 self.base_env.scenario.parameters.is_using_prioritized_marl
                 and priority_module
@@ -347,34 +307,7 @@ class TransformedEnvCustom(TransformedEnv):
                 tensordict_ = policy(tensordict_)
             if auto_cast_to_device:
                 tensordict_ = tensordict_.to(env_device, non_blocking=True)
-            prev_td = tensordict_
             tensordict, tensordict_ = self.step_and_maybe_reset(tensordict_)
-            if (
-                self.base_env.scenario.parameters.is_using_opponent_modeling
-                and not self.base_env.scenario.parameters.is_testing_mode
-            ):
-                critic_obs = prev_td.get(
-                    ("agents", "info", "critic_observation"), default=None
-                )
-                if critic_obs is not None:
-                    tensordict[("agents", "info", "critic_observation")] = critic_obs
-                opponent_modeling(
-                    tensordict=tensordict_,
-                    policy=policy,
-                    n_nearing_agents_observed=self.base_env.scenario.parameters.n_nearing_agents_observed,
-                    nearing_agents_indices=self.base_env.scenario.observations.nearing_agents_indices,
-                    action_predictor=getattr(
-                        self.base_env.scenario, "topology_action_predictor", None
-                    ),
-                    parameters=self.base_env.scenario.parameters,
-                )
-                critic_obs_next = tensordict_.get(
-                    ("agents", "info", "critic_observation"), default=None
-                )
-                if critic_obs_next is not None:
-                    tensordict[
-                        ("next", "agents", "info", "critic_observation")
-                    ] = critic_obs_next
             tensordicts.append(tensordict)
             if i == max_steps - 1:
                 # we don't truncated as one could potentially continue the run
@@ -704,26 +637,6 @@ class SyncDataCollectorCustom(SyncDataCollector):
                 ):
                     self.env.rand_action(self._tensordict)
 
-                    # <Modification starts>
-                    # Possibly predict the actions of surrounding agents using opponent modeling
-                elif (
-                    self.env.base_env.scenario.parameters.is_using_opponent_modeling
-                    and not self.env.base_env.scenario.parameters.is_testing_mode
-                ):
-                    opponent_modeling(
-                        tensordict=self._tensordict,
-                        policy=self.policy,
-                        n_nearing_agents_observed=self.env.base_env.scenario.parameters.n_nearing_agents_observed,
-                        nearing_agents_indices=self.env.base_env.scenario.observations.nearing_agents_indices,
-                        action_predictor=getattr(
-                            self.env.base_env.scenario,
-                            "topology_action_predictor",
-                            None,
-                        ),
-                        parameters=self.env.base_env.scenario.parameters,
-                    )
-                    self.policy(self._tensordict)
-                # <Modification ends>
                 elif (
                     self.env.base_env.scenario.parameters.is_using_prioritized_marl
                     and self.priority_module
@@ -741,36 +654,6 @@ class SyncDataCollectorCustom(SyncDataCollector):
                 tensordict, tensordict_ = self.env.step_and_maybe_reset(
                     self._tensordict
                 )
-                if (
-                    self.env.base_env.scenario.parameters.is_using_opponent_modeling
-                    and not self.env.base_env.scenario.parameters.is_testing_mode
-                ):
-                    critic_obs = self._tensordict.get(
-                        ("agents", "info", "critic_observation"), default=None
-                    )
-                    if critic_obs is not None:
-                        tensordict[
-                            ("agents", "info", "critic_observation")
-                        ] = critic_obs
-                    opponent_modeling(
-                        tensordict=tensordict_,
-                        policy=self.policy,
-                        n_nearing_agents_observed=self.env.base_env.scenario.parameters.n_nearing_agents_observed,
-                        nearing_agents_indices=self.env.base_env.scenario.observations.nearing_agents_indices,
-                        action_predictor=getattr(
-                            self.env.base_env.scenario,
-                            "topology_action_predictor",
-                            None,
-                        ),
-                        parameters=self.env.base_env.scenario.parameters,
-                    )
-                    critic_obs_next = tensordict_.get(
-                        ("agents", "info", "critic_observation"), default=None
-                    )
-                    if critic_obs_next is not None:
-                        tensordict[
-                            ("next", "agents", "info", "critic_observation")
-                        ] = critic_obs_next
                 self._tensordict = tensordict_.set(
                     "collector", tensordict.get("collector").clone(False)
                 )
@@ -833,17 +716,15 @@ class Parameters:
         # num_envs = frames_per_batch / max_steps
         # total_frames = frames_per_batch * n_iters
         # sub_batch_size = frames_per_batch // minibatch_size
-        num_epochs: int = 60,  # Optimization steps per batch of data collected
+        num_epochs: int = 15,  # Optimization steps per batch of data collected
         minibatch_size: int = 512,  # Size of the mini-batches in each optimization step (2**9 - 2**12?)
         lr: float = 2e-4,  # Learning rate
-        lr_action_predictor: float = None,  # Learning rate for action predictor head; defaults to lr if None
         lr_min: float = 1e-5,  # Minimum learning rate (used for scheduling of learning rate)
         max_grad_norm: float = 1.0,  # Maximum norm for the gradients
         clip_epsilon: float = 0.2,  # Clip value for PPO loss
         gamma: float = 0.99,  # Discount factor from 0 to 1. A greater value corresponds to a better farsight
         lmbda: float = 0.9,  # lambda for generalised advantage estimation
         entropy_eps: float = 1e-4,  # Coefficient of the entropy term in the PPO loss
-        topology_loss_weight: float = 0.5,  # Weight to integrate topology BCE into PPO total loss
         max_steps: int = 128,  # Episode steps before done
         total_frames: int = None,  # Total frame for one training, equals `frames_per_batch * n_iters`
         num_vmas_envs: int = None,  # Number of vectorized environments
@@ -863,11 +744,8 @@ class Parameters:
         n_steps_stored: int = 10,  # Store previous `n_steps_stored` steps of states
         # Observation
         n_points_short_term: int = 3,  # Number of points that build a short-term reference path
-        # When enabled, prepend current position to short-term refs for topology
-        is_append_current_pos_to_short_refs_for_topology: bool = True,
         is_partial_observation: bool = True,  # Whether to enable partial observation
         n_nearing_agents_observed: int = 2,  # Number of nearing agents to be observed (consider limited sensor range)
-        n_topology_nearing_agents_observed: int = None,  # Number of nearing agents to be observed by topology network (can be larger than policy)
         # Parameters for ablation studies
         is_ego_view: bool = True,  # Ego view or bird view
         is_apply_mask: bool = True,  # Whether to mask distant agents
@@ -878,16 +756,17 @@ class Parameters:
         is_add_noise: bool = True,  # Whether to add noise to observations
         is_observe_ref_path_other_agents: bool = False,  # Whether to observe the reference paths of other agents
         is_use_mtv_distance: bool = True,  # Whether to use MTV-based (Minimum Translation Vector) distance or c2c-based (center-to-center) distance.
-        # Topology-based neighbor selection (policy-side)
-        use_topology_neighbor_selection: bool = False,  # Enable using topology learner to select policy neighbors
-        topology_selection_threshold: float = 0.5,  # Probability threshold for selecting neighbors
         # NOD opinion model and Stage-4 opinion-conditioned actor
         is_using_nod_opinion: bool = True,
         is_using_nod_actor: bool = True,
         nod_message_dim: int = 32,
         nod_message_hidden_dim: int = 64,
+        nod_message_scale: float = 0.1,
+        nod_message_lr: float = 5e-5,
         nod_hidden_dim: int = 64,
         nod_lr: float = 1e-3,
+        nod_update_interval: int = 10,
+        nod_max_risk_weight: float = 1.0,
         nod_tau: float = 0.25,
         nod_bifurcation_gain: float = 2.0,
         nod_observation_weight: float = 1.0,
@@ -948,7 +827,6 @@ class Parameters:
         is_save_agent_speed: bool = False,
         agent_speed_log_path: str = None,
         agent_speed_log_interval: int = 1,
-        is_using_opponent_modeling: bool = False,  # Whether to use opponent modeling to predict the actions of other agents
         is_using_prioritized_marl: bool = False,  # Whether to use prioritized MARL and action propagation.
         prioritization_method: str = "marl",  # Which method to use for generating priority ranks (options: {"marl", "random"}). Applicable only for prioritized MARL scenarios.
     ):
@@ -971,17 +849,12 @@ class Parameters:
         self.num_epochs = num_epochs
         self.minibatch_size = minibatch_size
         self.lr = lr
-        # Action predictor learning rate defaults to main lr when not provided
-        self.lr_action_predictor = (
-            lr_action_predictor if lr_action_predictor is not None else lr
-        )
         self.lr_min = lr_min
         self.max_grad_norm = max_grad_norm
         self.clip_epsilon = clip_epsilon
         self.gamma = gamma
         self.lmbda = lmbda
         self.entropy_eps = entropy_eps
-        self.topology_loss_weight = topology_loss_weight
         self.max_steps = max_steps
 
         self.scenario_type = scenario_type
@@ -1001,19 +874,10 @@ class Parameters:
         self.is_continue_train = is_continue_train
 
         self.n_points_short_term = n_points_short_term
-        self.is_append_current_pos_to_short_refs_for_topology = (
-            is_append_current_pos_to_short_refs_for_topology
-        )
         # Observation
         self.is_partial_observation = is_partial_observation
         self.n_steps_stored = n_steps_stored
         self.n_nearing_agents_observed = n_nearing_agents_observed
-        # If topology-specific neighbor count is not provided, default to policy's K
-        self.n_topology_nearing_agents_observed = (
-            n_topology_nearing_agents_observed
-            if n_topology_nearing_agents_observed is not None
-            else n_nearing_agents_observed
-        )
         self.is_observe_distance_to_agents = is_observe_distance_to_agents
 
         self.is_testing_mode = is_testing_mode
@@ -1027,15 +891,16 @@ class Parameters:
         self.is_ego_view = is_ego_view
         self.is_apply_mask = is_apply_mask
         self.is_use_mtv_distance = is_use_mtv_distance
-        # Topology-based neighbor selection controls
-        self.use_topology_neighbor_selection = use_topology_neighbor_selection
-        self.topology_selection_threshold = topology_selection_threshold
         self.is_using_nod_opinion = is_using_nod_opinion
         self.is_using_nod_actor = is_using_nod_actor
         self.nod_message_dim = nod_message_dim
         self.nod_message_hidden_dim = nod_message_hidden_dim
+        self.nod_message_scale = nod_message_scale
+        self.nod_message_lr = nod_message_lr
         self.nod_hidden_dim = nod_hidden_dim
         self.nod_lr = nod_lr
+        self.nod_update_interval = max(1, int(nod_update_interval))
+        self.nod_max_risk_weight = nod_max_risk_weight
         self.nod_tau = nod_tau
         self.nod_bifurcation_gain = nod_bifurcation_gain
         self.nod_observation_weight = nod_observation_weight
@@ -1101,7 +966,6 @@ class Parameters:
 
         self.cpm_scenario_probabilities = cpm_scenario_probabilities
 
-        self.is_using_opponent_modeling = is_using_opponent_modeling
         self.is_using_prioritized_marl = is_using_prioritized_marl
 
         self.prioritization_method = prioritization_method
@@ -1466,8 +1330,6 @@ def save(
     critic=None,
     priority_policy=None,
     priority_critic=None,
-    topology_model=None,
-    topology_action_predictor=None,
     nod_checkpoint=None,
 ):
     # Get paths
@@ -1531,21 +1393,6 @@ def save(
                 torch.save(priority_policy.state_dict(), PATH_PRIORITY_POLICY)
                 torch.save(priority_critic.state_dict(), PATH_PRIORITY_CRITIC)
 
-        # Save topology model if provided
-        if topology_model is not None:
-            PATH_TOPOLOGY = (
-                parameters.where_to_save + parameters.model_name + "_topology.pth"
-            )
-            torch.save(topology_model.state_dict(), PATH_TOPOLOGY)
-
-        if topology_action_predictor is not None:
-            PATH_ACTION_PREDICTOR = (
-                parameters.where_to_save
-                + parameters.model_name
-                + "_action_predictor.pth"
-            )
-            torch.save(topology_action_predictor.state_dict(), PATH_ACTION_PREDICTOR)
-
         # NOD is stored as a sidecar so existing policy/critic checkpoint files
         # and all external load commands remain backward compatible.
         if nod_checkpoint is not None:
@@ -1598,209 +1445,6 @@ def compute_td_error(tensordict_data: TensorDict, gamma=0.9):
     )  # For numerical stability
 
     return td_error_average_over_agents
-
-
-def opponent_modeling(
-    tensordict,
-    policy,
-    n_nearing_agents_observed,
-    nearing_agents_indices,
-    noise_percentage: float = 0,
-    action_predictor=None,
-    parameters=None,
-):
-    """
-    Opponent modeling for multi-agent training.
-
-    Priority:
-    - If a topology-based `action_predictor` is provided and the required info
-      tensors exist in `tensordict`, use it to predict neighbor actions and
-      append them to each ego agent's observation.
-    - Otherwise, fall back to the original scheme: run the policy once to get
-      tentative actions for all agents, then append neighbors' actions to ego
-      observations.
-
-    Reference: Raileanu et al., ICML 2018.
-    """
-
-    # Determine which observation field to update
-    obs_key = (
-        get_observation_key(parameters)
-        if parameters is not None
-        else ("agents", "observation")
-    )
-
-    # Choose sample (env and agent) to inspect
-    env_idx = 0
-    ego_idx = 0
-    try:
-        if parameters is not None and hasattr(
-            parameters, "visualize_observed_neighbors_agent_index"
-        ):
-            ego_idx = int(parameters.visualize_observed_neighbors_agent_index)
-    except Exception:
-        pass
-
-    if action_predictor is not None:
-        ego_obs_all = tensordict.get(("agents", "info", "ego_observation"))
-        neighbors_flat_all = tensordict.get(
-            ("agents", "info", "neighbors_observation_flat"), default=None
-        )
-        relative_feats_all = tensordict.get(
-            ("agents", "info", "relative_features"), default=None
-        )
-
-        if (
-            ego_obs_all is not None
-            and neighbors_flat_all is not None
-            and relative_feats_all is not None
-        ):
-            B, N, D_ego = ego_obs_all.shape
-            # Clamp ego_idx to valid range
-            ego_idx = max(0, min(ego_idx, N - 1))
-            K = int(n_nearing_agents_observed)
-            D_nei = neighbors_flat_all.shape[-1] // K
-            d_rel = relative_feats_all.shape[-1]
-
-            ego_b = ego_obs_all.contiguous().view(B * N, D_ego)
-            nei_b = neighbors_flat_all.contiguous().view(B * N, K, D_nei)
-            rel_b = relative_feats_all.contiguous().view(B * N, K, d_rel)
-
-            # Capture observation before modification for one sample
-            obs_before_one = tensordict[obs_key][env_idx, ego_idx].clone()
-
-            pred_actions = action_predictor(ego_b, nei_b, rel_b)  # [BN, K, A]
-            A = pred_actions.shape[-1]
-
-            # if noise_percentage != 0:
-            #     noise_std_speed = AGENTS["max_speed"] * noise_percentage
-            #     noise_std_steering = math.radians(AGENTS["max_steering"]) * noise_percentage
-            #     # 仅支持动作维为2（速度、转向）的情况，与现有观测布局一致
-            #     if A >= 2:
-            #         noise_speed = torch.randn_like(pred_actions[..., 0]) * noise_std_speed
-            #         noise_steer = torch.randn_like(pred_actions[..., 1]) * noise_std_steering
-            #         pred_actions = pred_actions.clone()
-            #         pred_actions[..., 0] = pred_actions[..., 0] + noise_speed
-            #         pred_actions[..., 1] = pred_actions[..., 1] + noise_steer
-
-            sel_idx = tensordict.get(
-                ("agents", "info", "topology_selected_indices"), default=None
-            )
-            if sel_idx is None:
-                sel_idx = tensordict.get(
-                    ("agents", "info", "neighbors_indices"), default=None
-                )
-            if sel_idx is None and nearing_agents_indices is not None:
-                sel_idx = nearing_agents_indices
-            device = ego_obs_all.device
-            # order = torch.stack([torch.randperm(N, device=device) for _ in range(B)])
-            ref_local_all = tensordict.get(
-                ("agents", "info", "ref_local"), default=None
-            )
-            Bn, Nn, D = ref_local_all.shape
-            T = D // 2
-            short_term_all = ref_local_all.view(Bn, Nn, T, 2).to(device)
-            P_full = generate_soft_labels_full_graph(short_term_all)
-            P_processed, _ = break_cycles_min_cost(P_full, eps_neutralize=0.02)
-            P_trans = enforce_transitivity(
-                P_processed, eps_neutralize=0.02, gamma=0.5, delta=1e-3
-            )
-            P_final = complete_total_order(
-                P_trans, eps_neutralize=0.02, gamma=0.5, delta=1e-3
-            )
-            orders = []
-            thr = 0.5 + 1e-6
-            for b in range(Bn):
-                P_b = P_final[b]
-                indeg = [0] * Nn
-                adj = [[] for _ in range(Nn)]
-                for i in range(Nn):
-                    for j in range(Nn):
-                        if i == j:
-                            continue
-                        if float(P_b[i, j].item()) > thr:
-                            indeg[j] += 1
-                            adj[i].append(j)
-                q = sorted([i for i in range(Nn) if indeg[i] == 0])
-                ord_env = []
-                while q:
-                    u = q.pop(0)
-                    ord_env.append(u)
-                    for v in adj[u]:
-                        indeg[v] -= 1
-                        if indeg[v] == 0:
-                            idxs = q + [v]
-                            q = sorted(idxs)
-                if len(ord_env) < Nn:
-                    rest = [i for i in range(Nn) if i not in ord_env]
-                    ord_env += sorted(rest)
-                orders.append(torch.tensor(ord_env, device=device, dtype=torch.int64))
-                order = torch.stack(orders, dim=0)
-            pos = torch.zeros_like(order)
-            # pos.scatter_(1, order, torch.arange(N, device=device).unsqueeze(0).expand(B, N))
-            pos.scatter_(
-                1,
-                order,
-                torch.arange(order.size(1), device=device)
-                .unsqueeze(0)
-                .expand(order.size(0), order.size(1)),
-            )
-            random_orders = torch.stack(
-                [torch.randperm(Nn, device=device) for _ in range(Bn)], dim=0
-            )
-            tensordict[("agents", "info", "soft_label_priority_ordering")] = order
-            tensordict[("agents", "info", "random_priority_ordering")] = random_orders
-            # print(
-            #     "[opponent_modeling] soft_label_order:",
-            #     order[env_idx].detach().cpu().tolist(),
-            #     "random_order:",
-            #     random_orders[env_idx].detach().cpu().tolist(),
-            # )
-            if isinstance(sel_idx, torch.Tensor):
-                sel_idx_long = sel_idx.to(torch.int64)
-                valid_mask = sel_idx_long.ge(0)
-                pos_exp = pos.unsqueeze(-1).expand(B, N, K)
-                sel_idx_clamped = sel_idx_long.clamp(min=0)
-                nei_pos = torch.gather(pos_exp, 1, sel_idx_clamped)
-                ego_pos = pos.unsqueeze(-1).expand_as(nei_pos)
-                gate = ego_pos.gt(nei_pos).to(pred_actions.dtype)
-                gate = gate * valid_mask.to(pred_actions.dtype)
-                pred_actions_4d = pred_actions.view(B, N, K, A)
-                pred_actions_4d = pred_actions_4d * gate.unsqueeze(-1)
-                pred_flat = pred_actions_4d.contiguous().view(B, N, K * A)
-            else:
-                pred_flat = pred_actions.contiguous().view(B, N, K * A)
-
-            obs_base = tensordict[obs_key]
-            obs_actor = obs_base.clone()
-            obs_actor[..., -K * A :] = 0
-            obs_critic = obs_base.clone()
-            obs_critic[..., -K * A :] = pred_flat
-            tensordict[obs_key] = obs_actor
-            tensordict[("agents", "info", "critic_observation")] = obs_critic
-            # used_predictor = True
-            # Prepare debug info for a single sample
-            bn_index = env_idx * N + ego_idx
-            pred_one = pred_actions[bn_index].detach().cpu()
-            obs_after_one = tensordict[obs_key][env_idx, ego_idx].detach().cpu()
-            # print("[opponent_modeling] Using topology_action_predictor to populate neighbor actions.")
-            # print(f"  Sample env={env_idx}, agent={ego_idx}, K={K}, A={A}")
-            # print(f"  Before obs (len={obs_before_one.numel()}): {obs_before_one.detach().cpu().numpy()}")
-            # print(f"  Neighbor actions predicted (shape=[{K},{A}]): {pred_one.numpy()}")
-            # print(f"  After  obs (len={obs_after_one.numel()}): {obs_after_one.numpy()}")
-        else:
-            K = int(n_nearing_agents_observed)
-            A = AGENTS["n_actions"]
-            obs_base = tensordict[obs_key]
-            obs_actor = obs_base.clone()
-            obs_actor[..., -K * A :] = 0
-            tensordict[obs_key] = obs_actor
-            tensordict[("agents", "info", "critic_observation")] = obs_actor.clone()
-            print(
-                "[opponent_modeling] Missing info tensors for predictor; using zero tail for actor and critic."
-            )
-
-    return tensordict
 
 
 def get_observation_key(parameters):
@@ -1876,51 +1520,11 @@ def prioritized_ap_policy(
             [torch.randperm(n_agents) for _ in range(n_envs)]
         )
     elif prioritization_method.lower() == "soft_label":
-        ref_local_all = tensordict.get(("agents", "info", "ref_local"), default=None)
-        if ref_local_all is not None:
-            Bn, Nn, D = ref_local_all.shape
-            T = D // 2
-            short_term_all = ref_local_all.view(Bn, Nn, T, 2)
-            P_full = generate_soft_labels_full_graph(short_term_all)
-            P_processed, _ = break_cycles_min_cost(P_full, eps_neutralize=0.02)
-            P_trans = enforce_transitivity(
-                P_processed, eps_neutralize=0.02, gamma=0.5, delta=1e-3
-            )
-            P_final = complete_total_order(
-                P_trans, eps_neutralize=0.02, gamma=0.5, delta=1e-3
-            )
-            thr = 0.5 + 1e-6
-            ordering_list = []
-            for b in range(Bn):
-                P_b = P_final[b]
-                indeg = [0] * Nn
-                adj = [[] for _ in range(Nn)]
-                for i in range(Nn):
-                    for j in range(Nn):
-                        if i == j:
-                            continue
-                        if float(P_b[i, j].item()) > thr:
-                            indeg[j] += 1
-                            adj[i].append(j)
-                q = sorted([i for i in range(Nn) if indeg[i] == 0])
-                ord_env = []
-                while q:
-                    u = q.pop(0)
-                    ord_env.append(u)
-                    for v in adj[u]:
-                        indeg[v] -= 1
-                        if indeg[v] == 0:
-                            idxs = q + [v]
-                            q = sorted(idxs)
-                if len(ord_env) < Nn:
-                    rest = [i for i in range(Nn) if i not in ord_env]
-                    ord_env += sorted(rest)
-                ordering_list.append(torch.tensor(ord_env, dtype=torch.int64))
-            priority_ordering = torch.stack(ordering_list, dim=0)
-        else:
-            priority_ordering = torch.stack(
-                [torch.randperm(n_agents) for _ in range(n_envs)]
-            )
+        # The legacy topology-label ranker has been removed. Preserve this
+        # historical option as deterministic API compatibility via random AP.
+        priority_ordering = torch.stack(
+            [torch.randperm(n_agents) for _ in range(n_envs)]
+        )
 
     # Temporary tensors to store intermediate observations and combined results
     temp_obs = torch.zeros(n_envs, n_agents, obs_dim)

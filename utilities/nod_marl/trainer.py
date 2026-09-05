@@ -1,4 +1,4 @@
-"""Independent sequence training for topology-conditioned NOD opinions."""
+"""Independent sequence training for observation-derived NOD opinions."""
 
 from __future__ import annotations
 
@@ -59,24 +59,15 @@ def _expected_calibration_error(
 class NODOpinionManager:
     """Owns NOD state/parameters without sharing gradients or RNG with PPO."""
 
-    checkpoint_version = 2
+    checkpoint_version = 3
 
     def __init__(
         self,
         parameters,
         pair_feature_dim: int = NOD_PAIR_FEATURE_DIM,
-        *,
-        relation_feature_dim: Optional[int] = None,
-        action_dim: int = 0,
     ):
         self.parameters = parameters
         self.enabled = bool(getattr(parameters, "is_using_nod_opinion", True))
-        self.relation_feature_dim = int(
-            pair_feature_dim
-            if relation_feature_dim is None
-            else relation_feature_dim
-        )
-        self.action_dim = int(action_dim)
         self.n_neighbors = max(1, int(getattr(parameters, "n_agents", 2)) - 1)
         dt = float(parameters.dt)
         tau = float(getattr(parameters, "nod_tau", 0.25))
@@ -99,8 +90,6 @@ class NODOpinionManager:
         try:
             self.model = NODOpinionModel(
                 pair_feature_dim=pair_feature_dim,
-                relation_feature_dim=self.relation_feature_dim,
-                action_dim=self.action_dim,
                 history_mode=str(getattr(parameters, "nod_history_mode", "gru")),
                 hidden_dim=int(getattr(parameters, "nod_hidden_dim", 64)),
                 bifurcation_gain=bifurcation_gain,
@@ -126,6 +115,9 @@ class NODOpinionManager:
                     getattr(parameters, "nod_min_log_sigma", -2.5)
                 ),
                 max_log_sigma=float(getattr(parameters, "nod_max_log_sigma", 0.0)),
+                max_risk_weight=float(
+                    getattr(parameters, "nod_max_risk_weight", 1.0)
+                ),
             ).to(parameters.device)
         finally:
             torch.random.set_rng_state(cpu_rng_state)
@@ -156,9 +148,8 @@ class NODOpinionManager:
     def online_context_dim(self) -> int:
         """Detached per-edge features consumed by the PPO message encoder."""
 
-        # NOD hidden + predicted neighbor action + physical risk vector
-        # + risk attention + bounded opinion + topology edge probability.
-        return self.model.hidden_dim + self.action_dim + self.model.risk_dim + 3
+        # NOD hidden + physical risk vector + risk attention + bounded opinion.
+        return self.model.hidden_dim + self.model.risk_dim + 2
 
     @staticmethod
     def _online_state_matches(
@@ -173,7 +164,7 @@ class NODOpinionManager:
         )
 
     @torch.no_grad()
-    def online_step(self, tensordict, topology_manager=None):
+    def online_step(self, tensordict):
         """Advance NOD exactly once from the current, causally available frame.
 
         The returned tensors are detached rollout context. PPO can shuffle them
@@ -181,7 +172,7 @@ class NODOpinionManager:
         recurrent NOD dynamics in a different temporal order.
         """
 
-        if not self.enabled or topology_manager is None:
+        if not self.enabled:
             return None
         pair_features = self._get_rollout_tensor(tensordict, "nod_pair_features")
         edge_mask = self._get_rollout_tensor(tensordict, "nod_edge_mask")
@@ -215,16 +206,6 @@ class NODOpinionManager:
         if ego_generations.ndim == 3 and ego_generations.shape[-1] == 1:
             ego_generations = ego_generations.squeeze(-1)
         neighbor_generations = neighbor_generations.detach().long()
-        encoded = topology_manager.encode_nod_inputs(
-            tensordict, neighbor_indices
-        )
-        if encoded is None:
-            return None
-
-        relation_features = encoded["relation_features"].detach()
-        predicted_actions = encoded["predicted_actions"].detach()
-        topology_probability = encoded["edge_probability"].detach()
-        edge_mask = edge_mask & encoded["available"].detach().bool()
         if not self._online_state_matches(self.online_state, pair_features):
             self.reset_online_state()
 
@@ -235,18 +216,14 @@ class NODOpinionManager:
             ego_generations.unsqueeze(1),
             neighbor_generations.unsqueeze(1),
             initial_state=self.online_state,
-            relation_features=relation_features.unsqueeze(1),
-            predicted_actions=predicted_actions.unsqueeze(1),
         )
         self.online_state = _detach_state(state)
         edge_context = torch.cat(
             [
                 state["hidden"],
-                predicted_actions,
                 self.model.risk_components(pair_features),
                 outputs["attention"][:, 0].unsqueeze(-1),
                 outputs["z"][:, 0].unsqueeze(-1),
-                topology_probability.unsqueeze(-1),
             ],
             dim=-1,
         )
@@ -255,7 +232,6 @@ class NODOpinionManager:
             "edge_mask": edge_mask.detach(),
             "opinion": outputs["z"][:, 0].detach(),
             "risk_attention": outputs["attention"][:, 0].detach(),
-            "topology_probability": topology_probability.detach(),
         }
 
     def _losses(
@@ -295,8 +271,8 @@ class NODOpinionManager:
         )
         return loss, nll, calibration, brier, dynamics_valid, calibration_valid
 
-    def train_on_rollout(self, tensordict, topology_manager=None) -> Dict[str, float]:
-        """Train NOD on ordered rollout sequences with detached shared latents."""
+    def train_on_rollout(self, tensordict) -> Dict[str, float]:
+        """Train NOD directly on ordered physical interaction sequences."""
 
         if not self.enabled:
             self.last_metrics = {"enabled": 0.0}
@@ -337,34 +313,6 @@ class NODOpinionManager:
         neighbor_generations = neighbor_generations.detach().long()
         positions = positions.detach()
         velocities = velocities.detach()
-
-        encoded = (
-            topology_manager.encode_nod_inputs(tensordict, neighbor_indices)
-            if topology_manager is not None
-            else None
-        )
-        if encoded is None:
-            # Standalone/unit-test fallback. The integrated configuration uses
-            # the topology manager and therefore never duplicates this encoder.
-            if (
-                self.relation_feature_dim != pair_features.shape[-1]
-                or self.action_dim != 0
-            ):
-                self.last_metrics = {
-                    "enabled": 1.0,
-                    "missing_topology_features": 1.0,
-                }
-                return self.last_metrics
-            relation_features = pair_features
-            predicted_actions = pair_features.new_zeros(
-                *pair_features.shape[:-1], 0
-            )
-            representation_available = torch.ones_like(edge_mask)
-        else:
-            relation_features = encoded["relation_features"].detach()
-            predicted_actions = encoded["predicted_actions"].detach()
-            representation_available = encoded["available"].detach().bool()
-        edge_mask = edge_mask & representation_available
 
         labels = build_counterfactual_labels(
             positions,
@@ -421,12 +369,6 @@ class NODOpinionManager:
                     neighbor_generation_chunk = neighbor_generations.index_select(
                         0, env_ids
                     )[:, time_slice]
-                    relation_chunk = relation_features.index_select(
-                        0, env_ids
-                    )[:, time_slice]
-                    action_chunk = predicted_actions.index_select(
-                        0, env_ids
-                    )[:, time_slice]
                     label_chunk = {
                         key: value.index_select(0, env_ids)[:, time_slice]
                         for key, value in labels.items()
@@ -437,8 +379,6 @@ class NODOpinionManager:
                         ego_generation_chunk,
                         neighbor_generation_chunk,
                         initial_state=state,
-                        relation_features=relation_chunk,
-                        predicted_actions=action_chunk,
                     )
                     loss, _, _, _, dynamics_valid, calibration_valid = self._losses(
                         outputs, label_chunk, mask_chunk
@@ -466,8 +406,6 @@ class NODOpinionManager:
                 ego_generations,
                 neighbor_generations,
                 initial_state=None,
-                relation_features=relation_features,
-                predicted_actions=predicted_actions,
             )
             loss, nll, calibration, brier, dynamics_valid, calibration_valid = (
                 self._losses(outputs, labels, edge_mask)
@@ -541,9 +479,6 @@ class NODOpinionManager:
             ),
             "edge_count": float(edge_mask.sum()),
             "edge_density": float(edge_mask.float().mean()),
-            "topology_relation_coverage": float(
-                representation_available.float().mean()
-            ),
             "counterfactual_valid_ratio": float(
                 calibration_valid.sum().float() / edge_count
             ),
@@ -589,8 +524,6 @@ class NODOpinionManager:
         return {
             "version": self.checkpoint_version,
             "pair_feature_dim": self.model.pair_feature_dim,
-            "relation_feature_dim": self.model.relation_feature_dim,
-            "action_dim": self.model.action_dim,
             "history_mode": self.model.history_mode,
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
@@ -606,7 +539,7 @@ class NODOpinionManager:
         )
         if version is not None and int(version) < self.checkpoint_version:
             self.last_load_info = (
-                "legacy NOD checkpoint ignored because topology-conditioned "
+                "legacy NOD checkpoint ignored because direct physical-pair "
                 "history has a different input contract"
             )
             self.reset_online_state()

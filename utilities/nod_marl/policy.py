@@ -21,10 +21,20 @@ NOD_ACTOR_ATTENTION_KEY = ("agents", "info", "nod_actor_message_attention")
 class NODMessageAggregator(nn.Module):
     """Shared edge encoder followed by masked, permutation-invariant attention."""
 
-    def __init__(self, context_dim: int, message_dim: int, hidden_dim: int):
+    def __init__(
+        self,
+        context_dim: int,
+        message_dim: int,
+        hidden_dim: int,
+        message_scale: float = 0.1,
+    ):
         super().__init__()
         self.context_dim = int(context_dim)
         self.message_dim = int(message_dim)
+        self.message_scale = float(message_scale)
+        self.context_norm = nn.LayerNorm(
+            self.context_dim, elementwise_affine=False
+        )
         self.edge_encoder = nn.Sequential(
             nn.Linear(self.context_dim, int(hidden_dim)),
             nn.Tanh(),
@@ -43,7 +53,7 @@ class NODMessageAggregator(nn.Module):
             raise ValueError("edge_context and edge_mask dimensions do not match")
 
         edge_mask = edge_mask.bool()
-        edge_messages = self.edge_encoder(edge_context)
+        edge_messages = self.edge_encoder(self.context_norm(edge_context))
         logits = self.score(edge_messages).squeeze(-1)
         valid_any = edge_mask.any(dim=-1, keepdim=True)
         safe_logits = logits.masked_fill(~edge_mask, -torch.inf)
@@ -54,6 +64,9 @@ class NODMessageAggregator(nn.Module):
         aggregate = torch.where(
             valid_any, aggregate, torch.zeros_like(aggregate)
         )
+        # A fixed bound prevents a moving NOD representation from gradually
+        # dominating the direct physical observation received by the Actor.
+        aggregate = self.message_scale * torch.tanh(aggregate)
         return aggregate, weights
 
 
@@ -71,16 +84,17 @@ class NODActorInputModule(TensorDictModuleBase):
         *,
         observation_key,
         base_observation_dim: int,
-        topology_manager,
         nod_manager,
+        action_dim: int,
         message_dim: int,
         message_hidden_dim: int,
+        message_scale: float = 0.1,
     ):
         super().__init__()
         self.observation_key = observation_key
         self.base_observation_dim = int(base_observation_dim)
         self.message_dim = int(message_dim)
-        self.action_dim = int(nod_manager.action_dim)
+        self.action_dim = int(action_dim)
         self.context_dim = int(nod_manager.online_context_dim)
         self.in_keys = [observation_key, NOD_ACTOR_EDGE_CONTEXT_KEY]
         self.out_keys = [
@@ -91,26 +105,17 @@ class NODActorInputModule(TensorDictModuleBase):
             NOD_ACTOR_MESSAGE_KEY,
             NOD_ACTOR_ATTENTION_KEY,
         ]
-        object.__setattr__(
-            self, "_topology_manager_ref", weakref.ref(topology_manager)
-        )
         object.__setattr__(self, "_nod_manager_ref", weakref.ref(nod_manager))
         self.aggregator = NODMessageAggregator(
             context_dim=self.context_dim,
             message_dim=self.message_dim,
             hidden_dim=int(message_hidden_dim),
+            message_scale=float(message_scale),
         )
 
     @property
     def actor_input_dim(self) -> int:
         return self.base_observation_dim + self.message_dim + self.action_dim
-
-    @property
-    def topology_manager(self):
-        manager = self._topology_manager_ref()
-        if manager is None:
-            raise RuntimeError("Topology manager no longer exists")
-        return manager
 
     @property
     def nod_manager(self):
@@ -160,7 +165,7 @@ class NODActorInputModule(TensorDictModuleBase):
         if not self._ready(tensordict):
             with torch.no_grad():
                 online = self.nod_manager.online_step(
-                    tensordict, topology_manager=self.topology_manager
+                    tensordict
                 )
             if online is None:
                 online = self._fallback_context(observation)
@@ -192,4 +197,3 @@ class NODActorInputModule(TensorDictModuleBase):
         tensordict.set(NOD_ACTOR_ATTENTION_KEY, attention)
         tensordict.set(NOD_ACTOR_OBSERVATION_KEY, actor_observation)
         return tensordict
-

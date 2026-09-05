@@ -34,31 +34,27 @@ def test_message_aggregation_is_permutation_invariant_and_zero_without_edges():
     assert torch.allclose(message, permuted_message, atol=1e-6, rtol=1e-6)
     assert torch.equal(empty_message, torch.zeros_like(empty_message))
     assert torch.equal(empty_attention, torch.zeros_like(empty_attention))
+    assert float(message.abs().max()) <= aggregator.message_scale
 
 
 def test_actor_input_reuses_detached_cache_and_trains_only_message_aggregator():
     class DummyNODManager:
-        action_dim = 2
         online_context_dim = 7
         n_neighbors = 2
 
         def __init__(self):
             self.calls = 0
 
-        def online_step(self, tensordict, topology_manager=None):
+        def online_step(self, tensordict):
             self.calls += 1
             raise AssertionError("cached PPO input must not replay online NOD")
 
-    class DummyTopologyManager:
-        pass
-
     nod_manager = DummyNODManager()
-    topology_manager = DummyTopologyManager()
     module = NODActorInputModule(
         observation_key=("agents", "observation"),
         base_observation_dim=5,
-        topology_manager=topology_manager,
         nod_manager=nod_manager,
+        action_dim=2,
         message_dim=4,
         message_hidden_dim=8,
     )
@@ -104,19 +100,7 @@ def test_online_opinion_state_resets_when_neighbor_generation_changes():
         is_using_nod_opinion=True,
         nod_hidden_dim=8,
     )
-    manager = NODOpinionManager(
-        parameters, relation_feature_dim=7, action_dim=2
-    )
-
-    class TopologyStub:
-        def encode_nod_inputs(self, tensordict, target_neighbor_indices):
-            leading = target_neighbor_indices.shape
-            return {
-                "relation_features": torch.randn(*leading, 7),
-                "predicted_actions": torch.randn(*leading, 2),
-                "edge_probability": torch.full(leading, 0.75),
-                "available": torch.ones(leading, dtype=torch.bool),
-            }
+    manager = NODOpinionManager(parameters)
 
     pair = torch.zeros(1, 2, 1, 20)
     pair[..., 6] = 0.4
@@ -140,12 +124,12 @@ def test_online_opinion_state_resets_when_neighbor_generation_changes():
         batch_size=[1],
     )
 
-    first = manager.online_step(data, topology_manager=TopologyStub())
+    first = manager.online_step(data)
     assert first["edge_context"].shape[-1] == manager.online_context_dim
     assert manager.online_state is not None
     assert manager.online_state["has_state"].all()
 
     neighbor_generation[0, 0, 0] = 2
-    reset = manager.online_step(data, topology_manager=TopologyStub())
+    reset = manager.online_step(data)
     assert reset["opinion"][0, 0, 0].item() == 0.0
     assert manager.online_state["neighbor_generation"][0, 0, 0].item() == 2

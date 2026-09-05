@@ -1,5 +1,7 @@
 # SigmaRL Traffic 强化学习环境设计说明
 
+> 历史快照：本文的 Topology、动作预测和对手建模章节描述旧实现。它们现已从有效训练路径中删除；当前网络与训练关系见 [MODEL_STRUCTURE.md](MODEL_STRUCTURE.md)。奖励、动力学和地图等未涉及部分仍可作为原项目说明参考。
+
 本文档基于当前仓库代码与根目录 `config.json`，梳理该项目中的强化学习智能体状态、动作、奖励机制，以及关键环境参数、训练参数、车辆参数和拓扑/对手建模相关参数。
 
 核心代码位置：
@@ -702,4 +704,3 @@ num_vmas_envs = frames_per_batch // max_steps
 4. `Agent(collide=False)` 不代表没有碰撞惩罚；碰撞由项目代码手动检测。
 5. 当前 `is_use_mtv_distance = false`，车间距离和近邻选择主要基于中心距。
 6. 当前 `cpm_scenario_probabilities = [1.0, 0.0, 0.0]`，所以 `CPM_mixed` 实际只采样 intersection。
-

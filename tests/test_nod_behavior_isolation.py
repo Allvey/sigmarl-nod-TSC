@@ -74,9 +74,7 @@ def test_v1_checkpoint_is_ignored_instead_of_breaking_training_interface():
         is_using_nod_opinion=True,
         nod_hidden_dim=8,
     )
-    manager = NODOpinionManager(
-        parameters, relation_feature_dim=16, action_dim=2
-    )
+    manager = NODOpinionManager(parameters)
 
     loaded = manager.load_checkpoint({"version": 1, "model": {}})
 
