@@ -88,6 +88,14 @@ from utilities.nod_marl import (
     NOD_ACTOR_OBSERVATION_KEY,
 )
 
+class BoundedNormalParamExtractor(NormalParamExtractor):
+    """Keep the original scale mapping and floor, with a fixed upper bound."""
+
+    def forward(self, tensor):
+        loc, scale = super().forward(tensor)
+        return loc, scale.clamp_max(1.0)
+
+
 def _generate_seed() -> int:
     return int.from_bytes(os.urandom(8), byteorder="big", signed=False)
 
@@ -304,7 +312,7 @@ def mappo_cavs(parameters: Parameters):
             num_cells=256,
             activation_class=torch.nn.Tanh,
         ),
-        NormalParamExtractor(),  # this will just separate the last dimension into two outputs: a `loc` and a non-negative `scale``, used as parameters for a normal distribution (mean and standard deviation)
+        BoundedNormalParamExtractor(),
     )
 
     # print("policy_net:", policy_net, "\n")
