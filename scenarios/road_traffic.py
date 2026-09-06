@@ -34,6 +34,7 @@ from vmas.simulator.scenario import BaseScenario
 from utilities.kinematic_bicycle import KinematicBicycle
 from utilities.colors import Color, colors
 from utilities.nod_marl.interaction import build_directed_interactions
+from utilities.nod_marl.safety import safety_margins
 
 from utilities.helper_training import Parameters
 
@@ -2904,6 +2905,22 @@ class ScenarioRoadTraffic(BaseScenario):
                 ),
             }
 
+        # VMAS clones info before done()/auto-reset. Capture physical margins
+        # here so terminal collision labels survive a subsequent reset.
+        safety_fields = {}
+        if getattr(self.parameters, "is_using_safety_critic", True):
+            clearance = torch.minimum(
+                self.distances.left_boundaries.amin(-1),
+                self.distances.right_boundaries.amin(-1),
+            )
+            margins = safety_margins(
+                nod_positions, clearance,
+                self.collisions.with_agents.any(-1) | self.collisions.with_lanelets,
+                self.parameters.safety_safe_distance,
+                self.parameters.safety_boundary_margin,
+            )
+            safety_fields["safety_margins"] = margins[:, agent_index]
+
         info = {
             "pos": agent.state.pos / self.normalizers.pos_world,
             "rot": angle_eliminate_two_pi(agent.state.rot) / self.normalizers.rot,
@@ -2959,6 +2976,7 @@ class ScenarioRoadTraffic(BaseScenario):
             "nod_overlap_risk": nod_interaction["overlap_risk"],
             "nod_world_pos": agent.state.pos,
             "nod_world_vel": agent.state.vel,
+            **safety_fields,
             **nod_actor_placeholders,
         }
 

@@ -795,6 +795,15 @@ class Parameters:
         nod_history_mode: str = "gru",
         nod_high_risk_score: float = 1.25,
         nod_low_risk_score: float = 0.5,
+        # Stage 5: independent safety prediction; no Actor constraint yet.
+        is_using_safety_critic: bool = True,
+        safety_horizons=None,
+        safety_hidden_dim: int = 128,
+        safety_lr: float = 3e-4,
+        safety_num_epochs: int = 4,
+        safety_minibatch_size: int = 512,
+        safety_safe_distance: float = 0.25,
+        safety_boundary_margin: float = 0.01,
         # Visu
         is_visualize_short_term_path: bool = True,  # Whether to visualize short-term reference paths
         is_visualize_lane_boundary: bool = False,  # Whether to visualize lane boundary
@@ -891,6 +900,20 @@ class Parameters:
         self.is_ego_view = is_ego_view
         self.is_apply_mask = is_apply_mask
         self.is_use_mtv_distance = is_use_mtv_distance
+        self.is_using_safety_critic = is_using_safety_critic
+        self.safety_horizons = list(safety_horizons if safety_horizons is not None else [1, 4, 8, 16])
+        self.safety_hidden_dim = safety_hidden_dim
+        self.safety_lr = safety_lr
+        self.safety_num_epochs = safety_num_epochs
+        self.safety_minibatch_size = safety_minibatch_size
+        self.safety_safe_distance = safety_safe_distance
+        self.safety_boundary_margin = safety_boundary_margin
+        if (any(not isinstance(h, int) or h < 1 for h in self.safety_horizons)
+                or not self.safety_horizons
+                or self.safety_horizons != sorted(set(self.safety_horizons))
+                or min(safety_hidden_dim, safety_num_epochs, safety_minibatch_size,
+                       safety_lr, safety_safe_distance, safety_boundary_margin) <= 0):
+            raise ValueError("Invalid Safety Critic parameters")
         self.is_using_nod_opinion = is_using_nod_opinion
         self.is_using_nod_actor = is_using_nod_actor
         self.nod_message_dim = nod_message_dim
@@ -1005,6 +1028,7 @@ class SaveData:
         collision_lanelets_rate_list: [] = None,
         collision_total_rate_list: [] = None,
         nod_metrics_list: [] = None,
+        safety_metrics_list: [] = None,
     ):
         self.parameters = parameters
         self.episode_reward_mean_list = episode_reward_mean_list
@@ -1012,6 +1036,7 @@ class SaveData:
         self.collision_lanelets_rate_list = collision_lanelets_rate_list
         self.collision_total_rate_list = collision_total_rate_list
         self.nod_metrics_list = nod_metrics_list
+        self.safety_metrics_list = safety_metrics_list
 
     def to_dict(self):
         return {
@@ -1021,6 +1046,7 @@ class SaveData:
             "collision_lanelets_rate_list": self.collision_lanelets_rate_list,
             "collision_total_rate_list": self.collision_total_rate_list,
             "nod_metrics_list": self.nod_metrics_list,
+            "safety_metrics_list": self.safety_metrics_list,
         }
 
     @classmethod
@@ -1037,6 +1063,7 @@ class SaveData:
             ),
             collision_total_rate_list=dict_data.get("collision_total_rate_list", None),
             nod_metrics_list=dict_data.get("nod_metrics_list", None),
+            safety_metrics_list=dict_data.get("safety_metrics_list", None),
         )
 
 
@@ -1331,6 +1358,7 @@ def save(
     priority_policy=None,
     priority_critic=None,
     nod_checkpoint=None,
+    safety_checkpoint=None,
 ):
     # Get paths
     paths = get_path_to_save_model(parameters=parameters)
@@ -1398,6 +1426,9 @@ def save(
         if nod_checkpoint is not None:
             PATH_NOD = parameters.where_to_save + parameters.model_name + "_nod.pth"
             torch.save(nod_checkpoint, PATH_NOD)
+
+        if safety_checkpoint is not None:
+            torch.save(safety_checkpoint, parameters.where_to_save + parameters.model_name + "_safety_critic.pth")
 
         # Delete files with lower mean episode reward
         delete_files_with_lower_mean_reward(parameters=parameters)

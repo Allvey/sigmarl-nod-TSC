@@ -70,6 +70,9 @@ python main_testing.py
                   TanhNormal → 二维车辆动作
 
        集中式 Critic：每车原始 observation 32 → 256 → 256 → value
+
+       独立 Safety Critic：全局观测/物理信息 + 实际联合动作
+                         168 → 128 → 128 → 4个安全视野输出
 ```
 
 当前有效网络中不存在 TopologyLearner、动作预测器和对手建模分支；策略邻居仍由原项目的最近邻观测逻辑产生，NOD 则使用独立的稳定有向物理边。
@@ -86,13 +89,17 @@ NOD auxiliary loss（默认每 10 个 rollout 更新一次）
   ├─ 时序似然 NLL
   ├─ 反事实风险标定 BCE
   └─ 更新物理特征 GRU、似然头和有界风险权重
+
+Safety auxiliary loss（每个 rollout，独立优化4轮）
+  ├─ 当前状态开始的有限视野最大违反量，无折扣
+  └─ 只更新 Safety Critic，不进入 Actor loss
 ```
 
 NOD 的循环状态在采集时按时间顺序推进，并以 detached context 存入 rollout。PPO 打乱 minibatch 时只重新计算无状态消息聚合器，不会按乱序重放 GRU。NOD 参数和 PPO 参数不共享梯度。
 
 ## 4. 为缓解此前策略坍塌加入的约束
 
-- PPO 每批训练轮数由 60 降为 15。
+- PPO 每批训练轮数为 60，Actor标准差保留原下限并限制上限为1.0。
 - NOD 默认每 10 个 rollout 更新一次，降低表示非平稳性。
 - 消息聚合器使用单独的 `5e-5` 学习率。
 - 32 维消息逐元素限制到 `[-0.1, 0.1]`。
@@ -107,3 +114,32 @@ NOD 的循环状态在采集时按时间顺序推进，并以 detached context �
 - 旧 Actor checkpoint 会自动迁移可复用的 MLP 权重；新消息聚合器保持新初始化。
 - 旧版 NOD checkpoint 的输入合同不同，因此会被明确忽略并重新初始化。
 - 已存在的旧 Topology/动作预测 checkpoint 不会删除，但当前代码不再读取或写入它们。
+- Safety Critic 另存为 `rewardX.XX_safety_critic.pth` / `final_safety_critic.pth`；旧模型缺少该文件时独立初始化，不影响策略加载。安全输入维度、视野或margin配置不兼容时明确提示并重新初始化。
+
+## 6. 阶段五：独立安全评价
+
+本阶段暂不加入 Safety Actor loss、Deadlock Critic 或对偶变量。`n_iters=250`、现有PPO/NOD参数和训练测试命令保持不变。
+
+安全量使用环境的物理单位，先归一化再取最大值：
+
+- 车辆间距：`(0.25 - 最近车辆中心距离) / 0.25`；0.25米可通过 `safety_safe_distance` 调整。这是中心距离margin，不是车辆轮廓间距。
+- 边界：`(0.01 - 车辆边界净距) / 0.01`；净距复用环境考虑车身尺寸后的边界距离，0.01米由 `safety_boundary_margin` 设置。
+- 碰撞：碰撞为+1，否则为-1；安全侧margin截到-1，正违反量不截断。
+
+每车得到3个margin，全局 `g_s` 为所有车辆所有margin的最大值。非正为满足，正为违反。首版不加入TTC约束。
+
+安全网络输入每车的原始32维观测、归一化位置/速度/航向5维、3个当前margin及2维实际动作，4车合计168维。只读取当前信息，标签使用后续轨迹。它拟合当前采样策略下的未来最大违反量，不构成严格安全保证。
+
+`safety_horizons=[1,4,8,16]` 中的h表示从当前状态起共h个状态：`max(g_t,...,g_{t+h-1})`。h=1只评价当前状态。终止时包含终止状态违反量，之后不跨入下一回合；单车身份重置导致的跨段样本和批次尾部不足视野的样本会被屏蔽，而不是标为安全。批次末尾若有真实后继状态，仍可监督h=2。
+
+训练使用独立MLP、Adam与随机数生成器，输入和标签均detach；安全网络初始化及小批次打乱不推进PPO的随机数流。Smooth L1对低估样本赋予2倍权重。每轮先记录新采集数据上的预测误差，再训练安全网络，避免把训练后的拟合误差当作新数据表现。
+
+诊断写入原训练JSON的 `safety_metrics_list` 和W&B的 `safety/*`：
+
+- `prediction_mae`、各视野 `h*/mae` / `h*/target_mean`；
+- `unsafe_recall`、`unsafe_target_count`、`missed_unsafe_count`；无危险样本时recall记0，必须结合计数解释；
+- `underestimate_rate`（低估超过0.05）、`worst_underestimate`；
+- `instant_violation_rate` / `instant_violation_count` / `transition_count`（全局环境状态口径）；
+- `valid_target_ratio`、各视野 `h*/valid_count`、`training_loss`、`optimizer_updates`。
+
+验证时首先关注漏判、低估及有效样本量。本阶段不应期待安全网络本身提高Actor奖励；它为后续约束策略提供经过检验的风险评价。

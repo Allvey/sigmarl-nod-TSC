@@ -87,6 +87,7 @@ from utilities.nod_marl import (
     NODOpinionManager,
     NOD_ACTOR_OBSERVATION_KEY,
 )
+from utilities.nod_marl.safety import SafetyCriticManager
 
 class BoundedNormalParamExtractor(NormalParamExtractor):
     """Keep the original scale mapping and floor, with a fixed upper bound."""
@@ -254,6 +255,7 @@ def mappo_cavs(parameters: Parameters):
         collision_lanelets_rate_list=[],
         collision_total_rate_list=[],
         nod_metrics_list=[],
+        safety_metrics_list=[],
     )
 
     env = TransformedEnvCustom(
@@ -382,6 +384,12 @@ def mappo_cavs(parameters: Parameters):
         priority_module = None
 
     policy_parameter_ids = {id(parameter) for parameter in policy.parameters()}
+    safety_manager = SafetyCriticManager(
+        parameters, raw_actor_observation_dim, env.n_agents,
+        int(env.action_spec.shape[-1]), observation_key,
+    )
+    scenario.safety_manager = safety_manager
+    assert policy_parameter_ids.isdisjoint({id(p) for p in safety_manager.model.parameters()})
     nod_parameter_ids = {id(parameter) for parameter in nod_manager.model.parameters()}
     assert policy_parameter_ids.isdisjoint(nod_parameter_ids), (
         "The recurrent NOD model must remain detached from PPO"
@@ -496,6 +504,12 @@ def mappo_cavs(parameters: Parameters):
                 "There is no model stored in '{parameters.where_to_save}', or the model names stored here are not following the right pattern."
             )
 
+        safety_prefix = "final" if parameters.is_load_final_model else parameters.model_name
+        safety_manager.load_if_available(
+            os.path.join(parameters.where_to_save, safety_prefix + "_safety_critic.pth"),
+            load_optimizer=parameters.is_continue_train,
+        )
+
         if not parameters.is_continue_train:
             print(colored("[INFO] Training will not continue.", "blue"))
 
@@ -505,7 +519,9 @@ def mappo_cavs(parameters: Parameters):
             print(
                 colored("[INFO] Training will continue with the loaded model.", "red")
             )
-            critic.load_state_dict(torch.load(PATH_CRITIC))
+            critic_path = (os.path.join(parameters.where_to_save, "final_critic.pth")
+                           if parameters.is_load_final_model else PATH_CRITIC)
+            critic.load_state_dict(torch.load(critic_path))
 
             if priority_module:
                 priority_module.critic.load_state_dict(torch.load(PATH_PRIORITY_CRITIC))
@@ -631,6 +647,7 @@ def mappo_cavs(parameters: Parameters):
     collision_total_rate_list = []
     last_nod_metrics = {}
     nod_metrics_list = []
+    safety_metrics_list = []
 
     t_start = time.time()
     for tensordict_data in collector:
@@ -787,6 +804,11 @@ def mappo_cavs(parameters: Parameters):
                 )
         nod_metrics_list.append(dict(last_nod_metrics))
 
+        # Safety fits its own ordered targets, with no gradients or RNG shared
+        # with PPO/NOD and no contribution to the Actor objective.
+        safety_metrics = safety_manager.train_on_rollout(tensordict_data)
+        safety_metrics_list.append(safety_metrics)
+
         collector.update_policy_weights_()  # Updates the policy weights if the policy of the data collector and the trained policy live on different devices
 
         # Logging
@@ -854,6 +876,7 @@ def mappo_cavs(parameters: Parameters):
             save_data.collision_lanelets_rate_list = collision_lanelets_rate_list
             save_data.collision_total_rate_list = collision_total_rate_list
             save_data.nod_metrics_list = nod_metrics_list
+            save_data.safety_metrics_list = safety_metrics_list
 
             if episode_reward_mean > parameters.episode_reward_intermediate:
                 # Save the model if it improves the mean episode reward sufficiently enough
@@ -873,6 +896,8 @@ def mappo_cavs(parameters: Parameters):
                         nod_checkpoint=nod_manager.checkpoint_state()
                         if nod_manager.enabled
                         else None,
+                        safety_checkpoint=safety_manager.checkpoint_state()
+                        if safety_manager.enabled else None,
                     )
                 else:
                     save(
@@ -883,6 +908,8 @@ def mappo_cavs(parameters: Parameters):
                         nod_checkpoint=nod_manager.checkpoint_state()
                         if nod_manager.enabled
                         else None,
+                        safety_checkpoint=safety_manager.checkpoint_state()
+                        if safety_manager.enabled else None,
                     )
             else:
                 # Save only the mean episode reward list and parameters
@@ -943,6 +970,8 @@ def mappo_cavs(parameters: Parameters):
                 log_payload["loss/total"] = last_loss_value
             for metric_name, metric_value in last_nod_metrics.items():
                 log_payload[f"nod/{metric_name}"] = metric_value
+            for metric_name, metric_value in safety_metrics.items():
+                log_payload[f"safety/{metric_name}"] = metric_value
             wandb.log(log_payload, step=pbar.n)
 
         pbar.update()
@@ -950,6 +979,9 @@ def mappo_cavs(parameters: Parameters):
     # Save the final model
     torch.save(policy.state_dict(), parameters.where_to_save + "final_policy.pth")
     torch.save(critic.state_dict(), parameters.where_to_save + "final_critic.pth")
+    if safety_manager.enabled:
+        torch.save(safety_manager.checkpoint_state(),
+                   parameters.where_to_save + "final_safety_critic.pth")
     if nod_manager.enabled:
         torch.save(
             nod_manager.checkpoint_state(),
