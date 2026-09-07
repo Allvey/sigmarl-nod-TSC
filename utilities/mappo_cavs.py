@@ -724,6 +724,14 @@ def mappo_cavs(parameters: Parameters):
                 )
 
                 combined_loss = loss_value
+                if safety_manager.constraint_ready:
+                    # Preserve rollout actions/log-probs and reuse cached NOD context.
+                    # Use the same functional Actor parameters as ClipPPOLoss.
+                    actor_td = mini_batch_data.detach().clone()
+                    action = loss_module.actor.get_dist(
+                        actor_td, params=loss_module.actor_params
+                    ).mode
+                    combined_loss = combined_loss + safety_manager.actor_loss(actor_td, action)
 
                 assert not combined_loss.isnan().any()
                 assert not combined_loss.isinf().any()
@@ -763,6 +771,7 @@ def mappo_cavs(parameters: Parameters):
                     new_td_errors = compute_td_error(mini_batch_data, gamma=0.9)
                     mini_batch_data.set("td_error", new_td_errors)
                     replay_buffer.update_tensordict_priority(mini_batch_data)
+        constraint_metrics = safety_manager.finish_actor_update()
         # NOD learns directly from ordered physical pair features. PPO trains
         # only the stateless message aggregator from cached online context.
         nod_update_interval = max(
@@ -817,9 +826,10 @@ def mappo_cavs(parameters: Parameters):
                 )
         nod_metrics_list.append(dict(last_nod_metrics))
 
-        # Safety fits its own ordered targets, with no gradients or RNG shared
-        # with PPO/NOD and no contribution to the Actor objective.
+        # Fit Safety only after the Actor update; its weights were frozen for
+        # the optional action penalty. Deadlock remains an independent learner.
         safety_metrics = safety_manager.train_on_rollout(tensordict_data)
+        safety_metrics.update(constraint_metrics)
         safety_metrics_list.append(safety_metrics)
         deadlock_metrics = deadlock_manager.train_on_rollout(tensordict_data)
         deadlock_metrics_list.append(deadlock_metrics)

@@ -97,6 +97,10 @@ Safety auxiliary loss（每个 rollout，独立优化4轮）
   ├─ 当前状态开始的有限视野最大违反量，无折扣
   └─ 只更新 Safety Critic，不进入 Actor loss
 
+Safety Actor penalty（预热后加入 PPO）
+  ├─ 冻结 Safety 权重，评价当前 Actor 的名义联合动作
+  └─ 通过动作梯度更新 Actor 和消息聚合器，标量约束权重每批更新一次
+
 Deadlock auxiliary loss（每个 rollout，独立优化4轮）
   ├─ 持续停滞车组的有限视野最大违反量，无折扣
   └─ 只更新 Deadlock Critic，不进入 Actor / Safety / NOD loss
@@ -178,4 +182,18 @@ NOD 的循环状态在采集时按时间顺序推进，并以 detached context �
 - `onset_transition_count`（后继状态出现新死锁的环境时间步数，每个车组成员不重复计数）；
 - `prediction_mae`、`underestimate_rate`、`valid_target_ratio`、各视野MAE和有效样本量。
 
-所有预测误差在对新rollout拟合之前记录。无正样本或无正预测时，对应recall/precision记0并配套计数；若全程缺少死锁正样本，不能因loss很低而认定Critic已经学会死锁。阶段六仍不使用这些预测约束Actor，需结合人工检查的死锁片段验证后再进入下一阶段。
+所有预测误差在对新rollout拟合之前记录。无正样本或无正预测时，对应recall/precision记0并配套计数；若全程缺少死锁正样本，不能因loss很低而认定Critic已经学会死锁。阶段六仍不使用这些预测约束Actor。2026-09-07用户决定暂缓死锁工作；其验证不再作为安全主线的前置条件。后续范围以 `NOD_MARL_STAGED_IMPLEMENTATION_HANDOFF.md` 为准；本轮仅调整计划，实际关闭开关待下一次阶段7修改。
+
+## 8. 阶段七：先接入 Safety Actor 约束
+
+根配置启用 `is_using_safety_constraint=true`。为保持旧 JSON 行为，Parameters 中该开关默认 false；关闭后恢复仅独立训练 Safety Critic 的路径。死锁预测仍不参与 Actor 更新。
+
+首版复用 PPO、现有 Safety 网络和安全指标列表，不新增网络。Safety 完成10个有效 rollout 的监督训练后，从第11批开始接入约束。每个 PPO minibatch 使用同一套可训练 Actor 参数及缓存的 NOD context，重新生成确定性名义动作（TanhNormal.mode）；不使用缓存动作计算策略梯度，也不改写采样动作或旧 log-prob。
+
+状态特征和 Safety 权重 detach，仅保留动作梯度。取 h>1 的预测最大值加0.05安全余量作为 q；h=1只描述当前状态，不作为动作约束。由于目标包含当前违反量，已违反状态无法通过当前动作使目标满足，因此本版仅在当前所有 safety margin 非正的状态上计算 `lambda * mean(relu(q))`，用于从安全状态避免进入危险状态，不提供已危险状态的恢复控制。
+
+约束权重初值0.01，每个 rollout 的 PPO 更新完成后按该批各次更新的有效状态平均 q，执行 `lambda = clip(lambda + 0.01 * mean(q), 0, 0.1)`。PPO 更新期间权重不变；Safety 在其后用真实采样动作继续监督训练。这个有上限的全局标量自适应惩罚是工程简化，不是方法文档中的状态相关原始—对偶实现，也不能宣称逐状态安全保证。它只约束名义动作；随机采样动作仍可能偏离名义动作。
+
+新增指标沿用 `safety_metrics_list` 和 `safety/*`：`actor_constraint_active`、`actor_constraint_weight`、`actor_constraint_next_weight`、`actor_constraint_loss`、`actor_constraint_risk`（已含安全余量）、`actor_constraint_violation_rate`、`actor_constraint_eligible_fraction`。预热期约束损失和active均为0；接入后重点同时检查碰撞、风险低估、通行效率和是否过度停车。预热只保证有过训练，不证明风险预测已足够可靠。
+
+Safety sidecar 增存有效训练批数和约束权重，继续训练时恢复；旧 sidecar 缺少批数时重新执行预热。Actor 输入输出和推理入口不变，测试时不会额外调用 Safety 来过滤动作。4车安全网络仍不能直接加载到8车测试，但经过本阶段训练的共享 Actor 可以携带所学行为；跨地图和车辆密度的泛化仍需验证。当前训练场景配比、车辆数及 PPO/NOD 超参数保持原配置。

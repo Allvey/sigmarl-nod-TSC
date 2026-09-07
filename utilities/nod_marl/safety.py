@@ -1,9 +1,10 @@
-"""Stage 5: independent, finite-horizon safety prediction (no Actor loss)."""
+"""Finite-horizon safety prediction and an optional Stage-7 Actor penalty."""
 
 from pathlib import Path
 
 import torch
 from torch import nn
+from torch.func import functional_call
 import torch.nn.functional as F
 
 
@@ -148,14 +149,68 @@ class SafetyCriticManager:
             ^ (0x53414645 if kind == "safety" else 0x44454144)
         )
         self.updates = 0
+        self.rollouts = 0
+        self.constraint_enabled = (
+            kind == "safety" and parameters.is_using_safety_constraint
+        )
+        self.constraint_weight = parameters.safety_constraint_initial_weight
+        self._constraint_totals = [0.0] * 5
 
-    def features(self, td):
+    def features(self, td, action=None):
         # Current information and actual action only: no next-state leakage.
         parts = [td.get(self.observation_key)]
         for key in ("pos", "vel", "rot", self.context_key):
             parts.append(td.get(("agents", "info", key)))
-        parts.append(td.get(("agents", "action")))
-        return torch.cat(parts, -1).flatten(-2).detach()
+        parts = [part.detach() for part in parts]
+        parts.append(td.get(("agents", "action")).detach() if action is None else action)
+        return torch.cat(parts, -1).flatten(-2)
+
+    @property
+    def constraint_ready(self):
+        return (self.enabled and self.constraint_enabled and self.updates > 0
+                and self.rollouts >= self.parameters.safety_constraint_warmup_batches)
+
+    def actor_loss(self, td, action):
+        """Differentiate only through current actions, using a frozen safety Q.
+
+        h=1 is action independent. Already-violating states cannot satisfy a
+        max-over-states target, so this first version constrains safe states only.
+        """
+        if not self.constraint_ready:
+            return action.sum() * 0
+        prediction = functional_call(
+            self.model, {k: v.detach() for k, v in self.model.named_parameters()},
+            (self.features(td, action),),
+        )
+        future = [i for i, h in enumerate(self.horizons) if h > 1]
+        risk = prediction[..., future].amax(-1) + self.parameters.safety_constraint_margin
+        eligible = td.get(("agents", "info", self.margin_key)).detach().amax((-2, -1)) <= 0
+        selected = risk[eligible]
+        penalty = selected.relu().sum() / eligible.sum().clamp_min(1)
+        values = [selected.detach().sum().item(), selected.detach().relu().sum().item(),
+                  (selected.detach() > 0).sum().item(), selected.numel(), risk.numel()]
+        self._constraint_totals = [a + b for a, b in zip(self._constraint_totals, values)]
+        return self.constraint_weight * penalty
+
+    def finish_actor_update(self):
+        """One projected scalar dual update per rollout, never per PPO epoch."""
+        risk_sum, penalty_sum, violations, count, total = self._constraint_totals
+        weight = self.constraint_weight
+        if self.constraint_ready and count:
+            self.constraint_weight = min(
+                self.parameters.safety_constraint_max_weight,
+                max(0.0, weight + self.parameters.safety_constraint_dual_lr * risk_sum / count),
+            )
+        self._constraint_totals = [0.0] * 5
+        return {
+            "actor_constraint_active": float(self.constraint_ready),
+            "actor_constraint_weight": weight,
+            "actor_constraint_next_weight": self.constraint_weight,
+            "actor_constraint_loss": weight * penalty_sum / max(1, count),
+            "actor_constraint_risk": risk_sum / max(1, count),
+            "actor_constraint_violation_rate": violations / max(1, count),
+            "actor_constraint_eligible_fraction": count / max(1, total),
+        }
 
     @torch.no_grad()
     def predict(self, td):
@@ -275,6 +330,8 @@ class SafetyCriticManager:
                 losses.append(float(loss.detach()))
         metrics["training_loss"] = sum(losses) / max(1, len(losses))
         metrics["optimizer_updates"] = len(losses)
+        if losses:
+            self.rollouts += 1
         return metrics
 
     def checkpoint_state(self):
@@ -284,6 +341,8 @@ class SafetyCriticManager:
             "optimizer": self.optimizer.state_dict(),
             "generator": self.generator.get_state(),
             "updates": self.updates,
+            "rollouts": self.rollouts,
+            **({"constraint_weight": self.constraint_weight} if self.kind == "safety" else {}),
         }
 
     def load_if_available(self, path, load_optimizer=False):
@@ -305,5 +364,11 @@ class SafetyCriticManager:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
             self.generator.set_state(checkpoint["generator"].cpu())
         self.updates = checkpoint.get("updates", 0)
+        self.rollouts = checkpoint.get("rollouts", 0)
+        if load_optimizer and self.constraint_enabled:
+            self.constraint_weight = min(
+                self.parameters.safety_constraint_max_weight,
+                max(0.0, checkpoint.get("constraint_weight", self.constraint_weight)),
+            )
         print(f"[INFO] Loaded {self.kind} Critic: {path}")
         return True

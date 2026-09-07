@@ -795,7 +795,7 @@ class Parameters:
         nod_history_mode: str = "gru",
         nod_high_risk_score: float = 1.25,
         nod_low_risk_score: float = 0.5,
-        # Stage 5: independent safety prediction; no Actor constraint yet.
+        # Stage 5: independent safety prediction.
         is_using_safety_critic: bool = True,
         safety_horizons=None,
         safety_hidden_dim: int = 128,
@@ -804,6 +804,13 @@ class Parameters:
         safety_minibatch_size: int = 512,
         safety_safe_distance: float = 0.25,
         safety_boundary_margin: float = 0.01,
+        # Stage 7: opt in explicitly; old saved configurations remain compatible.
+        is_using_safety_constraint: bool = False,
+        safety_constraint_warmup_batches: int = 10,
+        safety_constraint_initial_weight: float = 0.01,
+        safety_constraint_max_weight: float = 0.1,
+        safety_constraint_dual_lr: float = 0.01,
+        safety_constraint_margin: float = 0.05,
         # Stage 6: independent temporal deadlock prediction.
         is_using_deadlock_critic: bool = True,
         deadlock_horizons=None,
@@ -945,12 +952,27 @@ class Parameters:
         self.safety_minibatch_size = safety_minibatch_size
         self.safety_safe_distance = safety_safe_distance
         self.safety_boundary_margin = safety_boundary_margin
+        self.is_using_safety_constraint = is_using_safety_constraint
+        self.safety_constraint_warmup_batches = safety_constraint_warmup_batches
+        self.safety_constraint_initial_weight = safety_constraint_initial_weight
+        self.safety_constraint_max_weight = safety_constraint_max_weight
+        self.safety_constraint_dual_lr = safety_constraint_dual_lr
+        self.safety_constraint_margin = safety_constraint_margin
         if (any(not isinstance(h, int) or h < 1 for h in self.safety_horizons)
                 or not self.safety_horizons
                 or self.safety_horizons != sorted(set(self.safety_horizons))
                 or min(safety_hidden_dim, safety_num_epochs, safety_minibatch_size,
                        safety_lr, safety_safe_distance, safety_boundary_margin) <= 0):
             raise ValueError("Invalid Safety Critic parameters")
+        if (not isinstance(safety_constraint_warmup_batches, int)
+                or safety_constraint_warmup_batches < 0
+                or not 0 <= safety_constraint_initial_weight <= safety_constraint_max_weight
+                or not safety_constraint_max_weight > 0
+                or not safety_constraint_dual_lr > 0
+                or not safety_constraint_margin >= 0
+                or (is_using_safety_constraint and
+                    (not is_using_safety_critic or not any(h > 1 for h in self.safety_horizons)))):
+            raise ValueError("Invalid Safety Actor constraint parameters")
         self.is_using_nod_opinion = is_using_nod_opinion
         self.is_using_nod_actor = is_using_nod_actor
         self.nod_message_dim = nod_message_dim
