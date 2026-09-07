@@ -117,11 +117,6 @@ class ScenarioRoadTraffic(BaseScenario):
         self.n_agents = SCENARIOS[scenario_type]["n_agents"]  # Number of agents
         self.agent_width = AGENTS["width"]  # The width of the agent in [m]
         self.agent_length = AGENTS["length"]  # The length of the agent in [m]
-        # Monotone identity generations prevent a reset agent from inheriting
-        # the edge history of the previous vehicle occupying the same slot.
-        self.nod_agent_generation = torch.zeros(
-            (batch_dim, self.n_agents), device=device, dtype=torch.long
-        )
         lane_width = SCENARIOS[scenario_type][
             "lane_width"
         ]  # The (rough) width of each lane in [m]
@@ -364,6 +359,11 @@ class ScenarioRoadTraffic(BaseScenario):
             self.parameters.n_nearing_agents_observed, self.parameters.n_agents - 1
         )
         self.n_agents = self.parameters.n_agents
+        # Allocate identities after resolving the configured vehicle count;
+        # testing scenarios can contain more cars than the default scenario.
+        self.nod_agent_generation = torch.zeros(
+            (batch_dim, self.n_agents), device=device, dtype=torch.long
+        )
         self.deadlock_tracker = DeadlockTracker(self.parameters)
         # Current maps have no traffic-light/right-of-way restriction input.
         # A signal/rule controller can set this mask before the next physical step.
