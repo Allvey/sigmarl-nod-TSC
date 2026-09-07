@@ -1,0 +1,300 @@
+Episode mean reward = 3.05 | collision = 0.0059:  11%|█▊              | 28/250 [04:51<34:05,  9.21s/it]
+Saved model: -0.58.
+Saved model: -0.57.
+Saved model: -0.53.
+Saved model: -0.53.
+Saved model: -0.53.
+Saved model: -0.53.
+Saved model: -0.53.
+Saved model: -0.44.
+Saved model: -0.25.
+Saved model: -0.01.
+Learning rate updated to 0.00019240000000000001.
+Learning rate updated to 4.8100000000000004e-05.
+Saved model: 0.45.
+Saved model: 0.50.
+Saved model: 0.55.
+Saved model: 1.13.
+Saved model: 1.55.
+Saved model: 1.55.
+Saved model: 1.96.
+Saved model: 2.01.
+Saved model: 2.01.
+Saved model: 2.66.
+Learning rate updated to 0.00018480000000000002.
+Learning rate updated to 4.6200000000000005e-05.
+Saved model: 2.66.
+Saved model: 2.66.
+Saved model: 2.66.
+Saved model: 2.66.
+Saved model: 2.66.
+Saved model: 2.66.
+Saved model: 3.05.
+Saved model: 3.05.
+Saved model: 3.05.
+Saved model: 3.09.
+Learning rate updated to 0.0001772.
+Learning rate updated to 4.43e-05.
+Saved model: 3.09.
+Saved model: 3.44.
+Saved model: 3.44.
+Saved model: 3.44.
+Saved model: 3.44.
+Saved model: 3.44.
+Saved model: 3.44.
+Saved model: 3.91.
+Saved model: 3.91.
+Saved model: 4.11.
+Learning rate updated to 0.0001696.
+Learning rate updated to 4.24e-05.
+Saved model: 4.19.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.42.
+Saved model: 4.54.
+Saved model: 4.54.
+Saved model: 4.98.
+Saved model: 5.12.
+Saved model: 5.12.
+Saved model: 5.12.
+Learning rate updated to 0.000162.
+Learning rate updated to 4.05e-05.
+Saved model: 5.12.
+Saved model: 5.12.
+Saved model: 5.12.
+Saved model: 5.12.
+Saved model: 5.12.
+Saved model: 5.30.
+Saved model: 5.30.
+Saved model: 5.30.
+Saved model: 5.35.
+Saved model: 5.35.
+Learning rate updated to 0.0001544.
+Learning rate updated to 3.86e-05.
+Saved model: 5.84.
+Saved model: 5.84.
+Saved model: 5.84.
+Saved model: 5.84.
+Saved model: 5.84.
+Saved model: 6.15.
+Saved model: 6.15.
+Saved model: 6.15.
+Saved model: 6.15.
+Saved model: 6.15.
+Learning rate updated to 0.0001468.
+Learning rate updated to 3.67e-05.
+Saved model: 6.32.
+Saved model: 6.32.
+Saved model: 6.32.
+Saved model: 6.32.
+Saved model: 6.32.
+Saved model: 6.32.
+Saved model: 6.32.
+Saved model: 6.32.
+Saved model: 6.32.
+Saved model: 6.32.
+Learning rate updated to 0.0001392.
+Learning rate updated to 3.48e-05.
+Saved model: 6.32.
+Saved model: 6.32.
+Saved model: 6.32.
+Saved model: 6.32.
+Saved model: 6.32.
+Saved model: 6.32.
+Saved model: 6.32.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Learning rate updated to 0.00013160000000000003.
+Learning rate updated to 3.290000000000001e-05.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Learning rate updated to 0.000124.
+Learning rate updated to 3.1e-05.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Learning rate updated to 0.00011640000000000001.
+Learning rate updated to 2.9100000000000003e-05.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.39.
+Saved model: 6.40.
+Learning rate updated to 0.0001088.
+Learning rate updated to 2.72e-05.
+Saved model: 6.40.
+Saved model: 6.40.
+Saved model: 6.40.
+Saved model: 6.40.
+Saved model: 6.40.
+Saved model: 6.49.
+Saved model: 6.49.
+Saved model: 6.49.
+Saved model: 6.94.
+Saved model: 6.94.
+Learning rate updated to 0.00010120000000000001.
+Learning rate updated to 2.5300000000000002e-05.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Learning rate updated to 9.36e-05.
+Learning rate updated to 2.34e-05.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Learning rate updated to 8.6e-05.
+Learning rate updated to 2.15e-05.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 6.94.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Learning rate updated to 7.84e-05.
+Learning rate updated to 1.96e-05.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Learning rate updated to 7.08e-05.
+Learning rate updated to 1.77e-05.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Learning rate updated to 6.32e-05.
+Learning rate updated to 1.58e-05.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Learning rate updated to 5.56e-05.
+Learning rate updated to 1.39e-05.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Learning rate updated to 4.7999999999999994e-05.
+Learning rate updated to 1.1999999999999999e-05.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Learning rate updated to 4.0400000000000006e-05.
+Learning rate updated to 1.0100000000000002e-05.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Learning rate updated to 3.2800000000000004e-05.
+Learning rate updated to 8.200000000000001e-06.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Learning rate updated to 2.5199999999999996e-05.
+Learning rate updated to 6.299999999999999e-06.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Learning rate updated to 1.7600000000000008e-05.
+Learning rate updated to 4.400000000000002e-06.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+Saved model: 7.50.
+[30m[INFO] All files have been saved under:[0m [31moutputs/testing_random/[0m
+[34m[INFO] Training duration: 0.72 hours.[0m

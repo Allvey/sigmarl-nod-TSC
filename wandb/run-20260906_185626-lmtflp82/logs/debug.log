@@ -1,0 +1,24 @@
+2026-09-06 18:56:26,835 INFO    MainThread:94007 [wandb_setup.py:_flush():81] Current SDK version is 0.26.1
+2026-09-06 18:56:26,835 INFO    MainThread:94007 [wandb_setup.py:_flush():81] Configure stats pid to 94007
+2026-09-06 18:56:26,836 INFO    MainThread:94007 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2026-09-06 18:56:26,836 INFO    MainThread:94007 [wandb_init.py:setup_run_log_directory():723] Logging user logs to /Users/zhangxiaotong/Code/sigmarl-nod-TSC/wandb/run-20260906_185626-lmtflp82/logs/debug.log
+2026-09-06 18:56:26,836 INFO    MainThread:94007 [wandb_init.py:setup_run_log_directory():724] Logging internal logs to /Users/zhangxiaotong/Code/sigmarl-nod-TSC/wandb/run-20260906_185626-lmtflp82/logs/debug-internal.log
+2026-09-06 18:56:26,836 INFO    MainThread:94007 [wandb_init.py:init():850] calling init triggers
+2026-09-06 18:56:26,836 INFO    MainThread:94007 [wandb_init.py:init():855] wandb.init called with sweep_config: {}
+config: {'_wandb': {}}
+2026-09-06 18:56:26,836 INFO    MainThread:94007 [wandb_init.py:init():898] starting backend
+2026-09-06 18:56:27,090 INFO    MainThread:94007 [wandb_init.py:init():913] sending inform_init request
+2026-09-06 18:56:28,181 INFO    MainThread:94007 [wandb_init.py:init():918] backend started and connected
+2026-09-06 18:56:28,198 INFO    MainThread:94007 [wandb_init.py:init():988] updated telemetry
+2026-09-06 18:56:28,226 INFO    MainThread:94007 [wandb_init.py:init():1011] communicating run to backend with 90.0 second timeout
+2026-09-06 18:56:28,796 INFO    MainThread:94007 [wandb_init.py:init():1056] starting run threads in backend
+2026-09-06 18:56:28,876 INFO    MainThread:94007 [wandb_run.py:_console_start():2554] atexit reg
+2026-09-06 18:56:28,876 INFO    MainThread:94007 [wandb_run.py:_redirect():2403] redirect: wrap_raw
+2026-09-06 18:56:28,876 INFO    MainThread:94007 [wandb_run.py:_redirect():2472] Wrapping output streams.
+2026-09-06 18:56:28,876 INFO    MainThread:94007 [wandb_run.py:_redirect():2495] Redirects installed.
+2026-09-06 18:56:28,878 INFO    MainThread:94007 [wandb_init.py:init():1094] run started, returning control to user process
+2026-09-06 19:53:47,044 INFO    MainThread:94007 [wandb_run.py:_finish():2321] finishing run allvey/sigmarl-traffic/lmtflp82
+2026-09-06 19:53:47,044 INFO    MainThread:94007 [wandb_run.py:_atexit_cleanup():2520] got exitcode: 0
+2026-09-06 19:53:47,044 INFO    MainThread:94007 [wandb_run.py:_restore():2502] restore
+2026-09-06 19:53:47,044 INFO    MainThread:94007 [wandb_run.py:_restore():2508] restore done
+2026-09-06 19:53:49,646 INFO    MainThread:94007 [wandb_run.py:_footer_sync_info():3889] logging synced files

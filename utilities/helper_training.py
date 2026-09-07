@@ -804,6 +804,20 @@ class Parameters:
         safety_minibatch_size: int = 512,
         safety_safe_distance: float = 0.25,
         safety_boundary_margin: float = 0.01,
+        # Stage 6: independent temporal deadlock prediction.
+        is_using_deadlock_critic: bool = True,
+        deadlock_horizons=None,
+        deadlock_hidden_dim: int = 128,
+        deadlock_lr: float = 3e-4,
+        deadlock_num_epochs: int = 4,
+        deadlock_minibatch_size: int = 512,
+        deadlock_window_seconds: float = 1.0,
+        deadlock_duration_seconds: float = 2.0,
+        deadlock_speed_threshold: float = 0.03,
+        deadlock_progress_threshold: float = 0.01,
+        deadlock_conflict_distance: float = 0.6,
+        deadlock_probe_distance: float = 0.02,
+        deadlock_probe_speed: float = 0.1,
         # Visu
         is_visualize_short_term_path: bool = True,  # Whether to visualize short-term reference paths
         is_visualize_lane_boundary: bool = False,  # Whether to visualize lane boundary
@@ -901,6 +915,29 @@ class Parameters:
         self.is_apply_mask = is_apply_mask
         self.is_use_mtv_distance = is_use_mtv_distance
         self.is_using_safety_critic = is_using_safety_critic
+        self.is_using_deadlock_critic = is_using_deadlock_critic
+        self.deadlock_horizons = list(deadlock_horizons if deadlock_horizons is not None else [1, 4, 8, 16])
+        self.deadlock_hidden_dim = deadlock_hidden_dim
+        self.deadlock_lr = deadlock_lr
+        self.deadlock_num_epochs = deadlock_num_epochs
+        self.deadlock_minibatch_size = deadlock_minibatch_size
+        self.deadlock_window_seconds = deadlock_window_seconds
+        self.deadlock_duration_seconds = deadlock_duration_seconds
+        self.deadlock_speed_threshold = deadlock_speed_threshold
+        self.deadlock_progress_threshold = deadlock_progress_threshold
+        self.deadlock_conflict_distance = deadlock_conflict_distance
+        self.deadlock_probe_distance = deadlock_probe_distance
+        self.deadlock_probe_speed = deadlock_probe_speed
+        if (not self.deadlock_horizons
+                or any(not isinstance(h, int) or h < 1 for h in self.deadlock_horizons)
+                or self.deadlock_horizons != sorted(set(self.deadlock_horizons))
+                or min(deadlock_hidden_dim, deadlock_lr, deadlock_num_epochs,
+                       deadlock_minibatch_size, deadlock_window_seconds,
+                       deadlock_duration_seconds, deadlock_speed_threshold,
+                       deadlock_progress_threshold, deadlock_conflict_distance,
+                       deadlock_probe_distance, deadlock_probe_speed) <= 0
+                or deadlock_probe_distance < deadlock_progress_threshold):
+            raise ValueError("Invalid Deadlock Critic parameters")
         self.safety_horizons = list(safety_horizons if safety_horizons is not None else [1, 4, 8, 16])
         self.safety_hidden_dim = safety_hidden_dim
         self.safety_lr = safety_lr
@@ -1029,6 +1066,7 @@ class SaveData:
         collision_total_rate_list: [] = None,
         nod_metrics_list: [] = None,
         safety_metrics_list: [] = None,
+        deadlock_metrics_list: [] = None,
     ):
         self.parameters = parameters
         self.episode_reward_mean_list = episode_reward_mean_list
@@ -1037,6 +1075,7 @@ class SaveData:
         self.collision_total_rate_list = collision_total_rate_list
         self.nod_metrics_list = nod_metrics_list
         self.safety_metrics_list = safety_metrics_list
+        self.deadlock_metrics_list = deadlock_metrics_list
 
     def to_dict(self):
         return {
@@ -1047,6 +1086,7 @@ class SaveData:
             "collision_total_rate_list": self.collision_total_rate_list,
             "nod_metrics_list": self.nod_metrics_list,
             "safety_metrics_list": self.safety_metrics_list,
+            "deadlock_metrics_list": self.deadlock_metrics_list,
         }
 
     @classmethod
@@ -1064,6 +1104,7 @@ class SaveData:
             collision_total_rate_list=dict_data.get("collision_total_rate_list", None),
             nod_metrics_list=dict_data.get("nod_metrics_list", None),
             safety_metrics_list=dict_data.get("safety_metrics_list", None),
+            deadlock_metrics_list=dict_data.get("deadlock_metrics_list", None),
         )
 
 
@@ -1359,6 +1400,7 @@ def save(
     priority_critic=None,
     nod_checkpoint=None,
     safety_checkpoint=None,
+    deadlock_checkpoint=None,
 ):
     # Get paths
     paths = get_path_to_save_model(parameters=parameters)
@@ -1429,6 +1471,9 @@ def save(
 
         if safety_checkpoint is not None:
             torch.save(safety_checkpoint, parameters.where_to_save + parameters.model_name + "_safety_critic.pth")
+
+        if deadlock_checkpoint is not None:
+            torch.save(deadlock_checkpoint, parameters.where_to_save + parameters.model_name + "_deadlock_critic.pth")
 
         # Delete files with lower mean episode reward
         delete_files_with_lower_mean_reward(parameters=parameters)

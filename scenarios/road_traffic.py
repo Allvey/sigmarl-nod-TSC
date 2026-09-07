@@ -35,6 +35,7 @@ from utilities.kinematic_bicycle import KinematicBicycle
 from utilities.colors import Color, colors
 from utilities.nod_marl.interaction import build_directed_interactions
 from utilities.nod_marl.safety import safety_margins
+from utilities.nod_marl.deadlock import DeadlockTracker
 
 from utilities.helper_training import Parameters
 
@@ -363,6 +364,14 @@ class ScenarioRoadTraffic(BaseScenario):
             self.parameters.n_nearing_agents_observed, self.parameters.n_agents - 1
         )
         self.n_agents = self.parameters.n_agents
+        self.deadlock_tracker = DeadlockTracker(self.parameters)
+        # Current maps have no traffic-light/right-of-way restriction input.
+        # A signal/rule controller can set this mask before the next physical step.
+        self.deadlock_forward_allowed = torch.ones(
+            (batch_dim, self.n_agents), device=device, dtype=torch.bool
+        )
+        if self.parameters.deadlock_probe_speed > self.max_speed:
+            raise ValueError("deadlock_probe_speed exceeds the vehicle speed limit")
 
         # Timer for the first env
         self.timer = Timer(
@@ -1098,6 +1107,8 @@ class ScenarioRoadTraffic(BaseScenario):
                 self.nod_agent_generation[env_i, reset_agent_index] += 1
             else:
                 self.nod_agent_generation[env_i] += 1
+            self.deadlock_tracker.reset(env_i, agent_index)
+            self.deadlock_forward_allowed[env_i, slice(None) if agent_index is None else agent_index] = True
 
             # Begining of a new simulation (only record for the first env)
             if env_i == 0:
@@ -2921,6 +2932,21 @@ class ScenarioRoadTraffic(BaseScenario):
             )
             safety_fields["safety_margins"] = margins[:, agent_index]
 
+        deadlock_fields = {}
+        if getattr(self.parameters, "is_using_deadlock_critic", True):
+            # info() is called once for each car; the tracker advances only once
+            # for a physical frame and snapshots the state before done()/reset.
+            deadlock = self.deadlock_tracker.update(
+                nod_positions, nod_velocities, nod_yaws,
+                self.ref_paths_agent_related.short_term,
+                torch.minimum(self.distances.left_boundaries.amin(-1),
+                              self.distances.right_boundaries.amin(-1)),
+                self.collisions.with_agents.any(-1) | self.collisions.with_lanelets,
+                self.nod_agent_generation, self.timer.step,
+                self.deadlock_forward_allowed,
+            )
+            deadlock_fields = {key: value[:, agent_index] for key, value in deadlock.items()}
+
         info = {
             "pos": agent.state.pos / self.normalizers.pos_world,
             "rot": angle_eliminate_two_pi(agent.state.rot) / self.normalizers.rot,
@@ -2977,6 +3003,7 @@ class ScenarioRoadTraffic(BaseScenario):
             "nod_world_pos": agent.state.pos,
             "nod_world_vel": agent.state.vel,
             **safety_fields,
+            **deadlock_fields,
             **nod_actor_placeholders,
         }
 

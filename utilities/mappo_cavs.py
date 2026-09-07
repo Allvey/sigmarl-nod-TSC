@@ -88,6 +88,7 @@ from utilities.nod_marl import (
     NOD_ACTOR_OBSERVATION_KEY,
 )
 from utilities.nod_marl.safety import SafetyCriticManager
+from utilities.nod_marl.deadlock import DeadlockCriticManager
 
 class BoundedNormalParamExtractor(NormalParamExtractor):
     """Keep the original scale mapping and floor, with a fixed upper bound."""
@@ -256,6 +257,7 @@ def mappo_cavs(parameters: Parameters):
         collision_total_rate_list=[],
         nod_metrics_list=[],
         safety_metrics_list=[],
+        deadlock_metrics_list=[],
     )
 
     env = TransformedEnvCustom(
@@ -389,6 +391,12 @@ def mappo_cavs(parameters: Parameters):
         int(env.action_spec.shape[-1]), observation_key,
     )
     scenario.safety_manager = safety_manager
+    deadlock_manager = DeadlockCriticManager(
+        parameters, raw_actor_observation_dim, env.n_agents,
+        int(env.action_spec.shape[-1]), observation_key,
+    )
+    scenario.deadlock_manager = deadlock_manager
+    assert policy_parameter_ids.isdisjoint({id(p) for p in deadlock_manager.model.parameters()})
     assert policy_parameter_ids.isdisjoint({id(p) for p in safety_manager.model.parameters()})
     nod_parameter_ids = {id(parameter) for parameter in nod_manager.model.parameters()}
     assert policy_parameter_ids.isdisjoint(nod_parameter_ids), (
@@ -507,6 +515,10 @@ def mappo_cavs(parameters: Parameters):
         safety_prefix = "final" if parameters.is_load_final_model else parameters.model_name
         safety_manager.load_if_available(
             os.path.join(parameters.where_to_save, safety_prefix + "_safety_critic.pth"),
+            load_optimizer=parameters.is_continue_train,
+        )
+        deadlock_manager.load_if_available(
+            os.path.join(parameters.where_to_save, safety_prefix + "_deadlock_critic.pth"),
             load_optimizer=parameters.is_continue_train,
         )
 
@@ -648,6 +660,7 @@ def mappo_cavs(parameters: Parameters):
     last_nod_metrics = {}
     nod_metrics_list = []
     safety_metrics_list = []
+    deadlock_metrics_list = []
 
     t_start = time.time()
     for tensordict_data in collector:
@@ -808,6 +821,8 @@ def mappo_cavs(parameters: Parameters):
         # with PPO/NOD and no contribution to the Actor objective.
         safety_metrics = safety_manager.train_on_rollout(tensordict_data)
         safety_metrics_list.append(safety_metrics)
+        deadlock_metrics = deadlock_manager.train_on_rollout(tensordict_data)
+        deadlock_metrics_list.append(deadlock_metrics)
 
         collector.update_policy_weights_()  # Updates the policy weights if the policy of the data collector and the trained policy live on different devices
 
@@ -877,6 +892,7 @@ def mappo_cavs(parameters: Parameters):
             save_data.collision_total_rate_list = collision_total_rate_list
             save_data.nod_metrics_list = nod_metrics_list
             save_data.safety_metrics_list = safety_metrics_list
+            save_data.deadlock_metrics_list = deadlock_metrics_list
 
             if episode_reward_mean > parameters.episode_reward_intermediate:
                 # Save the model if it improves the mean episode reward sufficiently enough
@@ -898,6 +914,8 @@ def mappo_cavs(parameters: Parameters):
                         else None,
                         safety_checkpoint=safety_manager.checkpoint_state()
                         if safety_manager.enabled else None,
+                        deadlock_checkpoint=deadlock_manager.checkpoint_state()
+                        if deadlock_manager.enabled else None,
                     )
                 else:
                     save(
@@ -910,6 +928,8 @@ def mappo_cavs(parameters: Parameters):
                         else None,
                         safety_checkpoint=safety_manager.checkpoint_state()
                         if safety_manager.enabled else None,
+                        deadlock_checkpoint=deadlock_manager.checkpoint_state()
+                        if deadlock_manager.enabled else None,
                     )
             else:
                 # Save only the mean episode reward list and parameters
@@ -972,6 +992,8 @@ def mappo_cavs(parameters: Parameters):
                 log_payload[f"nod/{metric_name}"] = metric_value
             for metric_name, metric_value in safety_metrics.items():
                 log_payload[f"safety/{metric_name}"] = metric_value
+            for metric_name, metric_value in deadlock_metrics.items():
+                log_payload[f"deadlock/{metric_name}"] = metric_value
             wandb.log(log_payload, step=pbar.n)
 
         pbar.update()
@@ -982,6 +1004,9 @@ def mappo_cavs(parameters: Parameters):
     if safety_manager.enabled:
         torch.save(safety_manager.checkpoint_state(),
                    parameters.where_to_save + "final_safety_critic.pth")
+    if deadlock_manager.enabled:
+        torch.save(deadlock_manager.checkpoint_state(),
+                   parameters.where_to_save + "final_deadlock_critic.pth")
     if nod_manager.enabled:
         torch.save(
             nod_manager.checkpoint_state(),

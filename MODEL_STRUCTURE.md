@@ -73,6 +73,9 @@ python main_testing.py
 
        独立 Safety Critic：全局观测/物理信息 + 实际联合动作
                          168 → 128 → 128 → 4个安全视野输出
+
+       独立 Deadlock Critic：全局观测/物理信息 + 时序状态 + 实际联合动作
+                           204 → 128 → 128 → 4个死锁视野输出
 ```
 
 当前有效网络中不存在 TopologyLearner、动作预测器和对手建模分支；策略邻居仍由原项目的最近邻观测逻辑产生，NOD 则使用独立的稳定有向物理边。
@@ -93,6 +96,10 @@ NOD auxiliary loss（默认每 10 个 rollout 更新一次）
 Safety auxiliary loss（每个 rollout，独立优化4轮）
   ├─ 当前状态开始的有限视野最大违反量，无折扣
   └─ 只更新 Safety Critic，不进入 Actor loss
+
+Deadlock auxiliary loss（每个 rollout，独立优化4轮）
+  ├─ 持续停滞车组的有限视野最大违反量，无折扣
+  └─ 只更新 Deadlock Critic，不进入 Actor / Safety / NOD loss
 ```
 
 NOD 的循环状态在采集时按时间顺序推进，并以 detached context 存入 rollout。PPO 打乱 minibatch 时只重新计算无状态消息聚合器，不会按乱序重放 GRU。NOD 参数和 PPO 参数不共享梯度。
@@ -118,7 +125,7 @@ NOD 的循环状态在采集时按时间顺序推进，并以 detached context �
 
 ## 6. 阶段五：独立安全评价
 
-本阶段暂不加入 Safety Actor loss、Deadlock Critic 或对偶变量。`n_iters=250`、现有PPO/NOD参数和训练测试命令保持不变。
+阶段五不加入 Safety Actor loss 或对偶变量；Deadlock Critic 由下述阶段六独立实现。`n_iters=250`、现有PPO/NOD参数和训练测试命令保持不变。
 
 安全量使用环境的物理单位，先归一化再取最大值：
 
@@ -143,3 +150,32 @@ NOD 的循环状态在采集时按时间顺序推进，并以 detached context �
 - `valid_target_ratio`、各视野 `h*/valid_count`、`training_loss`、`optimizer_updates`。
 
 验证时首先关注漏判、低估及有效样本量。本阶段不应期待安全网络本身提高Actor奖励；它为后续约束策略提供经过检验的风险评价。
+
+## 7. 阶段六：时序死锁标签与独立评价
+
+实现位于 `utilities/nod_marl/deadlock.py`。检测器属于环境，每个物理时间步只更新一次；重复读取info不推进计时，rollout换批次不清空历史。全环境或单车重置时清除对应历史和相关车组的持续计时。
+
+首版将以下条件的交集定义为“疑似策略性死锁”：
+
+1. 车辆中心距离不超过0.6米，且前方参考路径走廊相交或接近；据此形成至少2辆车的连通车组。
+2. 车组中所有车辆持续低速（不超过0.03米/秒），最近1秒沿参考路线的净进展不超过0.01米；需要完整历史窗口。单车静止、邻车还在正常前进或不同通道不会仅因停车被标为死锁。
+3. 至少一辆车被规则允许前进，且存在通过检查的局部前进动作。当前地图未建模信号灯，许可默认true；信号/规则控制器可在物理步前设置 `scenario.deadlock_forward_allowed[B,N]`，该车辆重置时许可恢复默认。禁止全组前进时不累计死锁时间。
+4. 局部动作取零转向、0.1米/秒向前移动0.02米：沿参考方向进展至少0.01米；其他车辆保持当前速度时，整个动作期间的连续最近中心距离至少0.25米；当前车身边界净距至少“移动距离+0.01米”。已有碰撞状态不标为死锁。
+5. 以上条件连续满足超过2秒，才令 `g_d>0`。计时过程中 `g_d=eligible_seconds/2-1`，截到[-1,1]；条件不满足则为-1。车组成员/车辆身份变化会清除持续计时。
+
+该局部动作只是可执行微小前进的保守代理，不证明整组必然能完全解锁；未找到此动作也不代表所有可能的转向、倒车或协调动作均不可行。TTC、信号和优先权的完整规则建模不在当前首版中。
+
+每车12维增广状态依次为：归一化低速时间、等待时间、窗口路线进展、历史就绪、本人通行许可、本人局部动作可行、车组大小、全组停滞、全组存在通行机会、条件持续时间、是否属于冲突车组、归一化速度。当前位置/速度/航向5维、原始观测32维和实际动作2维一并输入独立Critic，4车合计204维。
+
+视野仍为 `[1,4,8,16]` 个状态，复用阶段五的终止状态与跨重置/批次截断规则。模型、Adam、随机数流、梯度均独立；Safety复用的只有训练代码，其参数、目标、指标和检查点合同不变。现有Actor标准差上限及全部PPO/NOD/Safety训练参数保持不变。
+
+新增 `rewardX.XX_deadlock_critic.pth` 和 `final_deadlock_critic.pth`，支持独立加载/继续训练。旧模型缺少死锁文件时初始化新分支；时序阈值、视野、输入维度或安全margin不兼容时提示后重新初始化。环境历史不写入模型检查点，重新启动的物理环境从中性状态开始。
+
+训练JSON新增 `deadlock_metrics_list`，W&B新增 `deadlock/*`。重点检查：
+
+- `deadlock_target_count`、`missed_deadlock_count`、`deadlock_recall`、`precision`、`false_positive_count`及各视野的正样本/漏判/误报计数；
+- `waiting_agent_ratio`、`conflict_group_agent_ratio`、`escape_available_agent_ratio`、`eligible_agent_ratio`、`max_eligible_seconds`；
+- `onset_transition_count`（后继状态出现新死锁的环境时间步数，每个车组成员不重复计数）；
+- `prediction_mae`、`underestimate_rate`、`valid_target_ratio`、各视野MAE和有效样本量。
+
+所有预测误差在对新rollout拟合之前记录。无正样本或无正预测时，对应recall/precision记0并配套计数；若全程缺少死锁正样本，不能因loss很低而认定Critic已经学会死锁。阶段六仍不使用这些预测约束Actor，需结合人工检查的死锁片段验证后再进入下一阶段。

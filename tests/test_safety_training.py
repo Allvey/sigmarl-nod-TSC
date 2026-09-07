@@ -1,13 +1,15 @@
 """Small end-to-end check: adding Safety must not change PPO's trajectory."""
 import json
 
+import pytest
 import torch
 
 from utilities.helper_training import Parameters
 from utilities.mappo_cavs import mappo_cavs
 
 
-def test_short_training_isolation_and_checkpoint_loads(tmp_path, monkeypatch):
+@pytest.mark.parametrize("branch", ["safety", "deadlock"])
+def test_short_training_isolation_and_checkpoint_loads(tmp_path, monkeypatch, branch):
     monkeypatch.setenv("WANDB_MODE", "disabled")
     old_threads = torch.get_num_threads()
     torch.set_num_threads(1)
@@ -29,7 +31,7 @@ def test_short_training_isolation_and_checkpoint_loads(tmp_path, monkeypatch):
             p.is_continue_train = False
             p.is_save_intermediate_model = True
             p.where_to_save = str(tmp_path / str(enabled)) + "/"
-            p.is_using_safety_critic = enabled
+            setattr(p, f"is_using_{branch}_critic", enabled)
             env, _, _, _ = mappo_cavs(p)
             env.close()
         for name in ["policy", "critic"]:
@@ -39,33 +41,43 @@ def test_short_training_isolation_and_checkpoint_loads(tmp_path, monkeypatch):
         before_nod = torch.load(tmp_path / "False/final_nod.pth")["model"]
         after_nod = torch.load(tmp_path / "True/final_nod.pth")["model"]
         assert all(torch.equal(before_nod[k], after_nod[k]) for k in before_nod)
+        if branch == "deadlock":
+            before_safety = torch.load(tmp_path / "False/final_safety_critic.pth")[
+                "model"
+            ]
+            after_safety = torch.load(tmp_path / "True/final_safety_critic.pth")[
+                "model"
+            ]
+            assert all(
+                torch.equal(before_safety[k], after_safety[k]) for k in before_safety
+            )
         data = json.loads(
             next((tmp_path / "True").glob("reward*_data.json")).read_text()
         )
-        assert len(data["safety_metrics_list"]) == 2
-        assert all(m["optimizer_updates"] > 0 for m in data["safety_metrics_list"])
-        assert (tmp_path / "True/final_safety_critic.pth").exists()
-        assert list((tmp_path / "True").glob("reward*_safety_critic.pth"))
+        assert len(data[f"{branch}_metrics_list"]) == 2
+        assert all(m["optimizer_updates"] > 0 for m in data[f"{branch}_metrics_list"])
+        assert (tmp_path / f"True/final_{branch}_critic.pth").exists()
+        assert list((tmp_path / "True").glob(f"reward*_{branch}_critic.pth"))
         for final in [False, True]:
             p.is_load_model = True
             p.is_load_final_model = final
             env, _, _, _ = mappo_cavs(p)
-            assert env.scenario.safety_manager.updates > 0
+            assert getattr(env.scenario, f"{branch}_manager").updates > 0
             env.close()
-        previous_updates = torch.load(tmp_path / "True/final_safety_critic.pth")[
+        previous_updates = torch.load(tmp_path / f"True/final_{branch}_critic.pth")[
             "updates"
         ]
         p.is_continue_train = True
         p.n_iters = 1
         p.total_frames = p.frames_per_batch
         env, _, _, _ = mappo_cavs(p)
-        assert env.scenario.safety_manager.updates > previous_updates
+        assert getattr(env.scenario, f"{branch}_manager").updates > previous_updates
         env.close()
         # The same loader must accept legacy policy/NOD files with no safety sidecar.
         p.is_continue_train = False
         p.where_to_save = str(tmp_path / "False") + "/"
         env, _, _, _ = mappo_cavs(p)
-        assert env.scenario.safety_manager.updates == 0
+        assert getattr(env.scenario, f"{branch}_manager").updates == 0
         env.close()
     finally:
         torch.set_num_threads(old_threads)

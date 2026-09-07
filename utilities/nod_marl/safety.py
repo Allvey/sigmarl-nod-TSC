@@ -88,12 +88,28 @@ class SafetyCriticManager:
     """Centralized joint-action Q, supervised on fresh ordered rollouts only."""
 
     def __init__(
-        self, parameters, observation_dim, n_agents, action_dim, observation_key
+        self,
+        parameters,
+        observation_dim,
+        n_agents,
+        action_dim,
+        observation_key,
+        *,
+        kind="safety",
+        context_key="safety_margins",
+        context_dim=3,
+        margin_key="safety_margins",
     ):
-        self.enabled = bool(getattr(parameters, "is_using_safety_critic", True))
+        # Stage 6 reuses the finite-horizon training mechanics, never weights or RNG.
+        self.kind = kind
+        self.context_key = context_key
+        self.margin_key = margin_key
+        self.enabled = bool(getattr(parameters, f"is_using_{kind}_critic", True))
         self.parameters = parameters
         self.observation_key = observation_key
-        self.horizons = tuple(parameters.safety_horizons)
+        self.horizons = tuple(getattr(parameters, f"{kind}_horizons"))
+        self.num_epochs = getattr(parameters, f"{kind}_num_epochs")
+        self.minibatch_size = getattr(parameters, f"{kind}_minibatch_size")
         if (
             not self.horizons
             or tuple(sorted(set(self.horizons))) != self.horizons
@@ -102,12 +118,12 @@ class SafetyCriticManager:
             raise ValueError(
                 "safety_horizons must be increasing, unique positive integers"
             )
-        self.input_dim = n_agents * (observation_dim + 5 + 3 + action_dim)
+        self.input_dim = n_agents * (observation_dim + 5 + context_dim + action_dim)
         self.metadata = {
             "version": 1,
             "input_dim": self.input_dim,
             "horizons": self.horizons,
-            "hidden_dim": parameters.safety_hidden_dim,
+            "hidden_dim": getattr(parameters, f"{kind}_hidden_dim"),
             "safe_distance": parameters.safety_safe_distance,
             "boundary_margin": parameters.safety_boundary_margin,
         }
@@ -115,7 +131,7 @@ class SafetyCriticManager:
             list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
         )
         with torch.random.fork_rng(devices=devices):
-            width = parameters.safety_hidden_dim
+            width = self.metadata["hidden_dim"]
             self.model = nn.Sequential(
                 nn.Linear(self.input_dim, width),
                 nn.Tanh(),
@@ -124,18 +140,19 @@ class SafetyCriticManager:
                 nn.Linear(width, len(self.horizons)),
             ).to(parameters.device)
         self.optimizer = torch.optim.Adam(
-            self.model.parameters(), lr=parameters.safety_lr
+            self.model.parameters(), lr=getattr(parameters, f"{kind}_lr")
         )
         self.generator = torch.Generator(device="cpu")
         self.generator.manual_seed(
-            int(getattr(parameters, "seed", 0) or 0) ^ 0x53414645
+            int(getattr(parameters, "seed", 0) or 0)
+            ^ (0x53414645 if kind == "safety" else 0x44454144)
         )
         self.updates = 0
 
     def features(self, td):
         # Current information and actual action only: no next-state leakage.
         parts = [td.get(self.observation_key)]
-        for key in ("pos", "vel", "rot", "safety_margins"):
+        for key in ("pos", "vel", "rot", self.context_key):
             parts.append(td.get(("agents", "info", key)))
         parts.append(td.get(("agents", "action")))
         return torch.cat(parts, -1).flatten(-2).detach()
@@ -149,9 +166,9 @@ class SafetyCriticManager:
             return {"enabled": 0.0}
         if td.ndim != 2:
             raise ValueError("Safety training expects [environment, time] rollout")
-        current = td.get(("agents", "info", "safety_margins")).detach().amax((-2, -1))
+        current = td.get(("agents", "info", self.margin_key)).detach().amax((-2, -1))
         following = (
-            td.get(("next", "agents", "info", "safety_margins")).detach().amax((-2, -1))
+            td.get(("next", "agents", "info", self.margin_key)).detach().amax((-2, -1))
         )
         targets, valid = finite_horizon_targets(
             current,
@@ -194,6 +211,20 @@ class SafetyCriticManager:
                 if mask.any()
                 else 0.0,
             }
+            if self.kind == "deadlock":
+                positive_predictions = (prediction > 0) & mask
+                metrics["positive_prediction_count"] = int(positive_predictions.sum())
+                metrics["false_positive_count"] = int(
+                    (positive_predictions & ~unsafe).sum()
+                )
+                metrics["precision"] = (
+                    float(
+                        (positive_predictions & unsafe).sum()
+                        / positive_predictions.sum()
+                    )
+                    if positive_predictions.any()
+                    else 0.0
+                )
             for index, horizon in enumerate(self.horizons):
                 selected = mask[:, index]
                 metrics[f"h{horizon}/valid_count"] = int(selected.sum())
@@ -205,13 +236,28 @@ class SafetyCriticManager:
                 metrics[f"h{horizon}/target_mean"] = (
                     float(y[selected, index].mean()) if selected.any() else 0.0
                 )
+                if self.kind == "deadlock":
+                    positives = unsafe[:, index]
+                    metrics[f"h{horizon}/unsafe_count"] = int(positives.sum())
+                    metrics[f"h{horizon}/missed_count"] = int(missed[:, index].sum())
+                    metrics[f"h{horizon}/false_positive_count"] = int(
+                        ((prediction[:, index] > 0) & selected & ~positives).sum()
+                    )
+                    metrics[f"h{horizon}/unsafe_recall"] = (
+                        float(
+                            ((prediction[:, index] > 0) & positives).sum()
+                            / positives.sum()
+                        )
+                        if positives.any()
+                        else 0.0
+                    )
         rows = mask.any(-1).nonzero().squeeze(-1)
         losses = []
-        for _ in range(self.parameters.safety_num_epochs):
+        for _ in range(self.num_epochs):
             order = torch.randperm(rows.numel(), generator=self.generator).to(
                 rows.device
             )
-            for indices in rows[order].split(self.parameters.safety_minibatch_size):
+            for indices in rows[order].split(self.minibatch_size):
                 if indices.numel() == 0:
                     continue
                 prediction = self.model(x[indices])
@@ -245,13 +291,13 @@ class SafetyCriticManager:
             return False
         if not Path(path).exists():
             print(
-                f"[INFO] No Safety Critic checkpoint at {path}; initialized independently."
+                f"[INFO] No {self.kind} Critic checkpoint at {path}; initialized independently."
             )
             return False
         checkpoint = torch.load(path, map_location=self.parameters.device)
         if any(checkpoint.get(key) != value for key, value in self.metadata.items()):
             print(
-                f"[WARN] Incompatible Safety Critic checkpoint {path}; initialized independently."
+                f"[WARN] Incompatible {self.kind} Critic checkpoint {path}; initialized independently."
             )
             return False
         self.model.load_state_dict(checkpoint["model"])
@@ -259,5 +305,5 @@ class SafetyCriticManager:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
             self.generator.set_state(checkpoint["generator"].cpu())
         self.updates = checkpoint.get("updates", 0)
-        print(f"[INFO] Loaded Safety Critic: {path}")
+        print(f"[INFO] Loaded {self.kind} Critic: {path}")
         return True
