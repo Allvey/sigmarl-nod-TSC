@@ -27,6 +27,8 @@ try:
         parameters = saved_data.parameters
 
         # Adjust parameters
+        # Safety-only rollout, including when loading older training JSON files.
+        parameters.is_using_deadlock_critic = False
         parameters.is_testing_mode = True
         parameters.is_real_time_rendering = True
         parameters.is_save_eval_results = False
@@ -41,10 +43,10 @@ try:
 
         parameters.scenario_type = (
             # "intersection_2"
-            # "roundabout_1"
+            "roundabout_1"
             # "CPM_entire"
             # "CPM_mixed"  
-            "on_ramp_1"
+            # "on_ramp_1"
             # roundabout_1, intersection_1/2/3, CPM_mixed
         )
         parameters.n_agents = SCENARIOS[parameters.scenario_type]["n_agents"]

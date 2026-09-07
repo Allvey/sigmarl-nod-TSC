@@ -811,6 +811,11 @@ class Parameters:
         safety_constraint_max_weight: float = 0.1,
         safety_constraint_dual_lr: float = 0.01,
         safety_constraint_margin: float = 0.05,
+        safety_constraint_risk_budget: float = 0.0,
+        safety_gate_window: int = 5,
+        safety_gate_min_unsafe: int = 64,
+        safety_gate_min_recall: float = 0.9,
+        safety_gate_max_underestimate: float = 0.15,
         # Stage 6: independent temporal deadlock prediction.
         is_using_deadlock_critic: bool = True,
         deadlock_horizons=None,
@@ -958,6 +963,11 @@ class Parameters:
         self.safety_constraint_max_weight = safety_constraint_max_weight
         self.safety_constraint_dual_lr = safety_constraint_dual_lr
         self.safety_constraint_margin = safety_constraint_margin
+        self.safety_constraint_risk_budget = safety_constraint_risk_budget
+        self.safety_gate_window = safety_gate_window
+        self.safety_gate_min_unsafe = safety_gate_min_unsafe
+        self.safety_gate_min_recall = safety_gate_min_recall
+        self.safety_gate_max_underestimate = safety_gate_max_underestimate
         if (any(not isinstance(h, int) or h < 1 for h in self.safety_horizons)
                 or not self.safety_horizons
                 or self.safety_horizons != sorted(set(self.safety_horizons))
@@ -970,6 +980,16 @@ class Parameters:
                 or not safety_constraint_max_weight > 0
                 or not safety_constraint_dual_lr > 0
                 or not safety_constraint_margin >= 0
+                or not safety_constraint_risk_budget >= 0
+                or not isinstance(safety_gate_window, int) or safety_gate_window < 1
+                or not isinstance(safety_gate_min_unsafe, int) or safety_gate_min_unsafe < 1
+                or not 0 <= safety_gate_min_recall <= 1
+                or not 0 <= safety_gate_max_underestimate <= 1
+                or not all(math.isfinite(v) for v in (
+                    safety_constraint_initial_weight, safety_constraint_max_weight,
+                    safety_constraint_dual_lr, safety_constraint_margin,
+                    safety_constraint_risk_budget, safety_gate_min_recall,
+                    safety_gate_max_underestimate))
                 or (is_using_safety_constraint and
                     (not is_using_safety_critic or not any(h > 1 for h in self.safety_horizons)))):
             raise ValueError("Invalid Safety Actor constraint parameters")

@@ -182,18 +182,22 @@ NOD 的循环状态在采集时按时间顺序推进，并以 detached context �
 - `onset_transition_count`（后继状态出现新死锁的环境时间步数，每个车组成员不重复计数）；
 - `prediction_mae`、`underestimate_rate`、`valid_target_ratio`、各视野MAE和有效样本量。
 
-所有预测误差在对新rollout拟合之前记录。无正样本或无正预测时，对应recall/precision记0并配套计数；若全程缺少死锁正样本，不能因loss很低而认定Critic已经学会死锁。阶段六仍不使用这些预测约束Actor。2026-09-07用户决定暂缓死锁工作；其验证不再作为安全主线的前置条件。后续范围以 `NOD_MARL_STAGED_IMPLEMENTATION_HANDOFF.md` 为准；本轮仅调整计划，实际关闭开关待下一次阶段7修改。
+所有预测误差在对新rollout拟合之前记录。无正样本或无正预测时，对应recall/precision记0并配套计数；若全程缺少死锁正样本，不能因loss很低而认定Critic已经学会死锁。2026-09-07按用户决定暂停死锁工作：根配置关闭 `is_using_deadlock_critic`，测试入口也显式关闭以覆盖旧训练JSON中的true。已有实现与文件兼容保留，但当前入口不进行死锁监督训练、加载或Actor约束；其验证不再阻塞安全主线。
 
 ## 8. 阶段七：先接入 Safety Actor 约束
 
 根配置启用 `is_using_safety_constraint=true`。为保持旧 JSON 行为，Parameters 中该开关默认 false；关闭后恢复仅独立训练 Safety Critic 的路径。死锁预测仍不参与 Actor 更新。
 
-首版复用 PPO、现有 Safety 网络和安全指标列表，不新增网络。Safety 完成10个有效 rollout 的监督训练后，从第11批开始接入约束。每个 PPO minibatch 使用同一套可训练 Actor 参数及缓存的 NOD context，重新生成确定性名义动作（TanhNormal.mode）；不使用缓存动作计算策略梯度，也不改写采样动作或旧 log-prob。
+实现复用 PPO、现有 Safety 网络和安全指标列表，不新增网络。Safety 至少完成10个有效 rollout 后，还必须通过可靠性门控；第11批只是最早可能启用的时间。每个 PPO minibatch 使用同一套可训练 Actor 参数及缓存的 NOD context，重新生成确定性名义动作（TanhNormal.mode）；不使用缓存动作计算策略梯度，也不改写采样动作或旧 log-prob。
+
+门控采用最近5批新rollout在拟合前的预测，选择“当前安全且所有h>1目标有效”的状态，分别对预测和真实目标取未来视野最大值。累计至少64个危险状态目标、危险召回率不低于0.90、低估超过0.05的比例不高于0.15，才允许约束更新。统计按状态目标计数，不是64个独立碰撞事件；不混入h=1的容易样本，不使用拟合后误差。窗口逐批滚动，可靠性变差可以重新关闭。当前批PPO使用此前已完成批次的门控证据，当前新证据在本批Safety训练时记录，供下一批使用；这是在线经验门控，不是独立测试集上的安全证书。
 
 状态特征和 Safety 权重 detach，仅保留动作梯度。取 h>1 的预测最大值加0.05安全余量作为 q；h=1只描述当前状态，不作为动作约束。由于目标包含当前违反量，已违反状态无法通过当前动作使目标满足，因此本版仅在当前所有 safety margin 非正的状态上计算 `lambda * mean(relu(q))`，用于从安全状态避免进入危险状态，不提供已危险状态的恢复控制。
 
-约束权重初值0.01，每个 rollout 的 PPO 更新完成后按该批各次更新的有效状态平均 q，执行 `lambda = clip(lambda + 0.01 * mean(q), 0, 0.1)`。PPO 更新期间权重不变；Safety 在其后用真实采样动作继续监督训练。这个有上限的全局标量自适应惩罚是工程简化，不是方法文档中的状态相关原始—对偶实现，也不能宣称逐状态安全保证。它只约束名义动作；随机采样动作仍可能偏离名义动作。
+约束权重初值0.01，每个 rollout 的 PPO 更新完成后执行 `lambda = clip(lambda + 0.01 * (mean(relu(q)) - risk_budget), 0, 0.1)`。均值的分母是所有eligible状态，负风险记0，不能再抵消正违反量。默认 `safety_constraint_risk_budget=0`：没有违反时保持权重，有违反时增加至上限；即使加载权重为0，也能在门控就绪且存在正风险时恢复。显式设置正预算时，低于预算才允许下降。门控未就绪或没有eligible样本时不更新权重。PPO更新期间权重不变；Safety在其后用真实采样动作继续监督训练，并清空拟合梯度以验证Actor反传隔离。这个有上限的标量惩罚仍是工程简化，只约束名义动作，随机采样动作仍可能偏离。
 
-新增指标沿用 `safety_metrics_list` 和 `safety/*`：`actor_constraint_active`、`actor_constraint_weight`、`actor_constraint_next_weight`、`actor_constraint_loss`、`actor_constraint_risk`（已含安全余量）、`actor_constraint_violation_rate`、`actor_constraint_eligible_fraction`。预热期约束损失和active均为0；接入后重点同时检查碰撞、风险低估、通行效率和是否过度停车。预热只保证有过训练，不证明风险预测已足够可靠。
+指标沿用 `safety_metrics_list` 和 `safety/*`。`actor_constraint_ready`表示门控就绪；`actor_constraint_active`要求本批实际应用正权重且有正惩罚。分别记录 `actor_constraint_signed_risk`（旧名risk保留）、`actor_constraint_positive_risk`、`actor_constraint_dual_signal`、`actor_constraint_violation_rate`、`actor_constraint_sample_count`、`actor_constraint_eligible_fraction`、权重/下一权重/损失及 `actor_constraint_weight_at_cap`。门控关闭时动作风险没有评估，sample_count为0；此时risk为0不能解释为没有危险。
 
-Safety sidecar 增存有效训练批数和约束权重，继续训练时恢复；旧 sidecar 缺少批数时重新执行预热。Actor 输入输出和推理入口不变，测试时不会额外调用 Safety 来过滤动作。4车安全网络仍不能直接加载到8车测试，但经过本阶段训练的共享 Actor 可以携带所学行为；跨地图和车辆密度的泛化仍需验证。当前训练场景配比、车辆数及 PPO/NOD 超参数保持原配置。
+`constraint_gate_reason`：0=就绪，1=开关关闭，2=预热，3=窗口内危险目标不足，4=召回不足，5=低估过多。配套 `constraint_gate_valid_count/unsafe_count/recall/underestimate_rate` 是本批Actor实际使用的门控证据，口径与原有跨视野全体样本的 `unsafe_recall` 不同。门控长期不通过时改善数据和Critic，不放宽阈值伪装启用；权重长期顶上限但碰撞未改善，也需单独分析。
+
+Safety sidecar 增存有效训练批数、权重、最近门控统计和版本2约束配置合同。继续训练时仅在合同一致且状态齐全时恢复；旧sidecar缺少状态或门控/对偶配置变化时，保留兼容的Safety模型与优化器，重置门控历史、预热计数和初始权重。Actor输入输出不变，测试时不会额外调用Safety过滤动作。4车Safety仍不能直接加载到8车测试；当前阶段仍需完整250轮训练验证碰撞与通行效果，未实施阶段8的模型保守化或阶段9的场景扩展。

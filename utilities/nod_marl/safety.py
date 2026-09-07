@@ -155,6 +155,7 @@ class SafetyCriticManager:
         )
         self.constraint_weight = parameters.safety_constraint_initial_weight
         self._constraint_totals = [0.0] * 5
+        self.reliability_history = []
 
     def features(self, td, action=None):
         # Current information and actual action only: no next-state leakage.
@@ -167,8 +168,51 @@ class SafetyCriticManager:
 
     @property
     def constraint_ready(self):
-        return (self.enabled and self.constraint_enabled and self.updates > 0
-                and self.rollouts >= self.parameters.safety_constraint_warmup_batches)
+        return self.constraint_gate()["reason"] == 0
+
+    def constraint_gate(self):
+        """Gate from recent pre-fit predictions on currently safe states.
+
+        Reasons: 0 ready, 1 disabled, 2 warmup, 3 too few unsafe targets,
+        4 low recall, 5 excessive underestimation. Counts are state targets,
+        not independent collision events.
+        """
+        count, unsafe, missed, low = (
+            sum(row[i] for row in self.reliability_history) for i in range(4)
+        )
+        recall = (unsafe - missed) / max(1, unsafe)
+        underestimate = low / max(1, count)
+        p = self.parameters
+        reason = 0
+        if not self.enabled or not self.constraint_enabled:
+            reason = 1
+        elif self.updates == 0 or self.rollouts < p.safety_constraint_warmup_batches:
+            reason = 2
+        elif unsafe < p.safety_gate_min_unsafe:
+            reason = 3
+        elif recall < p.safety_gate_min_recall:
+            reason = 4
+        elif underestimate > p.safety_gate_max_underestimate:
+            reason = 5
+        return dict(reason=reason, valid_count=count, unsafe_count=unsafe,
+                    recall=recall, underestimate_rate=underestimate)
+
+    def _record_reliability(self, prediction, target, valid, current):
+        if self.kind != "safety":
+            return
+        future = [i for i, h in enumerate(self.horizons) if h > 1]
+        if not future:
+            return
+        selected = valid[:, future].all(-1) & (current.reshape(-1) <= 0)
+        predicted = prediction[:, future].amax(-1)[selected]
+        actual = target[:, future].amax(-1)[selected]
+        unsafe = actual > 0
+        self.reliability_history.append([
+            actual.numel(), int(unsafe.sum()),
+            int((unsafe & (predicted <= 0)).sum()),
+            int((predicted < actual - 0.05).sum()),
+        ])
+        self.reliability_history = self.reliability_history[-self.parameters.safety_gate_window:]
 
     def actor_loss(self, td, action):
         """Differentiate only through current actions, using a frozen safety Q.
@@ -193,23 +237,32 @@ class SafetyCriticManager:
         return self.constraint_weight * penalty
 
     def finish_actor_update(self):
-        """One projected scalar dual update per rollout, never per PPO epoch."""
+        """Update from mean positive violation: safe negatives cannot cancel risk."""
         risk_sum, penalty_sum, violations, count, total = self._constraint_totals
         weight = self.constraint_weight
+        positive_risk = penalty_sum / max(1, count)
+        dual_signal = positive_risk - self.parameters.safety_constraint_risk_budget
         if self.constraint_ready and count:
             self.constraint_weight = min(
                 self.parameters.safety_constraint_max_weight,
-                max(0.0, weight + self.parameters.safety_constraint_dual_lr * risk_sum / count),
+                max(0.0, weight + self.parameters.safety_constraint_dual_lr * dual_signal),
             )
         self._constraint_totals = [0.0] * 5
         return {
-            "actor_constraint_active": float(self.constraint_ready),
+            "actor_constraint_ready": float(self.constraint_ready),
+            "actor_constraint_active": float(self.constraint_ready and weight > 0 and penalty_sum > 0),
             "actor_constraint_weight": weight,
             "actor_constraint_next_weight": self.constraint_weight,
             "actor_constraint_loss": weight * penalty_sum / max(1, count),
             "actor_constraint_risk": risk_sum / max(1, count),
+            "actor_constraint_signed_risk": risk_sum / max(1, count),
+            "actor_constraint_positive_risk": positive_risk,
+            "actor_constraint_dual_signal": dual_signal if count else 0.0,
+            "actor_constraint_sample_count": count,
+            "actor_constraint_weight_at_cap": float(weight >= self.parameters.safety_constraint_max_weight),
             "actor_constraint_violation_rate": violations / max(1, count),
             "actor_constraint_eligible_fraction": count / max(1, total),
+            **{f"constraint_gate_{key}": value for key, value in self.constraint_gate().items()},
         }
 
     @torch.no_grad()
@@ -242,6 +295,9 @@ class SafetyCriticManager:
         # Pre-update metrics measure prediction on this fresh batch, not fit error.
         with torch.no_grad():
             prediction = self.model(x)
+            if not torch.isfinite(prediction).all():
+                raise ValueError("Non-finite Safety Critic predictions")
+            self._record_reliability(prediction, y, mask, current)
             error = prediction - y
             unsafe = (y > 0) & mask
             missed = unsafe & (prediction <= 0)
@@ -332,7 +388,17 @@ class SafetyCriticManager:
         metrics["optimizer_updates"] = len(losses)
         if losses:
             self.rollouts += 1
+        # Clear fitting gradients so Actor-phase isolation can be asserted.
+        self.optimizer.zero_grad(set_to_none=True)
         return metrics
+
+    def _constraint_contract(self):
+        names = ("safety_constraint_warmup_batches", "safety_constraint_initial_weight",
+                 "safety_constraint_max_weight", "safety_constraint_dual_lr",
+                 "safety_constraint_margin", "safety_constraint_risk_budget",
+                 "safety_gate_window", "safety_gate_min_unsafe", "safety_gate_min_recall",
+                 "safety_gate_max_underestimate")
+        return {"version": 2, **{name: getattr(self.parameters, name) for name in names}}
 
     def checkpoint_state(self):
         return {
@@ -342,7 +408,10 @@ class SafetyCriticManager:
             "generator": self.generator.get_state(),
             "updates": self.updates,
             "rollouts": self.rollouts,
-            **({"constraint_weight": self.constraint_weight} if self.kind == "safety" else {}),
+            **({"constraint_weight": self.constraint_weight,
+                "constraint_contract": self._constraint_contract(),
+                "reliability_history": [row[:] for row in self.reliability_history]}
+               if self.kind == "safety" else {}),
         }
 
     def load_if_available(self, path, load_optimizer=False):
@@ -365,10 +434,20 @@ class SafetyCriticManager:
             self.generator.set_state(checkpoint["generator"].cpu())
         self.updates = checkpoint.get("updates", 0)
         self.rollouts = checkpoint.get("rollouts", 0)
+        self.reliability_history = []
+        self._constraint_totals = [0.0] * 5
         if load_optimizer and self.constraint_enabled:
-            self.constraint_weight = min(
-                self.parameters.safety_constraint_max_weight,
-                max(0.0, checkpoint.get("constraint_weight", self.constraint_weight)),
-            )
+            self.constraint_weight = self.parameters.safety_constraint_initial_weight
+            if (checkpoint.get("constraint_contract") == self._constraint_contract()
+                    and all(key in checkpoint for key in
+                            ("reliability_history", "rollouts", "constraint_weight"))):
+                self.reliability_history = [row[:] for row in checkpoint.get("reliability_history", [])]
+                self.constraint_weight = min(
+                    self.parameters.safety_constraint_max_weight,
+                    max(0.0, checkpoint.get("constraint_weight", self.constraint_weight)),
+                )
+            else:
+                self.rollouts = 0
+                print("[INFO] Safety constraint state changed or missing; restarting reliability warmup.")
         print(f"[INFO] Loaded {self.kind} Critic: {path}")
         return True

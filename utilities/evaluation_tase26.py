@@ -11,7 +11,7 @@ from utilities.evaluation_base import Evaluation
 
 
 model_paths = [
-    "outputs/TSC/seed8/",
+    "outputs/TSC/",
 ]
 
 num_models = len(model_paths)
@@ -69,8 +69,8 @@ for i_scenario in scenario_types:
         simulation_steps=120,
         is_show_different_collisions=is_show_different_collisions,
         x_ticks=x_ticks,
-        where_to_save_eva_results=f"outputs/TSC/seed8/eva_{i_scenario}",
-        where_to_save_logging="outputs/TSC/seed8/log.txt",
+        where_to_save_eva_results=f"outputs/TSC/eva_{i_scenario}",
+        where_to_save_logging="outputs/TSC/log.txt",
         legends=legends,
         render_titles=render_titles,
         num_simulations_per_model=2,

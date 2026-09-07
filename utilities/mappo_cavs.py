@@ -739,6 +739,10 @@ def mappo_cavs(parameters: Parameters):
                 # PPO updates the Actor, message aggregator and task Critic.
                 optim.zero_grad()
                 combined_loss.backward()
+                if safety_manager.constraint_ready:
+                    assert all(p.grad is None for p in safety_manager.model.parameters()), (
+                        "Actor penalty must not backpropagate into Safety Critic parameters"
+                    )
 
                 # Track the PPO task loss for logging.
                 last_loss_value = combined_loss.detach().mean().item()
