@@ -832,6 +832,13 @@ class Parameters:
         safety_value_challenging_fraction: float = 0.0,
         safety_value_start_buffer_size: int = 128,
         safety_value_start_lookback: int = 10,
+        # Stage 8B: fixed barrier on PPO advantages; legacy JSON keeps Stage 7.
+        safety_control_mode: str = "legacy_q",
+        safety_barrier_kappa: float = 0.05,
+        safety_barrier_road_kappa: float = 0.05,
+        safety_barrier_nu: float = 1.0,
+        safety_barrier_strength: float = 0.1,
+        safety_barrier_warmup_batches: int = 10,
         # Stage 6: independent temporal deadlock prediction.
         is_using_deadlock_critic: bool = True,
         deadlock_horizons=None,
@@ -988,6 +995,21 @@ class Parameters:
         self.safety_value_challenging_fraction = safety_value_challenging_fraction
         self.safety_value_start_buffer_size = safety_value_start_buffer_size
         self.safety_value_start_lookback = safety_value_start_lookback
+        self.safety_control_mode = safety_control_mode
+        self.safety_barrier_kappa = safety_barrier_kappa
+        self.safety_barrier_road_kappa = safety_barrier_road_kappa
+        self.safety_barrier_nu = safety_barrier_nu
+        self.safety_barrier_strength = safety_barrier_strength
+        self.safety_barrier_warmup_batches = safety_barrier_warmup_batches
+        if (safety_control_mode not in {"off", "legacy_q", "barrier_fixed"}
+                or not 0 < safety_barrier_kappa < 1
+                or not 0 < safety_barrier_road_kappa < 1
+                or not math.isfinite(safety_barrier_nu) or safety_barrier_nu <= 0
+                or not 0 <= safety_barrier_strength <= 1
+                or not isinstance(safety_barrier_warmup_batches, int) or safety_barrier_warmup_batches < 0
+                or (safety_control_mode == "barrier_fixed" and
+                    (not is_using_safety_value_shadow or is_using_prioritized_marl))):
+            raise ValueError("Invalid Stage-8B fixed barrier configuration")
         if (not math.isfinite(safety_value_challenging_fraction)
                 or not 0 <= safety_value_challenging_fraction < 1
                 or (safety_value_challenging_fraction > 0 and safety_value_num_envs < 2)
@@ -1038,7 +1060,7 @@ class Parameters:
                     safety_constraint_dual_lr, safety_constraint_margin,
                     safety_constraint_risk_budget, safety_gate_min_recall,
                     safety_gate_max_underestimate))
-                or (is_using_safety_constraint and
+                or (is_using_safety_constraint and safety_control_mode == "legacy_q" and
                     (not is_using_safety_critic or not any(h > 1 for h in self.safety_horizons)))):
             raise ValueError("Invalid Safety Actor constraint parameters")
         self.is_using_nod_opinion = is_using_nod_opinion

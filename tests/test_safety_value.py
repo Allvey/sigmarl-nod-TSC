@@ -364,6 +364,7 @@ def test_training_shadow_is_bitwise_isolated_and_loadable(tmp_path, monkeypatch)
     try:
         for enabled in (False, True):
             p = Parameters.from_json("config.json")
+            p.safety_control_mode = 'legacy_q'
             p.seed = 571; p.n_iters = 2; p.num_epochs = 1
             p.frames_per_batch = 16; p.minibatch_size = 8
             p.num_vmas_envs = 2; p.max_steps = 8; p.total_frames = 32

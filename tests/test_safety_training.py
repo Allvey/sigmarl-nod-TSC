@@ -16,6 +16,7 @@ def test_short_training_isolation_and_checkpoint_loads(tmp_path, monkeypatch, br
     try:
         for enabled in [False, True]:
             p = Parameters.from_json("config.json")
+            p.safety_control_mode = 'legacy_q'
             p.is_using_safety_constraint = False
             p.seed = 12345
             p.n_iters = 2

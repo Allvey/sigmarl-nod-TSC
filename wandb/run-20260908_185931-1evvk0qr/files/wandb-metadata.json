@@ -1,0 +1,38 @@
+{
+  "os":  "macOS-15.6.1-arm64-arm-64bit",
+  "python":  "CPython 3.9.25",
+  "startedAt":  "2026-09-08T10:59:31.355911Z",
+  "program":  "/Users/zhangxiaotong/Code/sigmarl-nod-TSC/main_training.py",
+  "codePath":  "main_training.py",
+  "codePathLocal":  "main_training.py",
+  "git":  {
+    "remote":  "https://github.com/Allvey/sigmarl-nod-TSC.git",
+    "commit":  "879713f80071ca450a2b9365b2f5b9487198406a"
+  },
+  "email":  "532373844@qq.com",
+  "root":  "/Users/zhangxiaotong/Code/sigmarl-nod-TSC",
+  "host":  "zhangxiaotongdeMacBook-Air.local",
+  "executable":  "/Users/zhangxiaotong/anaconda3/envs/sigmarl-nod/bin/python",
+  "cpu_count":  8,
+  "cpu_count_logical":  8,
+  "disk":  {
+    "/":  {
+      "total":  "494384795648",
+      "used":  "407913918464"
+    }
+  },
+  "memory":  {
+    "total":  "25769803776"
+  },
+  "apple":  {
+    "name":  "Apple M3",
+    "ecpuCores":  4,
+    "pcpuCores":  4,
+    "gpuCores":  10,
+    "memoryGb":  24,
+    "swapTotalBytes":  "11811160064",
+    "ramTotalBytes":  "25769803776",
+    "macModel":  "Mac15,12"
+  },
+  "writerId":  "5yreh3uoaip244u861kejx272goo10hf"
+}

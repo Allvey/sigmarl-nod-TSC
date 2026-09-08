@@ -90,6 +90,7 @@ from utilities.nod_marl import (
 from utilities.nod_marl.safety import SafetyCriticManager
 from utilities.nod_marl.deadlock import DeadlockCriticManager
 from utilities.nod_marl.safety_value import SafetyValueManager, DeterministicSafetySampler
+from utilities.nod_marl.barrier import prepare_barrier_advantage
 
 class BoundedNormalParamExtractor(NormalParamExtractor):
     """Keep the original scale mapping and floor, with a fixed upper bound."""
@@ -706,6 +707,16 @@ def mappo_cavs(parameters: Parameters):
                         target_params=priority_module.loss_module.target_critic_params,
                     )
 
+            # Keep task GAE/value_target intact except for the Actor advantage.
+            # Freeze the new safety signal for all PPO epochs on this rollout.
+            barrier_metrics = prepare_barrier_advantage(
+                safety_value_manager, tensordict_data, loss_module.tensor_keys.advantage)
+            barrier_actor_updates = 0
+            if barrier_metrics['barrier_active']:
+                # NOD's preceding supervised step may leave gradients attached.
+                # Clear those before checking isolation of this PPO backward.
+                nod_manager.optimizer.zero_grad(set_to_none=True)
+
             # Update sample priorities
             if parameters.is_prb:
                 td_error = compute_td_error(tensordict_data, gamma=0.9)
@@ -754,6 +765,12 @@ def mappo_cavs(parameters: Parameters):
                     # PPO updates the Actor, message aggregator and task Critic.
                     optim.zero_grad()
                     combined_loss.backward()
+                    if barrier_metrics['barrier_active']:
+                        task_advantage = mini_batch_data.get(('agents', 'barrier_task_advantage'))
+                        barrier_actor_updates += int(bool((mini_batch_data.get(
+                            loss_module.tensor_keys.advantage) != task_advantage).any()))
+                        assert all(p.grad is None for p in safety_value_manager.model.parameters())
+                        assert all(p.grad is None for p in nod_manager.model.parameters())
                     if safety_manager.constraint_ready:
                         assert all(p.grad is None for p in safety_manager.model.parameters()), (
                             "Actor penalty must not backpropagate into Safety Critic parameters"
@@ -774,6 +791,7 @@ def mappo_cavs(parameters: Parameters):
 
                     if parameters.is_prb:
                         # Recalculate loss
+                        frozen_advantage = mini_batch_data.get(loss_module.tensor_keys.advantage).clone()
                         with torch.no_grad():
                             GAE(
                                 mini_batch_data,
@@ -790,6 +808,8 @@ def mappo_cavs(parameters: Parameters):
                         new_td_errors = compute_td_error(mini_batch_data, gamma=0.9)
                         mini_batch_data.set("td_error", new_td_errors)
                         replay_buffer.update_tensordict_priority(mini_batch_data)
+                        if barrier_metrics['barrier_active']:
+                            mini_batch_data.set(loss_module.tensor_keys.advantage, frozen_advantage)
             constraint_metrics = safety_manager.finish_actor_update()
             # NOD learns directly from ordered physical pair features. PPO trains
             # only the stateless message aggregator from cached online context.
@@ -856,6 +876,9 @@ def mappo_cavs(parameters: Parameters):
             if shadow_sampler:
                 safety_value_metrics.update(shadow_sampler.last_metrics)
                 safety_value_metrics["sampling_seconds"] = shadow_seconds
+            safety_value_metrics.update(barrier_metrics)
+            safety_value_metrics['actor_updates'] = float(barrier_actor_updates)
+            safety_value_metrics['shadow_only'] = float(not barrier_metrics['barrier_enabled'])
             safety_value_metrics_list.append(safety_value_metrics)
 
             collector.update_policy_weights_()  # Updates the policy weights if the policy of the data collector and the trained policy live on different devices

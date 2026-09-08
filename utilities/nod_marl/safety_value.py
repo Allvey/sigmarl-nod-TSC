@@ -300,6 +300,19 @@ class SafetyValueManager:
         self.updates = self.rollouts = self.frames = 0
         self.sampler_state = {"seed": int(parameters.seed or 0) ^ 0x3856414C}
         self.start_buffer_state = None
+        self.barrier_fit_batches = 0
+        self.barrier_contract = dict(
+            version=1, mode=parameters.safety_control_mode,
+            enabled=parameters.is_using_safety_constraint,
+            kappa=parameters.safety_barrier_kappa, road_kappa=parameters.safety_barrier_road_kappa,
+            nu=parameters.safety_barrier_nu, strength=parameters.safety_barrier_strength,
+            warmup=parameters.safety_barrier_warmup_batches,
+            gate="warmup_only_experiment", recovery="nonincrease_value",
+            advantage="soft_task_mask_minus_max_positive", normalization="unchanged_task_GAE",
+        )
+        if parameters.safety_control_mode == 'barrier_fixed' and (
+                not self.enabled or parameters.is_using_prioritized_marl):
+            raise ValueError("Stage 8B requires Safety Value and non-prioritized MARL")
         self.contract = dict(
             version=1, mode="state_value_shadow", observation_dim=observation_dim,
             width=parameters.safety_value_hidden_dim, pair_dim=NOD_PAIR_FEATURE_DIM,
@@ -395,6 +408,8 @@ class SafetyValueManager:
             for dest, src in zip(self.target.parameters(), self.model.parameters()):
                 dest.lerp_(src, self.parameters.safety_value_target_tau)
         self.rollouts += 1
+        if losses:
+            self.barrier_fit_batches += 1
         self.frames += td.numel()
         metrics.update(optimizer_updates=float(len(losses)), training_loss=float(np.mean(losses)) if losses else 0.,
                        deterministic_frames=float(td.numel()), total_deterministic_frames=float(self.frames))
@@ -407,7 +422,8 @@ class SafetyValueManager:
                     model=self.model.state_dict(), target=self.target.state_dict(),
                     optimizer=self.optimizer.state_dict(), updates=self.updates, rollouts=self.rollouts,
                     frames=self.frames, generator=self.generator.get_state(), sampler_state=self.sampler_state,
-                    start_buffer_state=self.start_buffer_state)
+                    start_buffer_state=self.start_buffer_state,
+                    barrier_contract=self.barrier_contract, barrier_fit_batches=self.barrier_fit_batches)
 
     def load_if_available(self, path, *, load_optimizer=False):
         if not self.enabled:
@@ -425,6 +441,9 @@ class SafetyValueManager:
         self.target.load_state_dict(checkpoint["target"])
         self.updates, self.rollouts, self.frames = (checkpoint[k] for k in ("updates", "rollouts", "frames"))
         loss_changed = checkpoint.get("loss_contract", {"mode": "legacy"}) != self.loss_contract
+        barrier_changed = checkpoint.get('barrier_contract') != self.barrier_contract
+        self.barrier_fit_batches = (checkpoint.get('barrier_fit_batches', 0)
+                                   if load_optimizer and not barrier_changed and not loss_changed else 0)
         if load_optimizer:
             if not loss_changed:
                 self.optimizer.load_state_dict(checkpoint["optimizer"])
@@ -438,6 +457,8 @@ class SafetyValueManager:
         self.last_load_info = "loaded shadow Value; not used for action selection"
         if load_optimizer and loss_changed:
             self.last_load_info += "; optimizer reset after loss contract change"
+        if load_optimizer and (barrier_changed or loss_changed) and self.parameters.safety_control_mode == 'barrier_fixed':
+            self.last_load_info += "; fixed barrier starts fresh warmup (Value weights retained)"
         print("[INFO] Safety Value:", self.last_load_info)
         return True
 

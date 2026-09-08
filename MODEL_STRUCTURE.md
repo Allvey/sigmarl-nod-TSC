@@ -223,7 +223,7 @@ Safety sidecar 增存有效训练批数、权重、最近门控统计和版本2�
 
 安全目标γ为0.99，采用倒序多步max递推及末端target自举；真实终止保留终止违反量，不连接重置后的车辆。target网络在每批监督后按tau=0.05软更新。每批独立优化4轮，输入和target均detach，不向Actor、旧Safety或NOD传梯度。
 
-模型另存`*_safety_value.pth`；旧`*_safety_critic.pth`仍为阶段7动作Q，不能互换。新文件包含target、优化器、私有采样状态与版本合同。推理入口可加载新Value，但它不参与动作选择，8B/9仍待实施。
+模型另存`*_safety_value.pth`；旧`*_safety_critic.pth`仍为阶段7动作Q，不能互换。新文件包含target、优化器、私有采样状态与版本合同。推理入口可加载新Value，但它不直接参与动作选择；8B已通过训练优势影响Actor，阶段9仍待实施。
 
 日志为JSON的`safety_value_metrics_list`及W&B的`safety_value/*`：拟合前pair/road/collision危险计数、recall、低估、零值比例、目标MAE、相邻Value变化、有效样本和额外采样步数/耗时。47项测试通过，短程开关对照的Actor、任务Critic、NOD及旧Safety最终参数逐项一致；完整250轮训练由用户执行。
 
@@ -248,3 +248,24 @@ Safety sidecar 增存有效训练批数、权重、最近门控统计和版本2�
 保留总诊断，新增`normal_*`/`challenge_*`分组诊断及实际起点使用比例、两类起点新增数/池大小。普通环境不会在自动reset时混入缓冲起点，但仍参与拟合，不能称为独立留出集。应优先检验普通组的危险提前预警与已观测安全窗口正预测比例。Actor、网络、损失及折扣目标未改；道路目标符号问题仍待单独处理。
 
 混合采样版本全套65项测试通过，覆盖起点筛选、跨场景物理/路径恢复、旁路隔离和保存加载；真实短程续训已观察到25%的危险前起点帧。完整训练收益尚未验证。
+
+
+## 10. 阶段8B：固定κ的PPO安全优势（2026-09-08）
+
+根配置`safety_control_mode="barrier_fixed"`，总开关仍为`is_using_safety_constraint`。`legacy_q`保留阶段7旧Q惩罚及lambda，`off`关闭Actor安全约束。旧JSON缺失mode默认legacy_q；新模式不叠加旧Q损失。8A的`is_using_safety_value_shadow`字段名保持兼容，在8B表示启用独立Value训练，不代表Actor仍处于纯旁路模式。
+
+```text
+确定性独立混合起点轨迹 → 继续监督Value
+真实随机PPO转移 → 同一在线Value预测V、V_next
+  → 固定κ屏障C → 最大正违反P → 冻结的安全优势 → PPO更新Actor/消息聚合器
+```
+
+当前V≤0且物理g≤0时，`C=V_next-(1-κ)V`；已危险状态使用固定恢复规则`C=V_next-V`。默认成对/碰撞κ=0.05，道路κ=0.05（dt=0.05时alpha=1/s）。终止后继使用物理g，collector截断使用网络预测；若当前需要的约束后继不可见、车辆generation变化或Value非有限，该车该步回退原任务优势。
+
+`A_used=(1-β*1[P>0])*A_task-β*ν*P`，默认β=0.1、ν=1。β=1为原计划的完整任务屏蔽公式；β=0等价关闭。默认违反样本保留90%任务优势，属于低强度实验，未保证违反动作的总优势为负。沿用原始任务GAE口径、不额外归一化，保留原任务value_target/动作/log-prob。PPO epochs前一次计算并detach，优先回放更新TD误差也不重写冻结安全优势。
+
+至少10个新合同下Value优化批之后启用，召回作为诊断，不再是实验接线的硬前置条件。旧Value或变更κ/ν/β/模式后续训保留兼容权重、重做预热；同合同恢复计数。Value与NOD不收到该安全优势梯度，NOD原有独立训练继续。测试部署仍只运行Actor，没有额外动作过滤器。阶段9的z→κ尚未实现。
+
+新增barrier诊断和实际Actor安全更新minibatch数量写入现有Value指标列表，分清预测质量与真实策略收益。完整训练由用户执行。
+
+8B新增18项测试，全套83 passed；β=0与关闭约束的Actor权重逐项一致，β>0产生实际Actor参数差异，任务目标保护、梯度隔离及加载续训通过。

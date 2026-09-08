@@ -152,6 +152,7 @@ class SafetyCriticManager:
         self.rollouts = 0
         self.constraint_enabled = (
             kind == "safety" and parameters.is_using_safety_constraint
+            and parameters.safety_control_mode == "legacy_q"
         )
         self.constraint_weight = parameters.safety_constraint_initial_weight
         self._constraint_totals = [0.0] * 5
