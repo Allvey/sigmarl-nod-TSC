@@ -1121,14 +1121,20 @@ class ScenarioRoadTraffic(BaseScenario):
                 # Each time step of a simulation
                 self.timer.step[env_i] = 0
 
+            # Only the independent Safety Value sampler supplies this buffer.
+            safety_starts = getattr(self, "safety_start_buffer", None)
+            initial_state = (safety_starts.sample(env_i)
+                             if safety_starts is not None and not is_reset_single_agent else None)
             (
                 ref_paths_scenario,
                 extended_points,
             ) = self._reset_scenario_related_ref_paths(
-                env_i, is_reset_single_agent, agent_index
+                env_i, is_reset_single_agent, agent_index, initial_state
             )
 
-            if (
+            if initial_state is not None:
+                is_use_state_buffer = True
+            elif (
                 self.parameters.is_challenging_initial_state_buffer
                 and (
                     torch.rand(1) < self.initial_state_buffer.probability_use_recording
@@ -1235,11 +1241,13 @@ class ScenarioRoadTraffic(BaseScenario):
                 ] = pos_i.unsqueeze(0).expand(self.traj_pos_buffer.buffer_size, -1)
 
     def _reset_scenario_related_ref_paths(
-        self, env_i, is_reset_single_agent, agent_index
+        self, env_i, is_reset_single_agent, agent_index, initial_state=None
     ):
         # Get the center line and boundaries of the long-term reference path for each agent
         if self.parameters.scenario_type == "CPM_mixed":
-            if is_reset_single_agent:
+            if initial_state is not None:
+                scenario_id = int(initial_state[0, 5])
+            elif is_reset_single_agent:
                 scenario_id = self.ref_paths_agent_related.scenario_id[
                     env_i, agent_index
                 ]  # Keep the same scenario
@@ -1275,6 +1283,10 @@ class ScenarioRoadTraffic(BaseScenario):
             self.ref_paths_agent_related.scenario_id[
                 env_i, :
             ] = 0  # 0 for others, 1 for intersection, 2 for merge-in, 3 for merge-out scenario
+        if initial_state is not None:
+            self.ref_paths_agent_related.scenario_id[env_i] = initial_state[:, 5]
+            self.ref_paths_agent_related.path_id[env_i] = initial_state[:, 6]
+            self.ref_paths_agent_related.point_id[env_i] = initial_state[:, 7]
         return ref_paths_scenario, extended_points
 
     def _reset_init_state(
@@ -1293,12 +1305,14 @@ class ScenarioRoadTraffic(BaseScenario):
         are feasible and do not collide with other agents.
         """
         if is_use_state_buffer:
-            path_id = initial_state[i_agent, self.initial_state_buffer.idx_path].int()
+            path_id = initial_state[i_agent, self.state_buffer.idx_path].int()
             ref_path = ref_paths_scenario[path_id]
 
             agents[i_agent].set_pos(initial_state[i_agent, 0:2], batch_index=env_i)
             agents[i_agent].set_rot(initial_state[i_agent, 2], batch_index=env_i)
             agents[i_agent].set_vel(initial_state[i_agent, 3:5], batch_index=env_i)
+            if initial_state.shape[-1] == 9:  # Shadow starts also retain angular velocity.
+                agents[i_agent].state.ang_vel[env_i] = initial_state[i_agent, 8:9]
 
         else:
             is_feasible_initial_position_found = False
@@ -2919,7 +2933,8 @@ class ScenarioRoadTraffic(BaseScenario):
         # VMAS clones info before done()/auto-reset. Capture physical margins
         # here so terminal collision labels survive a subsequent reset.
         safety_fields = {}
-        if getattr(self.parameters, "is_using_safety_critic", True):
+        if (getattr(self.parameters, "is_using_safety_critic", True)
+                or getattr(self.parameters, "is_using_safety_value_shadow", False)):
             clearance = torch.minimum(
                 self.distances.left_boundaries.amin(-1),
                 self.distances.right_boundaries.amin(-1),
@@ -3007,6 +3022,15 @@ class ScenarioRoadTraffic(BaseScenario):
             **nod_actor_placeholders,
         }
 
+        if hasattr(self, "safety_start_buffer"):
+            info["safety_reset_state"] = torch.cat([
+                agent.state.pos, agent.state.rot, agent.state.vel,
+                self.ref_paths_agent_related.scenario_id[:, agent_index, None],
+                self.ref_paths_agent_related.path_id[:, agent_index, None],
+                self.ref_paths_agent_related.point_id[:, agent_index, None],
+                agent.state.ang_vel,
+            ], -1)
+            info["safety_challenging_start"] = self.safety_start_buffer.active[:, None].clone()
         return info
 
     def extra_render(self, env_index: int = 0):

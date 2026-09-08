@@ -89,6 +89,7 @@ from utilities.nod_marl import (
 )
 from utilities.nod_marl.safety import SafetyCriticManager
 from utilities.nod_marl.deadlock import DeadlockCriticManager
+from utilities.nod_marl.safety_value import SafetyValueManager, DeterministicSafetySampler
 
 class BoundedNormalParamExtractor(NormalParamExtractor):
     """Keep the original scale mapping and floor, with a fixed upper bound."""
@@ -391,6 +392,10 @@ def mappo_cavs(parameters: Parameters):
         int(env.action_spec.shape[-1]), observation_key,
     )
     scenario.safety_manager = safety_manager
+    safety_value_manager = SafetyValueManager(parameters, raw_actor_observation_dim, observation_key)
+    scenario.safety_value_manager = safety_value_manager
+    if safety_value_manager.enabled:
+        assert policy_parameter_ids.isdisjoint({id(p) for p in safety_value_manager.model.parameters()})
     deadlock_manager = DeadlockCriticManager(
         parameters, raw_actor_observation_dim, env.n_agents,
         int(env.action_spec.shape[-1]), observation_key,
@@ -515,6 +520,10 @@ def mappo_cavs(parameters: Parameters):
         safety_prefix = "final" if parameters.is_load_final_model else parameters.model_name
         safety_manager.load_if_available(
             os.path.join(parameters.where_to_save, safety_prefix + "_safety_critic.pth"),
+            load_optimizer=parameters.is_continue_train,
+        )
+        safety_value_manager.load_if_available(
+            os.path.join(parameters.where_to_save, safety_prefix + "_safety_value.pth"),
             load_optimizer=parameters.is_continue_train,
         )
         deadlock_manager.load_if_available(
@@ -661,360 +670,383 @@ def mappo_cavs(parameters: Parameters):
     nod_metrics_list = []
     safety_metrics_list = []
     deadlock_metrics_list = []
+    safety_value_metrics_list = []
+    shadow_sampler = (DeterministicSafetySampler(parameters, policy, nod_manager, safety_value_manager)
+                      if safety_value_manager.enabled else None)
 
     t_start = time.time()
-    for tensordict_data in collector:
-        tensordict_data.set(
-            ("next", "agents", "done"),
-            tensordict_data.get(("next", "done"))
-            .unsqueeze(-1)
-            .expand(tensordict_data.get_item_shape(("next", env.reward_key))),
-        )
-        tensordict_data.set(
-            ("next", "agents", "terminated"),
-            tensordict_data.get(("next", "terminated"))
-            .unsqueeze(-1)
-            .expand(tensordict_data.get_item_shape(("next", env.reward_key))),
-        )
-
-        with torch.no_grad():
-            GAE(
-                tensordict_data,
-                params=loss_module.critic_params,
-                target_params=loss_module.target_critic_params,
-            )  # Compute GAE and add it to the data
-
-            if priority_module:
-                priority_module.GAE(
-                    tensordict_data,
-                    params=priority_module.loss_module.critic_params,
-                    target_params=priority_module.loss_module.target_critic_params,
-                )
-
-        # Update sample priorities
-        if parameters.is_prb:
-            td_error = compute_td_error(tensordict_data, gamma=0.9)
+    try:
+        for tensordict_data in collector:
+            # Snapshot the same pre-PPO policy on an isolated deterministic rollout.
+            shadow_data, shadow_seconds = shadow_sampler.collect() if shadow_sampler else (None, 0.)
             tensordict_data.set(
-                ("td_error"), td_error
-            )  # Adding TD error to the tensordict_data
+                ("next", "agents", "done"),
+                tensordict_data.get(("next", "done"))
+                .unsqueeze(-1)
+                .expand(tensordict_data.get_item_shape(("next", env.reward_key))),
+            )
+            tensordict_data.set(
+                ("next", "agents", "terminated"),
+                tensordict_data.get(("next", "terminated"))
+                .unsqueeze(-1)
+                .expand(tensordict_data.get_item_shape(("next", env.reward_key))),
+            )
 
-            assert (
-                tensordict_data["td_error"].min() >= 0
-            ), "TD error must be greater than 0"
-
-        data_view = tensordict_data.reshape(
-            -1
-        )  # Flatten the batch size to shuffle data
-        replay_buffer.extend(data_view)
-        # replay_buffer.update_tensordict_priority() # Not necessary, as priorities were updated automatically when calling `replay_buffer.extend()`
-
-        last_loss_value = None
-        for _ in range(parameters.num_epochs):
-            # print("[DEBUG] for _ in range(parameters.num_epochs):")
-            for _ in range(parameters.frames_per_batch // parameters.minibatch_size):
-                # sample a batch of data
-                mini_batch_data, info = replay_buffer.sample(return_info=True)
-
-                loss_vals = loss_module(mini_batch_data)
-
-                loss_value = (
-                    loss_vals["loss_objective"]
-                    + loss_vals["loss_critic"]
-                    + loss_vals["loss_entropy"]
-                )
-
-                combined_loss = loss_value
-                if safety_manager.constraint_ready:
-                    # Preserve rollout actions/log-probs and reuse cached NOD context.
-                    # Use the same functional Actor parameters as ClipPPOLoss.
-                    actor_td = mini_batch_data.detach().clone()
-                    action = loss_module.actor.get_dist(
-                        actor_td, params=loss_module.actor_params
-                    ).mode
-                    combined_loss = combined_loss + safety_manager.actor_loss(actor_td, action)
-
-                assert not combined_loss.isnan().any()
-                assert not combined_loss.isinf().any()
-
-                # PPO updates the Actor, message aggregator and task Critic.
-                optim.zero_grad()
-                combined_loss.backward()
-                if safety_manager.constraint_ready:
-                    assert all(p.grad is None for p in safety_manager.model.parameters()), (
-                        "Actor penalty must not backpropagate into Safety Critic parameters"
-                    )
-
-                # Track the PPO task loss for logging.
-                last_loss_value = combined_loss.detach().mean().item()
-
-                torch.nn.utils.clip_grad_norm_(
-                    loss_module.parameters(), parameters.max_grad_norm
-                )  # Optional
-
-                optim.step()
-                optim.zero_grad()
+            with torch.no_grad():
+                GAE(
+                    tensordict_data,
+                    params=loss_module.critic_params,
+                    target_params=loss_module.target_critic_params,
+                )  # Compute GAE and add it to the data
 
                 if priority_module:
-                    priority_module.compute_losses_and_optimize(mini_batch_data)
+                    priority_module.GAE(
+                        tensordict_data,
+                        params=priority_module.loss_module.critic_params,
+                        target_params=priority_module.loss_module.target_critic_params,
+                    )
 
-                if parameters.is_prb:
-                    # Recalculate loss
-                    with torch.no_grad():
-                        GAE(
-                            mini_batch_data,
-                            params=loss_module.critic_params,
-                            target_params=loss_module.target_critic_params,
+            # Update sample priorities
+            if parameters.is_prb:
+                td_error = compute_td_error(tensordict_data, gamma=0.9)
+                tensordict_data.set(
+                    ("td_error"), td_error
+                )  # Adding TD error to the tensordict_data
+
+                assert (
+                    tensordict_data["td_error"].min() >= 0
+                ), "TD error must be greater than 0"
+
+            data_view = tensordict_data.reshape(
+                -1
+            )  # Flatten the batch size to shuffle data
+            replay_buffer.extend(data_view)
+            # replay_buffer.update_tensordict_priority() # Not necessary, as priorities were updated automatically when calling `replay_buffer.extend()`
+
+            last_loss_value = None
+            for _ in range(parameters.num_epochs):
+                # print("[DEBUG] for _ in range(parameters.num_epochs):")
+                for _ in range(parameters.frames_per_batch // parameters.minibatch_size):
+                    # sample a batch of data
+                    mini_batch_data, info = replay_buffer.sample(return_info=True)
+
+                    loss_vals = loss_module(mini_batch_data)
+
+                    loss_value = (
+                        loss_vals["loss_objective"]
+                        + loss_vals["loss_critic"]
+                        + loss_vals["loss_entropy"]
+                    )
+
+                    combined_loss = loss_value
+                    if safety_manager.constraint_ready:
+                        # Preserve rollout actions/log-probs and reuse cached NOD context.
+                        # Use the same functional Actor parameters as ClipPPOLoss.
+                        actor_td = mini_batch_data.detach().clone()
+                        action = loss_module.actor.get_dist(
+                            actor_td, params=loss_module.actor_params
+                        ).mode
+                        combined_loss = combined_loss + safety_manager.actor_loss(actor_td, action)
+
+                    assert not combined_loss.isnan().any()
+                    assert not combined_loss.isinf().any()
+
+                    # PPO updates the Actor, message aggregator and task Critic.
+                    optim.zero_grad()
+                    combined_loss.backward()
+                    if safety_manager.constraint_ready:
+                        assert all(p.grad is None for p in safety_manager.model.parameters()), (
+                            "Actor penalty must not backpropagate into Safety Critic parameters"
                         )
-                        if parameters.is_using_prioritized_marl:
-                            priority_module.GAE(
-                                tensordict_data,
-                                params=priority_module.loss_module.critic_params,
-                                target_params=priority_module.loss_module.target_critic_params,
+
+                    # Track the PPO task loss for logging.
+                    last_loss_value = combined_loss.detach().mean().item()
+
+                    torch.nn.utils.clip_grad_norm_(
+                        loss_module.parameters(), parameters.max_grad_norm
+                    )  # Optional
+
+                    optim.step()
+                    optim.zero_grad()
+
+                    if priority_module:
+                        priority_module.compute_losses_and_optimize(mini_batch_data)
+
+                    if parameters.is_prb:
+                        # Recalculate loss
+                        with torch.no_grad():
+                            GAE(
+                                mini_batch_data,
+                                params=loss_module.critic_params,
+                                target_params=loss_module.target_critic_params,
                             )
-                    # Recalculate the TD errors of the sampled minibatch with updated model weights and update priorities in the buffer
-                    new_td_errors = compute_td_error(mini_batch_data, gamma=0.9)
-                    mini_batch_data.set("td_error", new_td_errors)
-                    replay_buffer.update_tensordict_priority(mini_batch_data)
-        constraint_metrics = safety_manager.finish_actor_update()
-        # NOD learns directly from ordered physical pair features. PPO trains
-        # only the stateless message aggregator from cached online context.
-        nod_update_interval = max(
-            1, int(getattr(parameters, "nod_update_interval", 10))
-        )
-        should_update_nod = (pbar.n % nod_update_interval) == 0
-        if should_update_nod:
-            last_nod_metrics = nod_manager.train_on_rollout(tensordict_data)
-            last_nod_metrics["update_skipped"] = 0.0
-        else:
-            last_nod_metrics = dict(last_nod_metrics)
-            last_nod_metrics["optimizer_updates"] = 0.0
-            last_nod_metrics["update_skipped"] = 1.0
-        nod_manager.reset_online_state()
-        if use_nod_actor:
-            actor_message = tensordict_data.get(
-                ("agents", "info", "nod_actor_message"), default=None
+                            if parameters.is_using_prioritized_marl:
+                                priority_module.GAE(
+                                    tensordict_data,
+                                    params=priority_module.loss_module.critic_params,
+                                    target_params=priority_module.loss_module.target_critic_params,
+                                )
+                        # Recalculate the TD errors of the sampled minibatch with updated model weights and update priorities in the buffer
+                        new_td_errors = compute_td_error(mini_batch_data, gamma=0.9)
+                        mini_batch_data.set("td_error", new_td_errors)
+                        replay_buffer.update_tensordict_priority(mini_batch_data)
+            constraint_metrics = safety_manager.finish_actor_update()
+            # NOD learns directly from ordered physical pair features. PPO trains
+            # only the stateless message aggregator from cached online context.
+            nod_update_interval = max(
+                1, int(getattr(parameters, "nod_update_interval", 10))
             )
-            actor_edge_mask = tensordict_data.get(
-                ("agents", "info", "nod_actor_edge_mask"), default=None
-            )
-            actor_attention = tensordict_data.get(
-                ("agents", "info", "nod_actor_message_attention"), default=None
-            )
-            context_ready = tensordict_data.get(
-                ("agents", "info", "nod_actor_context_ready"), default=None
-            )
-            if actor_message is not None:
-                last_nod_metrics["actor_message_l2_mean"] = float(
-                    torch.linalg.vector_norm(actor_message.detach(), dim=-1).mean()
-                )
-            if actor_edge_mask is not None:
-                last_nod_metrics["actor_active_edge_ratio"] = float(
-                    actor_edge_mask.detach().float().mean()
-                )
-            if actor_attention is not None and actor_edge_mask is not None:
-                valid_receivers = actor_edge_mask.detach().bool().any(
-                    dim=-1
-                )
-                entropy = -(
-                    actor_attention.detach().clamp_min(1e-8)
-                    * actor_attention.detach().clamp_min(1e-8).log()
-                ).sum(dim=-1)
-                last_nod_metrics["actor_attention_entropy_mean"] = (
-                    float(entropy[valid_receivers].mean())
-                    if bool(valid_receivers.any())
-                    else 0.0
-                )
-            if context_ready is not None:
-                last_nod_metrics["actor_context_ready_ratio"] = float(
-                    context_ready.detach().float().mean()
-                )
-        nod_metrics_list.append(dict(last_nod_metrics))
-
-        # Fit Safety only after the Actor update; its weights were frozen for
-        # the optional action penalty. Deadlock remains an independent learner.
-        safety_metrics = safety_manager.train_on_rollout(tensordict_data)
-        safety_metrics.update(constraint_metrics)
-        safety_metrics_list.append(safety_metrics)
-        deadlock_metrics = deadlock_manager.train_on_rollout(tensordict_data)
-        deadlock_metrics_list.append(deadlock_metrics)
-
-        collector.update_policy_weights_()  # Updates the policy weights if the policy of the data collector and the trained policy live on different devices
-
-        # Logging
-        done = tensordict_data.get(("next", "agents", "done"))
-        episode_reward_mean_raw = (
-            tensordict_data.get(("next", "agents", "episode_reward"))[done]
-            .mean()
-            .item()
-        )
-        episode_reward_mean = round(episode_reward_mean_raw, 2)
-        episode_reward_mean_list.append(episode_reward_mean_raw)
-
-        def _safe_get(td, key_path):
-            try:
-                return td.get(key_path)
-            except Exception:
-                return None
-
-        coll_agents = _safe_get(
-            tensordict_data,
-            ("next", "agents", "info", "is_collision_with_agents"),
-        )
-        if coll_agents is None:
-            coll_agents = _safe_get(
-                tensordict_data, ("agents", "info", "is_collision_with_agents")
-            )
-
-        coll_lane = _safe_get(
-            tensordict_data,
-            ("next", "agents", "info", "is_collision_with_lanelets"),
-        )
-        if coll_lane is None:
-            coll_lane = _safe_get(
-                tensordict_data, ("agents", "info", "is_collision_with_lanelets")
-            )
-
-        def _rate(tensor_bool):
-            try:
-                if tensor_bool is None:
-                    return 0.0
-                return tensor_bool.to(torch.float32).reshape(-1).mean().item()
-            except Exception:
-                return 0.0
-
-        collision_agents_rate = _rate(coll_agents)
-        collision_lanelets_rate = _rate(coll_lane)
-        collision_total_rate = min(1.0, collision_agents_rate + collision_lanelets_rate)
-
-        collision_agents_rate_list.append(collision_agents_rate)
-        collision_lanelets_rate_list.append(collision_lanelets_rate)
-        collision_total_rate_list.append(collision_total_rate)
-
-        pbar.set_description(
-            f"Episode mean reward = {episode_reward_mean:.2f} | collision = {collision_total_rate:.4f}",
-            refresh=False,
-        )
-
-        # env.scenario.iter = pbar.n # A way to pass the information from the training algorithm to the environment
-
-        if parameters.is_save_intermediate_model:
-            # Update the current mean episode reward
-            parameters.episode_reward_mean_current = episode_reward_mean
-            save_data.episode_reward_mean_list = episode_reward_mean_list
-            save_data.collision_agents_rate_list = collision_agents_rate_list
-            save_data.collision_lanelets_rate_list = collision_lanelets_rate_list
-            save_data.collision_total_rate_list = collision_total_rate_list
-            save_data.nod_metrics_list = nod_metrics_list
-            save_data.safety_metrics_list = safety_metrics_list
-            save_data.deadlock_metrics_list = deadlock_metrics_list
-
-            if episode_reward_mean > parameters.episode_reward_intermediate:
-                # Save the model if it improves the mean episode reward sufficiently enough
-                parameters.episode_reward_intermediate = episode_reward_mean
-
-                if (
-                    parameters.is_using_prioritized_marl
-                    and parameters.prioritization_method.lower() == "marl"
-                ):
-                    save(
-                        parameters=parameters,
-                        save_data=save_data,
-                        policy=policy,
-                        critic=critic,
-                        priority_policy=priority_module.policy,
-                        priority_critic=priority_module.critic,
-                        nod_checkpoint=nod_manager.checkpoint_state()
-                        if nod_manager.enabled
-                        else None,
-                        safety_checkpoint=safety_manager.checkpoint_state()
-                        if safety_manager.enabled else None,
-                        deadlock_checkpoint=deadlock_manager.checkpoint_state()
-                        if deadlock_manager.enabled else None,
-                    )
-                else:
-                    save(
-                        parameters=parameters,
-                        save_data=save_data,
-                        policy=policy,
-                        critic=critic,
-                        nod_checkpoint=nod_manager.checkpoint_state()
-                        if nod_manager.enabled
-                        else None,
-                        safety_checkpoint=safety_manager.checkpoint_state()
-                        if safety_manager.enabled else None,
-                        deadlock_checkpoint=deadlock_manager.checkpoint_state()
-                        if deadlock_manager.enabled else None,
-                    )
+            should_update_nod = (pbar.n % nod_update_interval) == 0
+            if should_update_nod:
+                last_nod_metrics = nod_manager.train_on_rollout(tensordict_data)
+                last_nod_metrics["update_skipped"] = 0.0
             else:
-                # Save only the mean episode reward list and parameters
-                parameters.episode_reward_mean_current = (
-                    parameters.episode_reward_intermediate
+                last_nod_metrics = dict(last_nod_metrics)
+                last_nod_metrics["optimizer_updates"] = 0.0
+                last_nod_metrics["update_skipped"] = 1.0
+            nod_manager.reset_online_state()
+            if use_nod_actor:
+                actor_message = tensordict_data.get(
+                    ("agents", "info", "nod_actor_message"), default=None
                 )
-                save(
-                    parameters=parameters,
-                    save_data=save_data,
-                    policy=None,
-                    critic=None,
-                    priority_policy=None,
-                    priority_critic=None,
-                    nod_checkpoint=None,
+                actor_edge_mask = tensordict_data.get(
+                    ("agents", "info", "nod_actor_edge_mask"), default=None
                 )
+                actor_attention = tensordict_data.get(
+                    ("agents", "info", "nod_actor_message_attention"), default=None
+                )
+                context_ready = tensordict_data.get(
+                    ("agents", "info", "nod_actor_context_ready"), default=None
+                )
+                if actor_message is not None:
+                    last_nod_metrics["actor_message_l2_mean"] = float(
+                        torch.linalg.vector_norm(actor_message.detach(), dim=-1).mean()
+                    )
+                if actor_edge_mask is not None:
+                    last_nod_metrics["actor_active_edge_ratio"] = float(
+                        actor_edge_mask.detach().float().mean()
+                    )
+                if actor_attention is not None and actor_edge_mask is not None:
+                    valid_receivers = actor_edge_mask.detach().bool().any(
+                        dim=-1
+                    )
+                    entropy = -(
+                        actor_attention.detach().clamp_min(1e-8)
+                        * actor_attention.detach().clamp_min(1e-8).log()
+                    ).sum(dim=-1)
+                    last_nod_metrics["actor_attention_entropy_mean"] = (
+                        float(entropy[valid_receivers].mean())
+                        if bool(valid_receivers.any())
+                        else 0.0
+                    )
+                if context_ready is not None:
+                    last_nod_metrics["actor_context_ready_ratio"] = float(
+                        context_ready.detach().float().mean()
+                    )
+            nod_metrics_list.append(dict(last_nod_metrics))
 
-        # Learning rate schedule
-        for param_group in optim.param_groups:
-            # Keep the message encoder on its own smaller learning-rate scale.
-            progress_remaining = max(
-                0.0, 1.0 - (float(pbar.n) / max(1, parameters.n_iters))
+            # Fit Safety only after the Actor update; its weights were frozen for
+            # the optional action penalty. Deadlock remains an independent learner.
+            safety_metrics = safety_manager.train_on_rollout(tensordict_data)
+            safety_metrics.update(constraint_metrics)
+            safety_metrics_list.append(safety_metrics)
+            deadlock_metrics = deadlock_manager.train_on_rollout(tensordict_data)
+            deadlock_metrics_list.append(deadlock_metrics)
+            safety_value_metrics = safety_value_manager.train_on_rollout(shadow_data) if shadow_sampler else {}
+            if shadow_sampler:
+                safety_value_metrics.update(shadow_sampler.last_metrics)
+                safety_value_metrics["sampling_seconds"] = shadow_seconds
+            safety_value_metrics_list.append(safety_value_metrics)
+
+            collector.update_policy_weights_()  # Updates the policy weights if the policy of the data collector and the trained policy live on different devices
+
+            # Logging
+            done = tensordict_data.get(("next", "agents", "done"))
+            episode_reward_mean_raw = (
+                tensordict_data.get(("next", "agents", "episode_reward"))[done]
+                .mean()
+                .item()
             )
-            initial_lr = float(param_group["initial_lr"])
-            minimum_lr = float(param_group["minimum_lr"])
-            param_group["lr"] = minimum_lr + (
-                initial_lr - minimum_lr
-            ) * progress_remaining
-            if pbar.n % 10 == 0:
-                print(f"Learning rate updated to {param_group['lr']}.")
+            episode_reward_mean = round(episode_reward_mean_raw, 2)
+            episode_reward_mean_list.append(episode_reward_mean_raw)
 
-        # Compute collision metrics and upload key metrics to wandb
-        if wandb is not None and getattr(wandb, "run", None) is None:
-            # Initialize wandb late if not already initialized
-            try:
-                wandb.init(
-                    project=os.getenv("WANDB_PROJECT", "sigmarl-traffic"),
-                    name=os.getenv("WANDB_RUN_NAME", "mappo-cavs"),
+            def _safe_get(td, key_path):
+                try:
+                    return td.get(key_path)
+                except Exception:
+                    return None
+
+            coll_agents = _safe_get(
+                tensordict_data,
+                ("next", "agents", "info", "is_collision_with_agents"),
+            )
+            if coll_agents is None:
+                coll_agents = _safe_get(
+                    tensordict_data, ("agents", "info", "is_collision_with_agents")
                 )
-            except Exception:
-                pass
 
-        if wandb is not None and getattr(wandb, "run", None) is not None:
-            log_payload = {
-                "reward/episode_mean": episode_reward_mean,
-                "collision/agents_rate": collision_agents_rate,
-                "collision/lanelets_rate": collision_lanelets_rate,
-                "collision/total_rate": collision_total_rate,
-            }
+            coll_lane = _safe_get(
+                tensordict_data,
+                ("next", "agents", "info", "is_collision_with_lanelets"),
+            )
+            if coll_lane is None:
+                coll_lane = _safe_get(
+                    tensordict_data, ("agents", "info", "is_collision_with_lanelets")
+                )
 
-            # Log current learning rate
-            try:
-                current_lr = float(optim.param_groups[0]["lr"])  # main optimizer LR
-                log_payload["optim/lr"] = current_lr
-            except Exception:
-                pass
+            def _rate(tensor_bool):
+                try:
+                    if tensor_bool is None:
+                        return 0.0
+                    return tensor_bool.to(torch.float32).reshape(-1).mean().item()
+                except Exception:
+                    return 0.0
 
-            if last_loss_value is not None:
-                log_payload["loss/total"] = last_loss_value
-            for metric_name, metric_value in last_nod_metrics.items():
-                log_payload[f"nod/{metric_name}"] = metric_value
-            for metric_name, metric_value in safety_metrics.items():
-                log_payload[f"safety/{metric_name}"] = metric_value
-            for metric_name, metric_value in deadlock_metrics.items():
-                log_payload[f"deadlock/{metric_name}"] = metric_value
-            wandb.log(log_payload, step=pbar.n)
+            collision_agents_rate = _rate(coll_agents)
+            collision_lanelets_rate = _rate(coll_lane)
+            collision_total_rate = min(1.0, collision_agents_rate + collision_lanelets_rate)
 
-        pbar.update()
+            collision_agents_rate_list.append(collision_agents_rate)
+            collision_lanelets_rate_list.append(collision_lanelets_rate)
+            collision_total_rate_list.append(collision_total_rate)
+
+            pbar.set_description(
+                f"Episode mean reward = {episode_reward_mean:.2f} | collision = {collision_total_rate:.4f}",
+                refresh=False,
+            )
+
+            # env.scenario.iter = pbar.n # A way to pass the information from the training algorithm to the environment
+
+            if parameters.is_save_intermediate_model:
+                # Update the current mean episode reward
+                parameters.episode_reward_mean_current = episode_reward_mean
+                save_data.episode_reward_mean_list = episode_reward_mean_list
+                save_data.collision_agents_rate_list = collision_agents_rate_list
+                save_data.collision_lanelets_rate_list = collision_lanelets_rate_list
+                save_data.collision_total_rate_list = collision_total_rate_list
+                save_data.nod_metrics_list = nod_metrics_list
+                save_data.safety_metrics_list = safety_metrics_list
+                save_data.deadlock_metrics_list = deadlock_metrics_list
+                save_data.safety_value_metrics_list = safety_value_metrics_list
+
+                if episode_reward_mean > parameters.episode_reward_intermediate:
+                    # Save the model if it improves the mean episode reward sufficiently enough
+                    parameters.episode_reward_intermediate = episode_reward_mean
+
+                    if (
+                        parameters.is_using_prioritized_marl
+                        and parameters.prioritization_method.lower() == "marl"
+                    ):
+                        save(
+                            parameters=parameters,
+                            save_data=save_data,
+                            policy=policy,
+                            critic=critic,
+                            priority_policy=priority_module.policy,
+                            priority_critic=priority_module.critic,
+                            nod_checkpoint=nod_manager.checkpoint_state()
+                            if nod_manager.enabled
+                            else None,
+                            safety_value_checkpoint=safety_value_manager.checkpoint_state(),
+                            safety_checkpoint=safety_manager.checkpoint_state()
+                            if safety_manager.enabled else None,
+                            deadlock_checkpoint=deadlock_manager.checkpoint_state()
+                            if deadlock_manager.enabled else None,
+                        )
+                    else:
+                        save(
+                            parameters=parameters,
+                            save_data=save_data,
+                            policy=policy,
+                            critic=critic,
+                            nod_checkpoint=nod_manager.checkpoint_state()
+                            if nod_manager.enabled
+                            else None,
+                            safety_value_checkpoint=safety_value_manager.checkpoint_state(),
+                            safety_checkpoint=safety_manager.checkpoint_state()
+                            if safety_manager.enabled else None,
+                            deadlock_checkpoint=deadlock_manager.checkpoint_state()
+                            if deadlock_manager.enabled else None,
+                        )
+                else:
+                    # Save only the mean episode reward list and parameters
+                    parameters.episode_reward_mean_current = (
+                        parameters.episode_reward_intermediate
+                    )
+                    save(
+                        parameters=parameters,
+                        save_data=save_data,
+                        policy=None,
+                        critic=None,
+                        priority_policy=None,
+                        priority_critic=None,
+                        nod_checkpoint=None,
+                    )
+
+            # Learning rate schedule
+            for param_group in optim.param_groups:
+                # Keep the message encoder on its own smaller learning-rate scale.
+                progress_remaining = max(
+                    0.0, 1.0 - (float(pbar.n) / max(1, parameters.n_iters))
+                )
+                initial_lr = float(param_group["initial_lr"])
+                minimum_lr = float(param_group["minimum_lr"])
+                param_group["lr"] = minimum_lr + (
+                    initial_lr - minimum_lr
+                ) * progress_remaining
+                if pbar.n % 10 == 0:
+                    print(f"Learning rate updated to {param_group['lr']}.")
+
+            # Compute collision metrics and upload key metrics to wandb
+            if wandb is not None and getattr(wandb, "run", None) is None:
+                # Initialize wandb late if not already initialized
+                try:
+                    wandb.init(
+                        project=os.getenv("WANDB_PROJECT", "sigmarl-traffic"),
+                        name=os.getenv("WANDB_RUN_NAME", "mappo-cavs"),
+                    )
+                except Exception:
+                    pass
+
+            if wandb is not None and getattr(wandb, "run", None) is not None:
+                log_payload = {
+                    "reward/episode_mean": episode_reward_mean,
+                    "collision/agents_rate": collision_agents_rate,
+                    "collision/lanelets_rate": collision_lanelets_rate,
+                    "collision/total_rate": collision_total_rate,
+                }
+
+                # Log current learning rate
+                try:
+                    current_lr = float(optim.param_groups[0]["lr"])  # main optimizer LR
+                    log_payload["optim/lr"] = current_lr
+                except Exception:
+                    pass
+
+                if last_loss_value is not None:
+                    log_payload["loss/total"] = last_loss_value
+                for metric_name, metric_value in last_nod_metrics.items():
+                    log_payload[f"nod/{metric_name}"] = metric_value
+                for metric_name, metric_value in safety_metrics.items():
+                    log_payload[f"safety/{metric_name}"] = metric_value
+                for metric_name, metric_value in safety_value_metrics.items():
+                    log_payload[f"safety_value/{metric_name}"] = metric_value
+                for metric_name, metric_value in deadlock_metrics.items():
+                    log_payload[f"deadlock/{metric_name}"] = metric_value
+                wandb.log(log_payload, step=pbar.n)
+
+            pbar.update()
+
+    finally:
+        if shadow_sampler:
+            shadow_sampler.close()
 
     # Save the final model
     torch.save(policy.state_dict(), parameters.where_to_save + "final_policy.pth")
     torch.save(critic.state_dict(), parameters.where_to_save + "final_critic.pth")
+    if safety_value_manager.enabled:
+        torch.save(safety_value_manager.checkpoint_state(),
+                   parameters.where_to_save + "final_safety_value.pth")
     if safety_manager.enabled:
         torch.save(safety_manager.checkpoint_state(),
                    parameters.where_to_save + "final_safety_critic.pth")

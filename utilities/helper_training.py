@@ -816,6 +816,22 @@ class Parameters:
         safety_gate_min_unsafe: int = 64,
         safety_gate_min_recall: float = 0.9,
         safety_gate_max_underestimate: float = 0.15,
+        # Stage 8A: opt-in shadow State Value; no change to the Actor objective.
+        is_using_safety_value_shadow: bool = False,
+        safety_value_hidden_dim: int = 64,
+        safety_value_lr: float = 3e-4,
+        safety_value_gamma: float = 0.99,
+        safety_value_target_tau: float = 0.05,
+        safety_value_num_epochs: int = 4,
+        safety_value_minibatch_size: int = 64,
+        safety_value_num_envs: int = 4,
+        safety_value_rollout_steps: int = 64,
+        safety_value_loss_mode: str = "balanced",
+        safety_value_positive_weight_cap: float = 4.0,
+        safety_value_underestimate_weight: float = 2.0,
+        safety_value_challenging_fraction: float = 0.0,
+        safety_value_start_buffer_size: int = 128,
+        safety_value_start_lookback: int = 10,
         # Stage 6: independent temporal deadlock prediction.
         is_using_deadlock_critic: bool = True,
         deadlock_horizons=None,
@@ -957,6 +973,38 @@ class Parameters:
         self.safety_minibatch_size = safety_minibatch_size
         self.safety_safe_distance = safety_safe_distance
         self.safety_boundary_margin = safety_boundary_margin
+        self.is_using_safety_value_shadow = is_using_safety_value_shadow
+        self.safety_value_hidden_dim = safety_value_hidden_dim
+        self.safety_value_lr = safety_value_lr
+        self.safety_value_gamma = safety_value_gamma
+        self.safety_value_target_tau = safety_value_target_tau
+        self.safety_value_num_epochs = safety_value_num_epochs
+        self.safety_value_minibatch_size = safety_value_minibatch_size
+        self.safety_value_num_envs = safety_value_num_envs
+        self.safety_value_rollout_steps = safety_value_rollout_steps
+        self.safety_value_loss_mode = safety_value_loss_mode
+        self.safety_value_positive_weight_cap = safety_value_positive_weight_cap
+        self.safety_value_underestimate_weight = safety_value_underestimate_weight
+        self.safety_value_challenging_fraction = safety_value_challenging_fraction
+        self.safety_value_start_buffer_size = safety_value_start_buffer_size
+        self.safety_value_start_lookback = safety_value_start_lookback
+        if (not math.isfinite(safety_value_challenging_fraction)
+                or not 0 <= safety_value_challenging_fraction < 1
+                or (safety_value_challenging_fraction > 0 and safety_value_num_envs < 2)
+                or any(not isinstance(v, int) or v < 1 for v in (
+                    safety_value_start_buffer_size, safety_value_start_lookback))):
+            raise ValueError("Invalid Stage-8A challenging start configuration")
+        if (safety_value_loss_mode not in {"legacy", "balanced"}
+                or any(not math.isfinite(v) or v < 1 for v in (
+                    safety_value_positive_weight_cap, safety_value_underestimate_weight))):
+            raise ValueError("Invalid Stage-8A Safety Value loss configuration")
+        if (any(not isinstance(v, int) or v < 1 for v in (
+                safety_value_hidden_dim, safety_value_num_epochs,
+                safety_value_minibatch_size, safety_value_num_envs, safety_value_rollout_steps))
+                or not 0 < safety_value_gamma < 1
+                or not 0 < safety_value_target_tau <= 1
+                or not math.isfinite(safety_value_lr) or safety_value_lr <= 0):
+            raise ValueError("Invalid Stage-8A Safety Value configuration")
         self.is_using_safety_constraint = is_using_safety_constraint
         self.safety_constraint_warmup_batches = safety_constraint_warmup_batches
         self.safety_constraint_initial_weight = safety_constraint_initial_weight
@@ -1109,6 +1157,7 @@ class SaveData:
         nod_metrics_list: [] = None,
         safety_metrics_list: [] = None,
         deadlock_metrics_list: [] = None,
+        safety_value_metrics_list: [] = None,
     ):
         self.parameters = parameters
         self.episode_reward_mean_list = episode_reward_mean_list
@@ -1118,6 +1167,7 @@ class SaveData:
         self.nod_metrics_list = nod_metrics_list
         self.safety_metrics_list = safety_metrics_list
         self.deadlock_metrics_list = deadlock_metrics_list
+        self.safety_value_metrics_list = safety_value_metrics_list
 
     def to_dict(self):
         return {
@@ -1129,6 +1179,7 @@ class SaveData:
             "nod_metrics_list": self.nod_metrics_list,
             "safety_metrics_list": self.safety_metrics_list,
             "deadlock_metrics_list": self.deadlock_metrics_list,
+            "safety_value_metrics_list": self.safety_value_metrics_list,
         }
 
     @classmethod
@@ -1147,6 +1198,7 @@ class SaveData:
             nod_metrics_list=dict_data.get("nod_metrics_list", None),
             safety_metrics_list=dict_data.get("safety_metrics_list", None),
             deadlock_metrics_list=dict_data.get("deadlock_metrics_list", None),
+            safety_value_metrics_list=dict_data.get("safety_value_metrics_list", None),
         )
 
 
@@ -1443,6 +1495,7 @@ def save(
     nod_checkpoint=None,
     safety_checkpoint=None,
     deadlock_checkpoint=None,
+    safety_value_checkpoint=None,
 ):
     # Get paths
     paths = get_path_to_save_model(parameters=parameters)
@@ -1513,6 +1566,9 @@ def save(
 
         if safety_checkpoint is not None:
             torch.save(safety_checkpoint, parameters.where_to_save + parameters.model_name + "_safety_critic.pth")
+
+        if safety_value_checkpoint is not None:
+            torch.save(safety_value_checkpoint, parameters.where_to_save + parameters.model_name + "_safety_value.pth")
 
         if deadlock_checkpoint is not None:
             torch.save(deadlock_checkpoint, parameters.where_to_save + parameters.model_name + "_deadlock_critic.pth")
