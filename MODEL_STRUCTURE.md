@@ -223,7 +223,7 @@ Safety sidecar 增存有效训练批数、权重、最近门控统计和版本2�
 
 安全目标γ为0.99，采用倒序多步max递推及末端target自举；真实终止保留终止违反量，不连接重置后的车辆。target网络在每批监督后按tau=0.05软更新。每批独立优化4轮，输入和target均detach，不向Actor、旧Safety或NOD传梯度。
 
-模型另存`*_safety_value.pth`；旧`*_safety_critic.pth`仍为阶段7动作Q，不能互换。新文件包含target、优化器、私有采样状态与版本合同。推理入口可加载新Value，但它不直接参与动作选择；8B已通过训练优势影响Actor，阶段9仍待实施。
+模型另存`*_safety_value.pth`；旧`*_safety_critic.pth`仍为阶段7动作Q，不能互换。新文件包含target、优化器、私有采样状态与版本合同。推理入口可加载新Value，但它不直接参与动作选择；8B/9已通过训练优势影响Actor，意见不通过Value反向传播。
 
 日志为JSON的`safety_value_metrics_list`及W&B的`safety_value/*`：拟合前pair/road/collision危险计数、recall、低估、零值比例、目标MAE、相邻Value变化、有效样本和额外采样步数/耗时。47项测试通过，短程开关对照的Actor、任务Critic、NOD及旧Safety最终参数逐项一致；完整250轮训练由用户执行。
 
@@ -264,8 +264,24 @@ Safety sidecar 增存有效训练批数、权重、最近门控统计和版本2�
 
 `A_used=(1-β*1[P>0])*A_task-β*ν*P`，默认β=0.1、ν=1。β=1为原计划的完整任务屏蔽公式；β=0等价关闭。默认违反样本保留90%任务优势，属于低强度实验，未保证违反动作的总优势为负。沿用原始任务GAE口径、不额外归一化，保留原任务value_target/动作/log-prob。PPO epochs前一次计算并detach，优先回放更新TD误差也不重写冻结安全优势。
 
-至少10个新合同下Value优化批之后启用，召回作为诊断，不再是实验接线的硬前置条件。旧Value或变更κ/ν/β/模式后续训保留兼容权重、重做预热；同合同恢复计数。Value与NOD不收到该安全优势梯度，NOD原有独立训练继续。测试部署仍只运行Actor，没有额外动作过滤器。阶段9的z→κ尚未实现。
+至少10个新合同下Value优化批之后启用，召回作为诊断，不再是实验接线的硬前置条件。旧Value或变更κ/ν/β/模式后续训保留兼容权重、重做预热；同合同恢复计数。Value与NOD不收到该安全优势梯度，NOD原有独立训练继续。测试部署仍只运行Actor，没有额外动作过滤器。阶段9的冻结NOD及意见κ在第11节说明。
 
 新增barrier诊断和实际Actor安全更新minibatch数量写入现有Value指标列表，分清预测质量与真实策略收益。完整训练由用户执行。
 
 8B新增18项测试，全套83 passed；β=0与关闭约束的Actor权重逐项一致，β>0产生实际Actor参数差异，任务目标保护、梯度隔离及加载续训通过。
+
+
+## 11. 阶段9：冻结NOD语义、逐对意见κ（2026-09-08）
+
+模式`barrier_opinion`使用当前动作前缓存的edge context末维z，按world slot和generation与Value车辆对齐。`κ=0.05+0.01*z`（范围0.04～0.06），中性z复现固定0.05；缺失、过期、无效意见使用0.04。道路/碰撞κ和已危险恢复规则不受z影响，固定物理阈值和β=0.1、ν=1不变。
+
+`nod_freeze_training=true`跳过NOD监督优化并冻结参数，但在线状态/意见仍随观测变化；Actor消息聚合器和task Critic正常学习。κ及安全优势detach，没有经由z降低安全损失的梯度。mode/区间及冻结NOD权重哈希进入barrier合同，变更后重做10批实验预热。
+
+根配置通过`training_init_checkpoint="outputs/stage9_baseline_8b/final"`载入已固定的8B最终Actor/task Critic/NOD/Safety快照，输出`outputs/stage9_opinion/`；同seed固定κ对照只改mode和输出目录、保留冻结NOD。普通续训/测试仍走is_load_model=true的输出目录加载；main_testing.py默认目录同步。
+
+诊断新增κ范围、意见有效/缺失计数、同一转移相对固定κ的C/判定/优势变化，以及缓存状态上的Actor mode/scale更新幅度。后者包括整个PPO更新，不能单独归因为z。新增13项测试，全套96 passed；同快照短程固定/意见模式Actor不同，冻结NOD权重相同。完整训练收益待用户验证。
+
+
+### 11.1 当前实验：全部网络从零训练
+
+用户在reward6.84训练后选择from scratch：根配置`training_init_checkpoint=null`、`is_load_model=false`、`is_continue_train=false`、`nod_freeze_training=false`，输出`outputs/stage9_scratch/`。意见κ模式允许NOD继续原独立监督训练，PPO到z/κ/Value的梯度隔离保持。Actor及所有Critic、NOD随机初始化；κ/β/ν、Value预热和训练预算保持。上节冻结NOD的快照实验仍可配置使用；当前测试入口目录同步为scratch目录。

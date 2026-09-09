@@ -171,6 +171,7 @@ def test_constraint_warmup_functional_ppo_and_checkpoint(tmp_path, monkeypatch):
     try:
         for enabled in [False, True]:
             p = Parameters.from_json("config.json")
+            p.nod_freeze_training = False; p.training_init_checkpoint = None
             p.safety_control_mode = 'legacy_q'
             p.seed = 12345
             p.n_iters = p.num_epochs = 2

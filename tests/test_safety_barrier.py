@@ -123,7 +123,7 @@ def test_modes_and_barrier_checkpoint_migration(tmp_path):
     assert restored.barrier_fit_batches == 0
 
 
-@pytest.mark.parametrize('kwargs', [dict(safety_control_mode='barrier_opinion'),
+@pytest.mark.parametrize('kwargs', [dict(safety_control_mode='unknown'),
     dict(safety_barrier_kappa=0), dict(safety_barrier_road_kappa=1),
     dict(safety_barrier_nu=float('nan')), dict(safety_barrier_strength=1.1),
     dict(safety_barrier_warmup_batches=-1), dict(safety_control_mode='barrier_fixed')])
@@ -159,6 +159,7 @@ def test_fixed_barrier_changes_actor_preserves_targets_and_loads(tmp_path, monke
     try:
         for mode in ['off', 'zero', 'fixed']:
             p = Parameters.from_json('config.json')
+            p.nod_freeze_training = False; p.training_init_checkpoint = None
             p.seed = 571; p.n_iters = 2; p.num_epochs = 1
             p.frames_per_batch = 32; p.total_frames = 64; p.minibatch_size = 16
             p.num_vmas_envs = 2; p.max_steps = 16; p.nod_sequence_length = 8

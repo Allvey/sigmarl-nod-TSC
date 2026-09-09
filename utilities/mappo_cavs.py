@@ -46,6 +46,7 @@ from torchrl.objectives import ClipPPOLoss, ValueEstimators
 from tqdm import tqdm
 
 import os
+import hashlib
 import random
 import numpy as np
 
@@ -139,6 +140,21 @@ def _load_nod_if_available(
         return False
     print(colored(f"[INFO] Loaded NOD opinion model: {path_nod}", "blue"))
     return True
+
+
+def _bind_frozen_nod(nod_manager, safety_value_manager, parameters):
+    """Freeze trained semantics and bind Value warmup to the exact NOD weights."""
+    if not parameters.nod_freeze_training:
+        return
+    if not nod_manager.enabled or nod_manager.last_load_info != 'loaded':
+        raise ValueError('Frozen NOD requires a compatible trained NOD checkpoint')
+    digest = hashlib.sha256()
+    for name, tensor in sorted(nod_manager.model.state_dict().items()):
+        digest.update(name.encode())
+        digest.update(tensor.detach().cpu().contiguous().numpy().tobytes())
+    safety_value_manager.barrier_contract['nod_sha256'] = digest.hexdigest()
+    nod_manager.model.requires_grad_(False)
+    nod_manager.optimizer.zero_grad(set_to_none=True)
 
 
 def _load_policy_checkpoint(
@@ -419,6 +435,24 @@ def mappo_cavs(parameters: Parameters):
             colored(f"{parameters.where_to_save}", "blue"),
         )
 
+    # Initialize a new experiment from a pinned prefix, with independent output
+    # and best-reward tracking. Ordinary resume/testing use their existing path.
+    if parameters.training_init_checkpoint and not parameters.is_load_model:
+        prefix = parameters.training_init_checkpoint
+        for suffix in ('policy', 'critic', 'nod', 'safety_value'):
+            if not os.path.isfile(prefix + '_' + suffix + '.pth'):
+                raise FileNotFoundError(f'Missing training initialization: {prefix}_{suffix}.pth')
+        _load_policy_checkpoint(prefix + '_policy.pth', policy, parameters,
+                                actor_base_observation_dim=actor_base_observation_dim,
+                                use_nod_actor=use_nod_actor)
+        critic.load_state_dict(torch.load(prefix + '_critic.pth', map_location=parameters.device))
+        _load_nod_if_available(prefix + '_nod.pth', nod_manager, parameters, load_optimizer=True)
+        _bind_frozen_nod(nod_manager, safety_value_manager, parameters)
+        safety_manager.load_if_available(prefix + '_safety_critic.pth', load_optimizer=True)
+        if not safety_value_manager.load_if_available(prefix + '_safety_value.pth', load_optimizer=True):
+            raise ValueError('Training initialization requires a compatible Safety Value checkpoint')
+        print(f'[INFO] Initialized experiment from {prefix}; output: {parameters.where_to_save}')
+
     # Load an existing model or train a new model?
     if parameters.is_load_model:
         # Load the model with the highest reward in the folder `parameters.where_to_save`
@@ -519,6 +553,7 @@ def mappo_cavs(parameters: Parameters):
             )
 
         safety_prefix = "final" if parameters.is_load_final_model else parameters.model_name
+        _bind_frozen_nod(nod_manager, safety_value_manager, parameters)
         safety_manager.load_if_available(
             os.path.join(parameters.where_to_save, safety_prefix + "_safety_critic.pth"),
             load_optimizer=parameters.is_continue_train,
@@ -547,6 +582,10 @@ def mappo_cavs(parameters: Parameters):
 
             if priority_module:
                 priority_module.critic.load_state_dict(torch.load(PATH_PRIORITY_CRITIC))
+
+    if parameters.nod_freeze_training:
+        _bind_frozen_nod(nod_manager, safety_value_manager, parameters)
+        print('[INFO] NOD weights frozen; online opinions continue evolving')
 
     # Loading probes and NOD parameter updates invalidate recurrent online
     # state. The next real rollout always starts from a coherent fresh state.
@@ -732,6 +771,13 @@ def mappo_cavs(parameters: Parameters):
                 -1
             )  # Flatten the batch size to shuffle data
             replay_buffer.extend(data_view)
+            action_probe = None
+            if parameters.safety_control_mode == 'barrier_opinion' or (
+                    parameters.nod_freeze_training and parameters.safety_control_mode == 'barrier_fixed'):
+                with torch.no_grad():
+                    action_probe = data_view[:min(128, data_view.numel())].detach().clone()
+                    before_mode = loss_module.actor.get_dist(action_probe, params=loss_module.actor_params).mode.clone()
+                    before_scale = action_probe.get(('agents', 'scale')).clone()
             # replay_buffer.update_tensordict_priority() # Not necessary, as priorities were updated automatically when calling `replay_buffer.extend()`
 
             last_loss_value = None
@@ -810,13 +856,19 @@ def mappo_cavs(parameters: Parameters):
                         replay_buffer.update_tensordict_priority(mini_batch_data)
                         if barrier_metrics['barrier_active']:
                             mini_batch_data.set(loss_module.tensor_keys.advantage, frozen_advantage)
+            if action_probe is not None:
+                with torch.no_grad():
+                    after_mode = loss_module.actor.get_dist(action_probe, params=loss_module.actor_params).mode
+                    barrier_metrics['actor_probe_mode_delta_abs'] = float((after_mode - before_mode).abs().mean())
+                    barrier_metrics['actor_probe_scale_delta_abs'] = float((action_probe.get(('agents', 'scale')) - before_scale).abs().mean())
+                    barrier_metrics['actor_probe_count'] = float(action_probe.numel())
             constraint_metrics = safety_manager.finish_actor_update()
             # NOD learns directly from ordered physical pair features. PPO trains
             # only the stateless message aggregator from cached online context.
             nod_update_interval = max(
                 1, int(getattr(parameters, "nod_update_interval", 10))
             )
-            should_update_nod = (pbar.n % nod_update_interval) == 0
+            should_update_nod = (pbar.n % nod_update_interval) == 0 and not parameters.nod_freeze_training
             if should_update_nod:
                 last_nod_metrics = nod_manager.train_on_rollout(tensordict_data)
                 last_nod_metrics["update_skipped"] = 0.0
@@ -824,6 +876,7 @@ def mappo_cavs(parameters: Parameters):
                 last_nod_metrics = dict(last_nod_metrics)
                 last_nod_metrics["optimizer_updates"] = 0.0
                 last_nod_metrics["update_skipped"] = 1.0
+            last_nod_metrics['training_frozen'] = float(parameters.nod_freeze_training)
             nod_manager.reset_online_state()
             if use_nod_actor:
                 actor_message = tensordict_data.get(

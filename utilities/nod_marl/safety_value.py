@@ -309,8 +309,14 @@ class SafetyValueManager:
             warmup=parameters.safety_barrier_warmup_batches,
             gate="warmup_only_experiment", recovery="nonincrease_value",
             advantage="soft_task_mask_minus_max_positive", normalization="unchanged_task_GAE",
+            nod_frozen=parameters.nod_freeze_training,
         )
-        if parameters.safety_control_mode == 'barrier_fixed' and (
+        if parameters.safety_control_mode == 'barrier_opinion':
+            self.barrier_contract.update(kappa_min=parameters.safety_barrier_kappa_min,
+                                         kappa_max=parameters.safety_barrier_kappa_max,
+                                         opinion="cached_preaction_z_world_slot_generation",
+                                         missing_opinion="kappa_min")
+        if parameters.safety_control_mode in {'barrier_fixed', 'barrier_opinion'} and (
                 not self.enabled or parameters.is_using_prioritized_marl):
             raise ValueError("Stage 8B requires Safety Value and non-prioritized MARL")
         self.contract = dict(
@@ -457,8 +463,8 @@ class SafetyValueManager:
         self.last_load_info = "loaded shadow Value; not used for action selection"
         if load_optimizer and loss_changed:
             self.last_load_info += "; optimizer reset after loss contract change"
-        if load_optimizer and (barrier_changed or loss_changed) and self.parameters.safety_control_mode == 'barrier_fixed':
-            self.last_load_info += "; fixed barrier starts fresh warmup (Value weights retained)"
+        if load_optimizer and (barrier_changed or loss_changed) and self.parameters.safety_control_mode in {'barrier_fixed', 'barrier_opinion'}:
+            self.last_load_info += "; barrier starts fresh warmup (Value weights retained)"
         print("[INFO] Safety Value:", self.last_load_info)
         return True
 

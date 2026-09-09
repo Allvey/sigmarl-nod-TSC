@@ -839,6 +839,10 @@ class Parameters:
         safety_barrier_nu: float = 1.0,
         safety_barrier_strength: float = 0.1,
         safety_barrier_warmup_batches: int = 10,
+        safety_barrier_kappa_min: float = 0.04,
+        safety_barrier_kappa_max: float = 0.06,
+        nod_freeze_training: bool = False,
+        training_init_checkpoint: str = None,
         # Stage 6: independent temporal deadlock prediction.
         is_using_deadlock_critic: bool = True,
         deadlock_horizons=None,
@@ -1001,13 +1005,23 @@ class Parameters:
         self.safety_barrier_nu = safety_barrier_nu
         self.safety_barrier_strength = safety_barrier_strength
         self.safety_barrier_warmup_batches = safety_barrier_warmup_batches
-        if (safety_control_mode not in {"off", "legacy_q", "barrier_fixed"}
+        self.safety_barrier_kappa_min = safety_barrier_kappa_min
+        self.safety_barrier_kappa_max = safety_barrier_kappa_max
+        self.nod_freeze_training = nod_freeze_training
+        self.training_init_checkpoint = training_init_checkpoint
+        if safety_control_mode == 'barrier_opinion' and (
+                not 0 < safety_barrier_kappa_min <= safety_barrier_kappa_max < 1
+                or not math.isclose((safety_barrier_kappa_min + safety_barrier_kappa_max) / 2,
+                                    safety_barrier_kappa, abs_tol=1e-8)
+                or not is_using_nod_actor or not is_using_nod_opinion):
+            raise ValueError("Invalid Stage-9 opinion barrier configuration")
+        if (safety_control_mode not in {"off", "legacy_q", "barrier_fixed", "barrier_opinion"}
                 or not 0 < safety_barrier_kappa < 1
                 or not 0 < safety_barrier_road_kappa < 1
                 or not math.isfinite(safety_barrier_nu) or safety_barrier_nu <= 0
                 or not 0 <= safety_barrier_strength <= 1
                 or not isinstance(safety_barrier_warmup_batches, int) or safety_barrier_warmup_batches < 0
-                or (safety_control_mode == "barrier_fixed" and
+                or (safety_control_mode in {"barrier_fixed", "barrier_opinion"} and
                     (not is_using_safety_value_shadow or is_using_prioritized_marl))):
             raise ValueError("Invalid Stage-8B fixed barrier configuration")
         if (not math.isfinite(safety_value_challenging_fraction)
