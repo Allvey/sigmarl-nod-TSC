@@ -33,6 +33,7 @@ from vmas.simulator.scenario import BaseScenario
 
 from utilities.kinematic_bicycle import KinematicBicycle
 from utilities.colors import Color, colors
+from utilities.collision_counter import CollisionCounter
 from utilities.nod_marl.interaction import build_directed_interactions
 from utilities.nod_marl.safety import safety_margins
 from utilities.nod_marl.deadlock import DeadlockTracker
@@ -372,6 +373,8 @@ class ScenarioRoadTraffic(BaseScenario):
         )
         if self.parameters.deadlock_probe_speed > self.max_speed:
             raise ValueError("deadlock_probe_speed exceeds the vehicle speed limit")
+
+        self.collision_counter = CollisionCounter(batch_dim, self.n_agents, device)
 
         # Timer for the first env
         self.timer = Timer(
@@ -1108,6 +1111,7 @@ class ScenarioRoadTraffic(BaseScenario):
             else:
                 self.nod_agent_generation[env_i] += 1
             self.deadlock_tracker.reset(env_i, agent_index)
+            self.collision_counter.reset(env_i, agent_index)
             self.deadlock_forward_allowed[env_i, slice(None) if agent_index is None else agent_index] = True
 
             # Begining of a new simulation (only record for the first env)
@@ -1969,6 +1973,11 @@ class ScenarioRoadTraffic(BaseScenario):
                         L2=self.ref_paths_agent_related.exit[:, a_i],
                         is_return_points=False,
                     )
+
+            # Count before done() can respawn colliding cars and clear the flags.
+            self.collision_counter.update(
+                self.collisions.with_agents, self.collisions.with_lanelets
+            )
 
         # Distance from the center of gravity (CG) of the agent to its reference path
         (
@@ -3215,7 +3224,7 @@ class ScenarioRoadTraffic(BaseScenario):
 
             # Time and time step
             geom = rendering.TextLine(
-                text=f"t: {self.timer.step[0]*self.parameters.dt:.2f} sec",
+                text=f"t: {self.timer.step[env_index]*self.parameters.dt:.2f} sec",
                 x=0.05 * self.resolution_factor,
                 y=(self.world.y_semidim + hight_b) * self.resolution_factor,
                 font_size=14,
@@ -3225,7 +3234,7 @@ class ScenarioRoadTraffic(BaseScenario):
             geoms.append(geom)
 
             geom = rendering.TextLine(
-                text=f"n: {self.timer.step[0]}",
+                text=f"n: {self.timer.step[env_index]}",
                 x=0.05 * self.resolution_factor,
                 y=(self.world.y_semidim + hight_c) * self.resolution_factor,
                 font_size=14,
@@ -3233,6 +3242,22 @@ class ScenarioRoadTraffic(BaseScenario):
             xform = rendering.Transform()
             geom.add_attr(xform)
             geoms.append(geom)
+
+            vehicle_count = int(self.collision_counter.vehicle[env_index].item())
+            road_count = int(self.collision_counter.road[env_index].item())
+            for row, text in enumerate((
+                f"Collisions: {vehicle_count + road_count}",
+                f"Vehicle pairs: {vehicle_count}",
+                f"Road contacts: {road_count}",
+            )):
+                geom = rendering.TextLine(
+                    text=text,
+                    x=0.05 * self.resolution_factor,
+                    y=(self.world.y_semidim - 0.40 - row * 0.10) * self.resolution_factor,
+                    font_size=14,
+                )
+                geom.add_attr(rendering.Transform())
+                geoms.append(geom)
 
             # Mean velocity
             # mean_vel = torch.vstack([a.state.vel for a in self.world.agents]).norm(dim=-1).mean()

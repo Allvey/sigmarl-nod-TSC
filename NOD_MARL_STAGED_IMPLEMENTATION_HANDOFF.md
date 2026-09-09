@@ -1,6 +1,10 @@
 # NOD-MARL 安全优先实施方案与新 Session 交接（V2：意见调节屏障约束）
 
 > 更新时间：2026-09-08
+>
+> 2026-09-09 配置切换：`python main_training.py` 默认使用 `config.json`（当前阶段9）；`python main_training.py --config config_stage8a.json` 使用阶段8A首版配置，输出到 `outputs/stage8a_scratch/`。也可修改训练入口的 `config_file` 后直接运行。
+> 8A配置对齐 `reward7.18` 的保存参数及seed=12811387940694726614，使用 `legacy_q`、Value `legacy` 损失、普通起点采样；保留旧Q可靠性门控，不接入屏障PPO。历史7.18的旧Q门控全程未开启，但新训练仍按门控判定，不能预先承诺不启用或复现同等奖励。与当前阶段9默认seed不同，因果对照需手动统一seed及预算。
+> `main_testing.py` 已将实际模型加载目录同步为 `path`，迁移过的模型不再沿用JSON中的旧目录。当前归档 `outputs/8B stage/reward7.18_*` 实际对应8A首版，以保存配置为准。
 > 用途：新开发 session 的首要阅读材料。本文以当前工作区和实际训练结果为准，区分“已经完成”“当前未提交”“后续计划”，避免重复实现或按旧方案误改。
 
 > 本轮范围调整：用户决定暂缓 Deadlock Critic，优先安全。近期只推进任务 Critic + Safety Critic + NOD/Actor；死锁标签补充、Deadlock ensemble、死锁 Actor 约束及死锁对偶网络均移出实施范围。本文的新顺序替代旧交接计划中的双约束路线；原方法文档保留为长期研究参考。

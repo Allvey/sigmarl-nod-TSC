@@ -14,7 +14,7 @@ from utilities.mappo_cavs import mappo_cavs
 
 from utilities.constants import SCENARIOS
 
-path = "outputs/stage9_scratch/"  # Match the current from-scratch training output.
+path = "outputs/6 stage/"  # Match the current from-scratch training output.
 
 try:
     path_to_json_file = next(
@@ -25,6 +25,8 @@ try:
         data = json.load(file)
         saved_data = SaveData.from_dict(data)
         parameters = saved_data.parameters
+        # Moved checkpoint folders must not load models from the old JSON path.
+        parameters.where_to_save = os.path.join(path, "")
 
         # Adjust parameters
         # Safety-only rollout, including when loading older training JSON files.
@@ -43,10 +45,10 @@ try:
 
         parameters.scenario_type = (
             # "intersection_2"
-            "roundabout_1"
+            # "roundabout_1"
             # "CPM_entire"
             # "CPM_mixed"  
-            # "on_ramp_1"
+            "on_ramp_1"
             # roundabout_1, intersection_1/2/3, CPM_mixed
         )
         parameters.n_agents = SCENARIOS[parameters.scenario_type]["n_agents"]
