@@ -1,8 +1,10 @@
 # NOD-MARL 安全优先实施方案与新 Session 交接（V2：意见调节屏障约束）
 
 > 更新时间：2026-09-08
+> 阶段8B对照：`python main_training.py --config config_stage8b.json`，从零训练，输出 `outputs/stage8b_scratch/`。使用 `barrier_fixed`、κ=0.05、β=0.1、ν=1、10批预热，NOD正常训练并输入Actor，不调节κ，旧Q不参与Actor惩罚。采用8B的 balanced Value损失和25%危险起点采样，因此相对8A首版不只是切换安全损失。seed=12811387940694726614及PPO预算与阶段7/8A一致；阶段7没有额外Value旁路采样。与阶段9比较时还需统一seed；这是当前代码中的方法分支对照，不保证历史结果逐位复现。
 >
 > 2026-09-09 配置切换：`python main_training.py` 默认使用 `config.json`（当前阶段9）；`python main_training.py --config config_stage8a.json` 使用阶段8A首版配置，输出到 `outputs/stage8a_scratch/`。也可修改训练入口的 `config_file` 后直接运行。
+> 阶段7对照：`python main_training.py --config config_stage7.json`，从零训练并输出到 `outputs/stage7_scratch/`。相对8A配置仅关闭 `is_using_safety_value_shadow` 并更换输出目录，seed和PPO预算保持一致；NOD与旧Q门控约束保留，Deadlock及8B/9屏障关闭。旧Q是否实际指导Actor须查看 `actor_constraint_ready/active`；配置启用不代表通过可靠性门控。这是在当前代码中选择阶段7方法分支，不是历史源码或训练结果的逐位复现。
 > 8A配置对齐 `reward7.18` 的保存参数及seed=12811387940694726614，使用 `legacy_q`、Value `legacy` 损失、普通起点采样；保留旧Q可靠性门控，不接入屏障PPO。历史7.18的旧Q门控全程未开启，但新训练仍按门控判定，不能预先承诺不启用或复现同等奖励。与当前阶段9默认seed不同，因果对照需手动统一seed及预算。
 > `main_testing.py` 已将实际模型加载目录同步为 `path`，迁移过的模型不再沿用JSON中的旧目录。当前归档 `outputs/8B stage/reward7.18_*` 实际对应8A首版，以保存配置为准。
 > 用途：新开发 session 的首要阅读材料。本文以当前工作区和实际训练结果为准，区分“已经完成”“当前未提交”“后续计划”，避免重复实现或按旧方案误改。

@@ -219,6 +219,9 @@ class Evaluation:
 
     def _adjust_parameters(self):
         # Adjust parameters
+        # Checkpoints and rollout caches belong to the selected evaluation folder,
+        # even when its training JSON still points to the original output path.
+        self.parameters.where_to_save = os.path.join(self.model_i_path, "")
         self.parameters.scenario_type = self.scenario_type
         self.parameters.is_testing_mode = True
         self.parameters.is_real_time_rendering = False
@@ -457,6 +460,8 @@ class Evaluation:
         Returns:
             numpy.ndarray: The smoothed data.
         """
+        if len(data) < window_size:
+            return np.asarray(data).copy()
         smoothed = np.convolve(data, np.ones(window_size) / window_size, mode="valid")
         return np.concatenate((data[: window_size - 1], smoothed))
 
@@ -473,18 +478,18 @@ class Evaluation:
         ###############################
         ## Fig 1 - Episode reward
         ###############################
-        data_np = self.episode_reward.numpy()
+        data_np = [reward.cpu().numpy() for reward in self.episode_reward]
         plt.clf()
         plt.figure(figsize=self.fig_sizes["episode_reward"])
 
-        for i in range(data_np.shape[0]):
+        for i, rewards in enumerate(data_np):
             # Original data with transparency
             plt.plot(
-                data_np[i, :], color=colors[i], alpha=0.2, linestyle="-", linewidth=0.2
+                rewards, color=colors[i], alpha=0.2, linestyle="-", linewidth=0.2
             )
 
             # Smoothed data
-            smoothed_reward = self.smooth_data(data_np[i, :])
+            smoothed_reward = self.smooth_data(rewards)
             plt.plot(
                 smoothed_reward,
                 label=self.legends[i],
@@ -493,7 +498,7 @@ class Evaluation:
                 linewidth=0.8,
             )
 
-        plt.xlim([0, data_np.shape[1]])
+        plt.xlim([0, max(1, max(len(rewards) for rewards in data_np))])
         plt.xlabel("Episode")
         plt.ylabel("Reward")
 
@@ -792,11 +797,8 @@ class Evaluation:
             device=self.parameters.device,
             dtype=torch.float32,
         )
-        self.episode_reward = torch.zeros(
-            (self.num_models, self.parameters.n_iters),
-            device=self.parameters.device,
-            dtype=torch.float32,
-        )
+        # Checkpoints may have partial histories or different training budgets.
+        self.episode_reward = [torch.empty(0) for _ in range(self.num_models)]
         self.policy_inference_total_s = torch.full(
             (self.num_models,), float("nan"), dtype=torch.float64
         )
@@ -840,8 +842,8 @@ class Evaluation:
             if self.model_idx == 0:
                 self._init_eva_matrices()  # Only need to be done once
 
-            self.episode_reward[self.model_idx, :] = torch.tensor(
-                [self.saved_data.episode_reward_mean_list]
+            self.episode_reward[self.model_idx] = torch.tensor(
+                self.saved_data.episode_reward_mean_list or [], dtype=torch.float32
             )
 
             self._evaluate_model_i()

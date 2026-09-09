@@ -14,7 +14,7 @@ from utilities.mappo_cavs import mappo_cavs
 
 from utilities.constants import SCENARIOS
 
-path = "outputs/6 stage/"  # Match the current from-scratch training output.
+path = "outputs/stage8b_scratch/"  # Match the current from-scratch training output.
 
 try:
     path_to_json_file = next(
