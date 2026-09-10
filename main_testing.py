@@ -14,7 +14,7 @@ from utilities.mappo_cavs import mappo_cavs
 
 from utilities.constants import SCENARIOS
 
-path = "outputs/stage8b_scratch/"  # Match the current from-scratch training output.
+path = "outputs/dgppo_minimal_v2/"  # Match the current from-scratch training output.
 
 try:
     path_to_json_file = next(
@@ -44,11 +44,11 @@ try:
             parameters.num_vmas_envs = 1
 
         parameters.scenario_type = (
-            # "intersection_2"
+            "intersection_2"
             # "roundabout_1"
             # "CPM_entire"
             # "CPM_mixed"  
-            "on_ramp_1"
+            # "on_ramp_1"
             # roundabout_1, intersection_1/2/3, CPM_mixed
         )
         parameters.n_agents = SCENARIOS[parameters.scenario_type]["n_agents"]

@@ -12,6 +12,7 @@ note*.md
 examples
 *out_td*.pth
 venv/
+wandb/
 *.pdf
 
 # Ignore image files

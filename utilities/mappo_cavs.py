@@ -772,12 +772,15 @@ def mappo_cavs(parameters: Parameters):
             )  # Flatten the batch size to shuffle data
             replay_buffer.extend(data_view)
             action_probe = None
-            if parameters.safety_control_mode == 'barrier_opinion' or (
+            if parameters.safety_control_mode in {'barrier_opinion', 'dgppo'} or (
                     parameters.nod_freeze_training and parameters.safety_control_mode == 'barrier_fixed'):
                 with torch.no_grad():
                     action_probe = data_view[:min(128, data_view.numel())].detach().clone()
                     before_mode = loss_module.actor.get_dist(action_probe, params=loss_module.actor_params).mode.clone()
                     before_scale = action_probe.get(('agents', 'scale')).clone()
+                    if parameters.safety_control_mode == 'dgppo':
+                        before_log_prob = loss_module.actor.get_dist(action_probe, params=loss_module.actor_params).log_prob(
+                            action_probe.get(('agents', 'action'))).clone()
             # replay_buffer.update_tensordict_priority() # Not necessary, as priorities were updated automatically when calling `replay_buffer.extend()`
 
             last_loss_value = None
@@ -862,6 +865,13 @@ def mappo_cavs(parameters: Parameters):
                     barrier_metrics['actor_probe_mode_delta_abs'] = float((after_mode - before_mode).abs().mean())
                     barrier_metrics['actor_probe_scale_delta_abs'] = float((action_probe.get(('agents', 'scale')) - before_scale).abs().mean())
                     barrier_metrics['actor_probe_count'] = float(action_probe.numel())
+                    if parameters.safety_control_mode == 'dgppo':
+                        after_log_prob = loss_module.actor.get_dist(action_probe, params=loss_module.actor_params).log_prob(
+                            action_probe.get(('agents', 'action')))
+                        unsafe = action_probe.get(('agents', 'barrier_violation_mask')).squeeze(-1)
+                        change = (after_log_prob - before_log_prob).reshape_as(unsafe)[unsafe]
+                        barrier_metrics['actor_unsafe_probe_count'] = float(unsafe.sum())
+                        barrier_metrics['actor_unsafe_log_prob_delta_mean'] = float(change.mean()) if change.numel() else 0.
             constraint_metrics = safety_manager.finish_actor_update()
             # NOD learns directly from ordered physical pair features. PPO trains
             # only the stateless message aggregator from cached online context.

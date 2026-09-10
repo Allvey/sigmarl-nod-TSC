@@ -115,12 +115,18 @@ def isolated_rng(state):
             np.random.set_state(outer_numpy)
 
 
-def value_state(td, observation_key, safe_distance):
+def value_state(td, observation_key, safe_distance, *, local_sensing_range=None):
     """Build current-state-only features and dimensionless physical labels."""
     info = td.get(("agents", "info"))
     pair = info.get("nod_pair_features").detach()
     ids = info.get("nod_neighbor_indices").long()
     edge = info.get("nod_edge_mask").bool()
+    if local_sensing_range is not None:
+        # Existing NOD conflict features use neighbors' reference paths. The
+        # no-communication DGPPO branch keeps only observable kinematics.
+        pair = pair.clone()
+        pair[..., 9:16] = 0.
+        edge = pair[..., 17] > 0.5
     n = pair.shape[-3]
     if bool(((ids < 0) | (ids >= n)).any()):
         raise ValueError("Safety Value neighbor identity is out of bounds")
@@ -130,7 +136,9 @@ def value_state(td, observation_key, safe_distance):
     mask.scatter_(-1, ids, edge)
     mask &= ~torch.eye(n, device=pair.device, dtype=torch.bool)
     pos = info.get("nod_world_pos").detach()
-    g_pair = ((safe_distance - torch.cdist(pos, pos)) / safe_distance).clamp_min(-1)
+    distance = (torch.cdist(pos, pos) if local_sensing_range is None
+                else dense_pair[..., 6] * local_sensing_range)
+    g_pair = ((safe_distance - distance) / safe_distance).clamp_min(-1)
     margins = info.get("safety_margins").detach()
     # Road and unattributed actual collision remain separate, non-opinion heads.
     g = torch.cat([g_pair, margins[..., 1:3]], dim=-1)
@@ -297,6 +305,7 @@ class SafetyValueManager:
     def __init__(self, parameters, observation_dim, observation_key):
         self.enabled = bool(getattr(parameters, "is_using_safety_value_shadow", False))
         self.parameters, self.observation_key = parameters, observation_key
+        self.dgppo = parameters.safety_control_mode == "dgppo"
         self.updates = self.rollouts = self.frames = 0
         self.sampler_state = {"seed": int(parameters.seed or 0) ^ 0x3856414C}
         self.start_buffer_state = None
@@ -316,7 +325,7 @@ class SafetyValueManager:
                                          kappa_max=parameters.safety_barrier_kappa_max,
                                          opinion="cached_preaction_z_world_slot_generation",
                                          missing_opinion="kappa_min")
-        if parameters.safety_control_mode in {'barrier_fixed', 'barrier_opinion'} and (
+        if parameters.safety_control_mode in {'barrier_fixed', 'barrier_opinion', 'dgppo'} and (
                 not self.enabled or parameters.is_using_prioritized_marl):
             raise ValueError("Stage 8B requires Safety Value and non-prioritized MARL")
         self.contract = dict(
@@ -336,18 +345,29 @@ class SafetyValueManager:
             underestimate_margin=UNDERESTIMATE_MARGIN, reduction="equal_head_weighted_mean",
             class_counts="valid_rollout_targets",
         ))
+        if self.dgppo:
+            self.contract.update(mode="dgppo_minimal_value", target="max_lambda_cross_head",
+                                 gae_lambda=parameters.dgppo_lambda, target_tau=None,
+                                 features="local_kinematics_no_neighbor_path", mask="sensing_range")
+            self.loss_contract = dict(mode="mse", reduction="half_mean_valid", bootstrap="preupdate_model")
+            self.barrier_contract.update(mode="dgppo", alpha=parameters.dgppo_alpha,
+                eps=parameters.dgppo_eps, weight=parameters.dgppo_weight,
+                schedule=parameters.dgppo_schedule, schedule_iters=parameters.n_iters, dt=parameters.dt,
+                recovery="positive_value_contraction", advantage="feasible_task_minus_risk_rate",
+                normalization="per_env_agent_time_including_warmup", partial_successor="known_violation_retained")
         self.model = self.target = self.optimizer = None
         self.last_load_info = "disabled" if not self.enabled else "fresh shadow Value"
         if not self.enabled:
             return
         with isolated_rng({"seed": int(parameters.seed or 0) ^ 0x38564E45}):
             self.model = PairSafetyValue(observation_dim, parameters.safety_value_hidden_dim).to(parameters.device)
-        self.target = copy.deepcopy(self.model).requires_grad_(False).eval()
+        self.target = None if self.dgppo else copy.deepcopy(self.model).requires_grad_(False).eval()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=parameters.safety_value_lr)
         self.generator = torch.Generator(device="cpu").manual_seed(int(parameters.seed or 0) ^ 0x38564F50)
 
     def state(self, td):
-        return value_state(td, self.observation_key, self.parameters.safety_safe_distance)
+        return value_state(td, self.observation_key, self.parameters.safety_safe_distance,
+                           local_sensing_range=self.parameters.nod_sensing_range if self.dgppo else None)
 
     @torch.no_grad()
     def predict(self, td):
@@ -360,9 +380,15 @@ class SafetyValueManager:
         current, following = self.state(td), self.state(td.get("next"))
         with torch.no_grad():
             before = self.model(current)
-            next_value = self.target(following)
-            y, valid, observed, steps = discounted_max_targets(
-                current, following, next_value, td.get(("next", "done")), self.parameters.safety_value_gamma)
+            next_value = (self.model if self.dgppo else self.target)(following)
+            if self.dgppo:
+                from .dgppo import dgppo_targets
+                y, valid, observed, steps = dgppo_targets(
+                    current, following, next_value, td.get(("next", "done")),
+                    self.parameters.safety_value_gamma, self.parameters.dgppo_lambda)
+            else:
+                y, valid, observed, steps = discounted_max_targets(
+                    current, following, next_value, td.get(("next", "done")), self.parameters.safety_value_gamma)
         if not all(torch.isfinite(x).all() for x in (current["pair"], current["node"], y, before)):
             raise ValueError("Non-finite Stage-8A Safety State Value data")
         metrics = {"shadow_only": 1., "actor_updates": 0., "valid_samples": float(valid.sum()),
@@ -381,6 +407,8 @@ class SafetyValueManager:
         positive_weights = positive_class_weights(y, valid, self.parameters.safety_value_positive_weight_cap)
         balanced = self.parameters.safety_value_loss_mode == "balanced"
         metrics["balanced_loss"] = float(balanced)
+        if self.dgppo:
+            metrics["dgppo_target"] = 1.
         for (name, _), weight in zip(VALUE_HEADS, positive_weights):
             metrics[name + "_positive_class_weight"] = weight if balanced else 1.
         if valid.any():
@@ -400,9 +428,12 @@ class SafetyValueManager:
                 if not mask.any():
                     continue
                 pred = self.model({k: v[ids] for k, v in batch.items()})
-                loss = (balanced_value_loss(pred, target[ids], mask, positive_weights,
-                                            self.parameters.safety_value_underestimate_weight)
-                        if balanced else F.smooth_l1_loss(pred[mask], target[ids][mask]))
+                if self.dgppo:
+                    loss = 0.5 * F.mse_loss(pred[mask], target[ids][mask])
+                else:
+                    loss = (balanced_value_loss(pred, target[ids], mask, positive_weights,
+                                                self.parameters.safety_value_underestimate_weight)
+                            if balanced else F.smooth_l1_loss(pred[mask], target[ids][mask]))
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.model.parameters(), 1., error_if_nonfinite=True)
@@ -411,7 +442,7 @@ class SafetyValueManager:
                 losses.append(float(loss.detach()))
         self.optimizer.zero_grad(set_to_none=True)
         with torch.no_grad():
-            for dest, src in zip(self.target.parameters(), self.model.parameters()):
+            for dest, src in zip(self.target.parameters() if self.target is not None else [], self.model.parameters()):
                 dest.lerp_(src, self.parameters.safety_value_target_tau)
         self.rollouts += 1
         if losses:
@@ -425,7 +456,7 @@ class SafetyValueManager:
         if not self.enabled:
             return None
         return dict(contract=self.contract, loss_contract=self.loss_contract,
-                    model=self.model.state_dict(), target=self.target.state_dict(),
+                    model=self.model.state_dict(), target=self.target.state_dict() if self.target is not None else None,
                     optimizer=self.optimizer.state_dict(), updates=self.updates, rollouts=self.rollouts,
                     frames=self.frames, generator=self.generator.get_state(), sampler_state=self.sampler_state,
                     start_buffer_state=self.start_buffer_state,
@@ -444,7 +475,8 @@ class SafetyValueManager:
             print("[WARN] Safety Value:", self.last_load_info)
             return False
         self.model.load_state_dict(checkpoint["model"])
-        self.target.load_state_dict(checkpoint["target"])
+        if self.target is not None:
+            self.target.load_state_dict(checkpoint["target"])
         self.updates, self.rollouts, self.frames = (checkpoint[k] for k in ("updates", "rollouts", "frames"))
         loss_changed = checkpoint.get("loss_contract", {"mode": "legacy"}) != self.loss_contract
         barrier_changed = checkpoint.get('barrier_contract') != self.barrier_contract
@@ -463,7 +495,7 @@ class SafetyValueManager:
         self.last_load_info = "loaded shadow Value; not used for action selection"
         if load_optimizer and loss_changed:
             self.last_load_info += "; optimizer reset after loss contract change"
-        if load_optimizer and (barrier_changed or loss_changed) and self.parameters.safety_control_mode in {'barrier_fixed', 'barrier_opinion'}:
+        if load_optimizer and (barrier_changed or loss_changed) and self.parameters.safety_control_mode in {'barrier_fixed', 'barrier_opinion', 'dgppo'}:
             self.last_load_info += "; barrier starts fresh warmup (Value weights retained)"
         print("[INFO] Safety Value:", self.last_load_info)
         return True

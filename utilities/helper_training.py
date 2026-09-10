@@ -834,6 +834,11 @@ class Parameters:
         safety_value_start_lookback: int = 10,
         # Stage 8B: fixed barrier on PPO advantages; legacy JSON keeps Stage 7.
         safety_control_mode: str = "legacy_q",
+        dgppo_lambda: float = 0.95,
+        dgppo_alpha: float = 10.0,
+        dgppo_eps: float = 0.01,
+        dgppo_weight: float = 1.0,
+        dgppo_schedule: bool = True,
         safety_barrier_kappa: float = 0.05,
         safety_barrier_road_kappa: float = 0.05,
         safety_barrier_nu: float = 1.0,
@@ -1000,6 +1005,24 @@ class Parameters:
         self.safety_value_start_buffer_size = safety_value_start_buffer_size
         self.safety_value_start_lookback = safety_value_start_lookback
         self.safety_control_mode = safety_control_mode
+        self.dgppo_lambda = dgppo_lambda
+        self.dgppo_alpha = dgppo_alpha
+        self.dgppo_eps = dgppo_eps
+        self.dgppo_weight = dgppo_weight
+        self.dgppo_schedule = dgppo_schedule
+        if (not 0 <= dgppo_lambda <= 1 or not math.isfinite(dgppo_alpha) or dgppo_alpha <= 0
+                or not math.isfinite(dgppo_eps) or dgppo_eps < 0
+                or not math.isfinite(dgppo_weight) or dgppo_weight < 0
+                or not isinstance(dgppo_schedule, bool)):
+            raise ValueError("Invalid DGPPO safety parameters")
+        if safety_control_mode == "dgppo" and (
+                is_using_nod_opinion or is_using_nod_actor or is_using_safety_critic
+                or safety_value_loss_mode != "mse" or not math.isfinite(dt) or dt <= 0
+                or dgppo_alpha * dt >= 1 or safety_value_challenging_fraction != 0
+                or is_observe_ref_path_other_agents):
+            raise ValueError("DGPPO minimal requires no opinion/old Q, MSE, 0 < alpha*dt < 1, and ordinary starts")
+        if safety_value_loss_mode == "mse" and safety_control_mode != "dgppo":
+            raise ValueError("MSE Safety Value loss belongs to the DGPPO minimal mode")
         self.safety_barrier_kappa = safety_barrier_kappa
         self.safety_barrier_road_kappa = safety_barrier_road_kappa
         self.safety_barrier_nu = safety_barrier_nu
@@ -1015,13 +1038,13 @@ class Parameters:
                                     safety_barrier_kappa, abs_tol=1e-8)
                 or not is_using_nod_actor or not is_using_nod_opinion):
             raise ValueError("Invalid Stage-9 opinion barrier configuration")
-        if (safety_control_mode not in {"off", "legacy_q", "barrier_fixed", "barrier_opinion"}
+        if (safety_control_mode not in {"off", "legacy_q", "barrier_fixed", "barrier_opinion", "dgppo"}
                 or not 0 < safety_barrier_kappa < 1
                 or not 0 < safety_barrier_road_kappa < 1
                 or not math.isfinite(safety_barrier_nu) or safety_barrier_nu <= 0
                 or not 0 <= safety_barrier_strength <= 1
                 or not isinstance(safety_barrier_warmup_batches, int) or safety_barrier_warmup_batches < 0
-                or (safety_control_mode in {"barrier_fixed", "barrier_opinion"} and
+                or (safety_control_mode in {"barrier_fixed", "barrier_opinion", "dgppo"} and
                     (not is_using_safety_value_shadow or is_using_prioritized_marl))):
             raise ValueError("Invalid Stage-8B fixed barrier configuration")
         if (not math.isfinite(safety_value_challenging_fraction)
@@ -1030,7 +1053,7 @@ class Parameters:
                 or any(not isinstance(v, int) or v < 1 for v in (
                     safety_value_start_buffer_size, safety_value_start_lookback))):
             raise ValueError("Invalid Stage-8A challenging start configuration")
-        if (safety_value_loss_mode not in {"legacy", "balanced"}
+        if (safety_value_loss_mode not in {"legacy", "balanced", "mse"}
                 or any(not math.isfinite(v) or v < 1 for v in (
                     safety_value_positive_weight_cap, safety_value_underestimate_weight))):
             raise ValueError("Invalid Stage-8A Safety Value loss configuration")

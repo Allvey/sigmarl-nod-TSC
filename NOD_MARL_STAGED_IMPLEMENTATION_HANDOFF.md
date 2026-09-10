@@ -1,6 +1,9 @@
 # NOD-MARL 安全优先实施方案与新 Session 交接（V2：意见调节屏障约束）
 
-> 更新时间：2026-09-08
+> 更新时间：2026-09-10
+> DGPPO 最小分支首版完整训练最高奖励约-0.18，结果保留在 `outputs/dgppo_minimal/`。修订版入口仍为 `python main_training.py --config config_dgppo_minimal.json`，输出改为 `outputs/dgppo_minimal_v2/`：每批15次PPO更新、20批安全预热、不自动翻倍安全权重。任务优势在预热/关闭安全/安全更新阶段保持同一归一化。匹配的无安全对照为 `config_dgppo_task_only.json`，输出 `outputs/dgppo_task_only/`。
+> 同seed、24批无安全更新诊断显示，1/15次PPO更新最高奖励分别为0.85/2.72；完整数据在 `outputs/dgppo_diagnostics/20260910_123203/`。风险目标与屏障公式未变，旧阶段配置仍可使用。完整说明、适配差异、测试与局限见 [DGPPO_MINIMAL.md](DGPPO_MINIMAL.md)；修订版完整训练待用户执行。
+>
 > 阶段8B对照：`python main_training.py --config config_stage8b.json`，从零训练，输出 `outputs/stage8b_scratch/`。使用 `barrier_fixed`、κ=0.05、β=0.1、ν=1、10批预热，NOD正常训练并输入Actor，不调节κ，旧Q不参与Actor惩罚。采用8B的 balanced Value损失和25%危险起点采样，因此相对8A首版不只是切换安全损失。seed=12811387940694726614及PPO预算与阶段7/8A一致；阶段7没有额外Value旁路采样。与阶段9比较时还需统一seed；这是当前代码中的方法分支对照，不保证历史结果逐位复现。
 >
 > 2026-09-09 配置切换：`python main_training.py` 默认使用 `config.json`（当前阶段9）；`python main_training.py --config config_stage8a.json` 使用阶段8A首版配置，输出到 `outputs/stage8a_scratch/`。也可修改训练入口的 `config_file` 后直接运行。

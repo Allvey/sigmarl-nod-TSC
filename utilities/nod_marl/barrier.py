@@ -83,6 +83,9 @@ def fixed_barrier_advantage(task, current, following, value, next_value,
 def prepare_barrier_advantage(manager, td, advantage_key):
     """Once per rollout, before PPO epochs; Value is held fixed for both states."""
     p = manager.parameters
+    if p.safety_control_mode == 'dgppo':
+        from .dgppo import prepare_dgppo_advantage
+        return prepare_dgppo_advantage(manager, td, advantage_key)
     opinion_mode = p.safety_control_mode == 'barrier_opinion'
     enabled = (p.safety_control_mode in {'barrier_fixed', 'barrier_opinion'} and p.is_using_safety_constraint
                and manager.enabled)
