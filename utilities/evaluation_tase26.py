@@ -11,7 +11,7 @@ from utilities.evaluation_base import Evaluation
 
 
 model_paths = [
-    "outputs/dgppo_road_margin/",
+    "outputs/dgppo_task_only/",
 ]
 
 num_models = len(model_paths)
@@ -69,8 +69,8 @@ for i_scenario in scenario_types:
         simulation_steps=1200,
         is_show_different_collisions=is_show_different_collisions,
         x_ticks=x_ticks,
-        where_to_save_eva_results=f"outputs/dgppo_road_margin/eva_{i_scenario}",
-        where_to_save_logging="outputs/dgppo_road_margin/log.txt",
+        where_to_save_eva_results=f"outputs/dgppo_task_only/eva_{i_scenario}",
+        where_to_save_logging="outputs/dgppo_task_only/log.txt",
         legends=legends,
         render_titles=render_titles,
         num_simulations_per_model=8,

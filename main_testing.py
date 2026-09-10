@@ -14,7 +14,7 @@ from utilities.mappo_cavs import mappo_cavs
 
 from utilities.constants import SCENARIOS
 
-path = "outputs/dgppo_minimal_v2/"  # Match the current from-scratch training output.
+path = "outputs/dgppo_task_only/"  # Match the current from-scratch training output.
 
 try:
     path_to_json_file = next(
