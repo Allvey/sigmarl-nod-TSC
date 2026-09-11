@@ -92,6 +92,7 @@ from utilities.nod_marl.safety import SafetyCriticManager
 from utilities.nod_marl.deadlock import DeadlockCriticManager
 from utilities.nod_marl.safety_value import SafetyValueManager, DeterministicSafetySampler
 from utilities.nod_marl.barrier import prepare_barrier_advantage
+from utilities.nod_marl.finetune import actor_warmup_frozen, approximate_policy_kl
 
 class BoundedNormalParamExtractor(NormalParamExtractor):
     """Keep the original scale mapping and floor, with a fixed upper bound."""
@@ -439,7 +440,10 @@ def mappo_cavs(parameters: Parameters):
     # and best-reward tracking. Ordinary resume/testing use their existing path.
     if parameters.training_init_checkpoint and not parameters.is_load_model:
         prefix = parameters.training_init_checkpoint
-        for suffix in ('policy', 'critic', 'nod', 'safety_value'):
+        if os.path.realpath(os.path.dirname(prefix)) == os.path.realpath(parameters.where_to_save):
+            raise ValueError('Training initialization must use a separate output directory')
+        required_suffixes = ('policy', 'critic', 'safety_value') + (('nod',) if nod_manager.enabled else ())
+        for suffix in required_suffixes:
             if not os.path.isfile(prefix + '_' + suffix + '.pth'):
                 raise FileNotFoundError(f'Missing training initialization: {prefix}_{suffix}.pth')
         _load_policy_checkpoint(prefix + '_policy.pth', policy, parameters,
@@ -449,8 +453,12 @@ def mappo_cavs(parameters: Parameters):
         _load_nod_if_available(prefix + '_nod.pth', nod_manager, parameters, load_optimizer=True)
         _bind_frozen_nod(nod_manager, safety_value_manager, parameters)
         safety_manager.load_if_available(prefix + '_safety_critic.pth', load_optimizer=True)
-        if not safety_value_manager.load_if_available(prefix + '_safety_value.pth', load_optimizer=True):
+        finetune = parameters.safety_training_mode == 'finetune'
+        if not safety_value_manager.load_if_available(prefix + '_safety_value.pth', load_optimizer=not finetune):
             raise ValueError('Training initialization requires a compatible Safety Value checkpoint')
+        if finetune:
+            safety_value_manager.updates = safety_value_manager.rollouts = safety_value_manager.frames = 0
+            safety_value_manager.barrier_fit_batches = 0
         print(f'[INFO] Initialized experiment from {prefix}; output: {parameters.where_to_save}')
 
     # Load an existing model or train a new model?
@@ -715,6 +723,7 @@ def mappo_cavs(parameters: Parameters):
                       if safety_value_manager.enabled else None)
 
     t_start = time.time()
+    finetune_actor_batches = 0
     try:
         for tensordict_data in collector:
             # Snapshot the same pre-PPO policy on an isolated deterministic rollout.
@@ -751,6 +760,13 @@ def mappo_cavs(parameters: Parameters):
             barrier_metrics = prepare_barrier_advantage(
                 safety_value_manager, tensordict_data, loss_module.tensor_keys.advantage)
             barrier_actor_updates = 0
+            freeze_actor = actor_warmup_frozen(parameters, safety_value_manager)
+            finetune = parameters.safety_training_mode == 'finetune'
+            kl_stopped = False
+            ppo_updates = 0
+            kl_last = kl_max = 0.
+            if finetune:
+                barrier_metrics['finetune_actor_frozen'] = float(freeze_actor)
             if barrier_metrics['barrier_active']:
                 # NOD's preceding supervised step may leave gradients attached.
                 # Clear those before checking isolation of this PPO backward.
@@ -784,7 +800,7 @@ def mappo_cavs(parameters: Parameters):
             # replay_buffer.update_tensordict_priority() # Not necessary, as priorities were updated automatically when calling `replay_buffer.extend()`
 
             last_loss_value = None
-            for _ in range(parameters.num_epochs):
+            for _ in range(0 if freeze_actor else parameters.num_epochs):
                 # print("[DEBUG] for _ in range(parameters.num_epochs):")
                 for _ in range(parameters.frames_per_batch // parameters.minibatch_size):
                     # sample a batch of data
@@ -834,6 +850,19 @@ def mappo_cavs(parameters: Parameters):
 
                     optim.step()
                     optim.zero_grad()
+                    ppo_updates += 1
+                    if finetune:
+                        with torch.no_grad():
+                            probe_td = mini_batch_data.detach().clone()
+                            new_log_prob = loss_module.actor.get_dist(
+                                probe_td, params=loss_module.actor_params).log_prob(
+                                    mini_batch_data.get(('agents', 'action')))
+                            kl_last = float(approximate_policy_kl(
+                                new_log_prob, mini_batch_data.get(('agents', 'sample_log_prob'))))
+                        kl_max = max(kl_max, kl_last)
+                        if kl_last > parameters.safety_finetune_target_kl:
+                            kl_stopped = True
+                            break
 
                     if priority_module:
                         priority_module.compute_losses_and_optimize(mini_batch_data)
@@ -859,6 +888,13 @@ def mappo_cavs(parameters: Parameters):
                         replay_buffer.update_tensordict_priority(mini_batch_data)
                         if barrier_metrics['barrier_active']:
                             mini_batch_data.set(loss_module.tensor_keys.advantage, frozen_advantage)
+                if kl_stopped:
+                    break
+            if finetune:
+                finetune_actor_batches += int(ppo_updates > 0)
+                barrier_metrics.update(finetune_ppo_updates=float(ppo_updates),
+                                       finetune_kl_last=kl_last, finetune_kl_max=kl_max,
+                                       finetune_kl_stopped=float(kl_stopped))
             if action_probe is not None:
                 with torch.no_grad():
                     after_mode = loss_module.actor.get_dist(action_probe, params=loss_module.actor_params).mode
@@ -1003,7 +1039,8 @@ def mappo_cavs(parameters: Parameters):
 
             # env.scenario.iter = pbar.n # A way to pass the information from the training algorithm to the environment
 
-            if parameters.is_save_intermediate_model:
+            # Do not select an unchanged warmup Actor as the best fine-tuned model.
+            if parameters.is_save_intermediate_model and not (finetune and freeze_actor):
                 # Update the current mean episode reward
                 parameters.episode_reward_mean_current = episode_reward_mean
                 save_data.episode_reward_mean_list = episode_reward_mean_list
@@ -1075,6 +1112,9 @@ def mappo_cavs(parameters: Parameters):
                 progress_remaining = max(
                     0.0, 1.0 - (float(pbar.n) / max(1, parameters.n_iters))
                 )
+                if finetune:
+                    progress_remaining = max(0., 1. - finetune_actor_batches / max(
+                        1, parameters.n_iters - parameters.safety_barrier_warmup_batches))
                 initial_lr = float(param_group["initial_lr"])
                 minimum_lr = float(param_group["minimum_lr"])
                 param_group["lr"] = minimum_lr + (

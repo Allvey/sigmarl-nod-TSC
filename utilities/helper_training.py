@@ -896,7 +896,40 @@ class Parameters:
         agent_speed_log_interval: int = 1,
         is_using_prioritized_marl: bool = False,  # Whether to use prioritized MARL and action propagation.
         prioritization_method: str = "marl",  # Which method to use for generating priority ranks (options: {"marl", "random"}). Applicable only for prioritized MARL scenarios.
+        ppo_training_profile: str = "current",  # original overrides task PPO settings; safety stays independent
+        safety_training_mode: str = "scratch",  # opt-in fixed-policy warmup followed by bounded fine-tuning
+        safety_finetune_lr: float = 5e-5,
+        safety_finetune_target_kl: float = 0.01,
+        dgppo_task_mode: str = "gated",  # additive retains task advantages on unsafe samples
     ):
+        if dgppo_task_mode not in {"gated", "additive"}:
+            raise ValueError("dgppo_task_mode must be 'gated' or 'additive'")
+        self.dgppo_task_mode = dgppo_task_mode
+        if ppo_training_profile not in {"current", "original"}:
+            raise ValueError("ppo_training_profile must be 'current' or 'original'")
+        self.ppo_training_profile = ppo_training_profile
+        if ppo_training_profile == "original":
+            # Task PPO settings in initial commit 6426af6. Resolve here so
+            # optimizers, GAE, save files and resumed runs see identical values.
+            num_epochs, lr, lmbda, clip_epsilon = 60, 2e-4, 0.9, 0.2
+
+        if safety_training_mode not in {'scratch', 'finetune'}:
+            raise ValueError("safety_training_mode must be 'scratch' or 'finetune'")
+        if any(not math.isfinite(v) or v <= 0 for v in (safety_finetune_lr, safety_finetune_target_kl)):
+            raise ValueError('Fine-tuning learning rate and KL threshold must be positive and finite')
+        self.safety_training_mode = safety_training_mode
+        self.safety_finetune_lr = safety_finetune_lr
+        self.safety_finetune_target_kl = safety_finetune_target_kl
+        if safety_training_mode == 'finetune':
+            if (safety_control_mode != 'dgppo' or not is_using_safety_constraint or dgppo_weight <= 0
+                    or is_using_nod_actor or is_using_nod_opinion or nod_freeze_training
+                    or is_using_prioritized_marl or is_prb or not is_using_safety_value_shadow
+                    or safety_barrier_warmup_batches < 1
+                    or (not is_load_model and not training_init_checkpoint)):
+                raise ValueError('Safety fine-tuning requires a pinned DGPPO initialization, positive warmup, and no NOD/priority replay')
+            # A fine-tuning LR deliberately takes precedence over the PPO profile.
+            lr = safety_finetune_lr
+            lr_min = min(lr_min, lr)
 
         self.n_agents = n_agents
         self.dt = dt

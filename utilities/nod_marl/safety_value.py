@@ -355,6 +355,19 @@ class SafetyValueManager:
                 schedule=parameters.dgppo_schedule, schedule_iters=parameters.n_iters, dt=parameters.dt,
                 recovery="positive_value_contraction", advantage="feasible_task_minus_risk_rate",
                 normalization="per_env_agent_time_including_warmup", partial_successor="known_violation_retained")
+            if parameters.dgppo_task_mode == "additive":
+                self.barrier_contract.update(dgppo_task_mode="additive",
+                                             advantage="full_task_minus_risk_rate")
+            if parameters.ppo_training_profile == "original":
+                self.barrier_contract.update(
+                    normalization="raw_task_GAE_including_warmup", ppo_training_profile="original",
+                    task_ppo=dict(num_epochs=parameters.num_epochs, lr=parameters.lr,
+                                  lmbda=parameters.lmbda, clip_epsilon=parameters.clip_epsilon))
+        if parameters.safety_training_mode == 'finetune':
+            self.barrier_contract.update(safety_training_mode='finetune',
+                                         actor_warmup='frozen_until_value_fit_batches',
+                                         finetune_lr=parameters.safety_finetune_lr,
+                                         target_kl=parameters.safety_finetune_target_kl)
         self.model = self.target = self.optimizer = None
         self.last_load_info = "disabled" if not self.enabled else "fresh shadow Value"
         if not self.enabled:

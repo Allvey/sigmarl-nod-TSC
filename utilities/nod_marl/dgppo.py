@@ -50,8 +50,11 @@ def dgppo_targets(current, following, next_value, done, gamma, gae_lambda):
 
 
 @torch.no_grad()
-def dgppo_advantage(task, current, following, value, next_value, *, dt, alpha, eps, weight):
-    """Task is normalized before this call; never re-center the mixed advantage."""
+def dgppo_advantage(task, current, following, value, next_value, *, dt, alpha, eps, weight,
+                    task_mode="gated"):
+    """Task scaling is resolved upstream; never re-center the mixed advantage."""
+    if task_mode not in {"gated", "additive"}:
+        raise ValueError("task_mode must be 'gated' or 'additive'")
     valid = (current['valid'] & following['valid'] & same_entities(current, following)
              & torch.isfinite(value) & torch.isfinite(next_value)
              & torch.isfinite(current['g']) & torch.isfinite(following['g']))
@@ -64,7 +67,8 @@ def dgppo_advantage(task, current, following, value, next_value, *, dt, alpha, e
     # transitions fall back to task PPO and are never labelled certified-safe.
     eligible = complete | violation
     penalty = torch.where(valid, (delta + eps).clamp_min(0), 0.).amax(-1, keepdim=True)
-    mixed = torch.where(violation.unsqueeze(-1), 0., task) - weight * penalty
+    retained_task = task if task_mode == "additive" else torch.where(violation.unsqueeze(-1), 0., task)
+    mixed = retained_task - weight * penalty
     adjusted = torch.where(eligible.unsqueeze(-1), mixed, task) if weight > 0 else task
     return adjusted.detach(), dict(delta=delta, valid=valid, eligible=eligible,
                                    penalty=penalty, violation=violation, complete=complete,
@@ -82,10 +86,13 @@ def prepare_dgppo_advantage(manager, td, advantage_key):
     progress = manager.rollouts / max(p.n_iters, 1)
     weight = p.dgppo_weight * (2 ** (int(progress >= .5) + int(progress >= .75)) if p.dgppo_schedule else 1)
     metrics = dict(barrier_enabled=float(enabled), barrier_ready=float(ready), barrier_active=0.,
-                   barrier_dgppo=1., barrier_weight=weight, barrier_fit_batches=manager.barrier_fit_batches)
-    # Keep task scaling identical in task-only, warmup and constrained runs.
-    # Otherwise enabling safety also changes the PPO task learning rule.
-    task = (raw_task - raw_task.mean(1, keepdim=True)) / (raw_task.std(1, unbiased=False, keepdim=True) + 1e-8)
+                   barrier_dgppo=1., barrier_weight=weight, barrier_fit_batches=manager.barrier_fit_batches,
+                   barrier_task_additive=float(p.dgppo_task_mode == "additive"))
+    # Use the same task scaling in task-only, warmup and constrained runs.
+    # Original PPO uses raw GAE; current keeps the existing time normalization.
+    task = raw_task if p.ppo_training_profile == 'original' else (
+        (raw_task - raw_task.mean(1, keepdim=True))
+        / (raw_task.std(1, unbiased=False, keepdim=True) + 1e-8))
     td.set(advantage_key, task)
     metrics['task_normalization_delta_abs'] = float((task - raw_task).abs().mean())
     if not ready or weight == 0:
@@ -94,10 +101,10 @@ def prepare_dgppo_advantage(manager, td, advantage_key):
     value, nxt = manager.model(current), manager.model(following)
     terminal = td.get(('next', 'done')).bool().reshape(*td.batch_size, 1, 1)
     nxt = torch.where(terminal, following['g'], nxt)
-    # Official code normalizes along time per trajectory. Here task GAE is
-    # per-agent MAPPO, so normalize along time separately for each local agent.
+    # Scaling has already been applied above; do not normalize the mixed result.
     adjusted, info = dgppo_advantage(task, current, following, value, nxt,
-                                    dt=p.dt, alpha=p.dgppo_alpha, eps=p.dgppo_eps, weight=weight)
+                                    dt=p.dt, alpha=p.dgppo_alpha, eps=p.dgppo_eps, weight=weight,
+                                    task_mode=p.dgppo_task_mode)
     td.set(advantage_key, adjusted)
     td.set(('agents', 'barrier_violation_mask'), info['violation'].unsqueeze(-1))
     def mean(x):
@@ -110,6 +117,8 @@ def prepare_dgppo_advantage(manager, td, advantage_key):
                    barrier_unsafe_positive_advantage_rate=mean((adjusted.squeeze(-1) > 0)[info['violation']]),
                    barrier_positive_mean=mean(info['penalty'][info['eligible']]),
                    barrier_advantage_delta_abs=mean((adjusted - raw_task).abs()),
-                   barrier_task_retention_mean=mean((~info['violation'])[info['eligible']]),
+                   barrier_task_retention_mean=mean(
+                       (torch.ones_like(info['violation']) if p.dgppo_task_mode == "additive"
+                        else ~info['violation'])[info['eligible']]),
                    barrier_observed_violation_count=float((following['valid'] & (following['g'] > 0)).sum()))
     return metrics
