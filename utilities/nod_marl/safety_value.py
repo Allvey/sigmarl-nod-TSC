@@ -248,7 +248,7 @@ class SafetyStartBuffer:
         return pool.get_random().clone()
 
     @torch.no_grad()
-    def update(self, td):
+    def update(self, td, include_envs=None):
         info, nxt = td.get(("agents", "info")), td.get(("next", "agents", "info"))
         states, gen, ng = (info["safety_reset_state"], info["nod_ego_generation"],
                            nxt["nod_ego_generation"])
@@ -257,6 +257,10 @@ class SafetyStartBuffer:
         done = td.get(("next", "done")).reshape(*td.batch_size).bool()
         hazards = dict(collision=(nxt["safety_margins"][..., 2] > 0).any(-1),
                        road=(nxt["safety_margins"][..., 1] > 0).any(-1))
+        if include_envs is not None:
+            include_envs = include_envs.to(hazards["collision"].device).bool()
+            for name in hazards:
+                hazards[name] &= include_envs[:, None]
         metrics = {}
         for name, hazard in hazards.items():
             added, seen = 0, set()
@@ -349,7 +353,11 @@ class SafetyValueManager:
             self.contract.update(mode="dgppo_minimal_value", target="max_lambda_cross_head",
                                  gae_lambda=parameters.dgppo_lambda, target_tau=None,
                                  features="local_kinematics_no_neighbor_path", mask="sensing_range")
-            self.loss_contract = dict(mode="mse", reduction="half_mean_valid", bootstrap="preupdate_model")
+            if parameters.safety_value_loss_mode == "mse":
+                self.loss_contract = dict(mode="mse", reduction="half_mean_valid",
+                                          bootstrap="preupdate_model")
+            else:
+                self.loss_contract.update(bootstrap="preupdate_model")
             self.barrier_contract.update(mode="dgppo", alpha=parameters.dgppo_alpha,
                 eps=parameters.dgppo_eps, weight=parameters.dgppo_weight,
                 schedule=parameters.dgppo_schedule, schedule_iters=parameters.n_iters, dt=parameters.dt,
@@ -363,6 +371,11 @@ class SafetyValueManager:
                     normalization="raw_task_GAE_including_warmup", ppo_training_profile="original",
                     task_ppo=dict(num_epochs=parameters.num_epochs, lr=parameters.lr,
                                   lmbda=parameters.lmbda, clip_epsilon=parameters.clip_epsilon))
+        if parameters.safety_value_validation_fraction:
+            self.loss_contract["validation_fraction"] = parameters.safety_value_validation_fraction
+        if parameters.safety_training_mode == 'value_pretrain':
+            self.barrier_contract.update(safety_training_mode='value_pretrain',
+                                         actor_warmup='always_frozen', actor_control='disabled')
         if parameters.safety_training_mode == 'finetune':
             self.barrier_contract.update(safety_training_mode='finetune',
                                          actor_warmup='frozen_until_value_fit_batches',
@@ -417,7 +430,19 @@ class SafetyValueManager:
                 group_valid = valid & selection[..., None, None]
                 metrics.update({name + "_" + k: v for k, v in value_head_metrics(
                     before, y, observed, current["g"], group_valid).items()})
-        positive_weights = positive_class_weights(y, valid, self.parameters.safety_value_positive_weight_cap)
+        fit_valid = valid
+        validation = td.get("safety_validation_env", default=None)
+        if validation is not None:
+            validation = validation.bool()
+            training = ~validation
+            for name, selection in (("training", training), ("validation", validation)):
+                group_valid = valid & selection[..., None, None]
+                metrics.update({name + "_" + k: v for k, v in value_head_metrics(
+                    before, y, observed, current["g"], group_valid).items()})
+                metrics[name + "_valid_samples"] = float(group_valid.sum())
+            fit_valid = valid & training[..., None, None]
+        positive_weights = positive_class_weights(
+            y, fit_valid, self.parameters.safety_value_positive_weight_cap)
         balanced = self.parameters.safety_value_loss_mode == "balanced"
         metrics["balanced_loss"] = float(balanced)
         if self.dgppo:
@@ -431,7 +456,7 @@ class SafetyValueManager:
                            observed_steps_mean=float(steps[valid].mean()),
                            next_value_delta_abs=float((next_value - before)[valid].abs().mean()))
         batch = {k: v.flatten(0, 1) for k, v in current.items()}
-        target, masks = y.flatten(0, 1), valid.flatten(0, 1)
+        target, masks = y.flatten(0, 1), fit_valid.flatten(0, 1)
         losses = []
         for _ in range(self.parameters.safety_value_num_epochs):
             order = torch.randperm(target.shape[0], generator=self.generator)
@@ -441,12 +466,14 @@ class SafetyValueManager:
                 if not mask.any():
                     continue
                 pred = self.model({k: v[ids] for k, v in batch.items()})
-                if self.dgppo:
+                if balanced:
+                    loss = balanced_value_loss(
+                        pred, target[ids], mask, positive_weights,
+                        self.parameters.safety_value_underestimate_weight)
+                elif self.dgppo:
                     loss = 0.5 * F.mse_loss(pred[mask], target[ids][mask])
                 else:
-                    loss = (balanced_value_loss(pred, target[ids], mask, positive_weights,
-                                                self.parameters.safety_value_underestimate_weight)
-                            if balanced else F.smooth_l1_loss(pred[mask], target[ids][mask]))
+                    loss = F.smooth_l1_loss(pred[mask], target[ids][mask])
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.model.parameters(), 1., error_if_nonfinite=True)
@@ -559,6 +586,17 @@ class DeterministicSafetySampler:
                 if isinstance(module, NODActorInputModule):
                     object.__setattr__(module, "_nod_manager_ref", weakref.ref(self.nod))
             self.policy.requires_grad_(False)
+            validation_count = (max(1, round(
+                p.safety_value_num_envs * p.safety_value_validation_fraction))
+                if p.safety_value_validation_fraction else 0)
+            self.validation_envs = torch.zeros(
+                p.safety_value_num_envs, device=p.device, dtype=torch.bool)
+            if validation_count:
+                validation_count = min(p.safety_value_num_envs - 1,
+                                       max(1, validation_count))
+                validation_ids = (torch.arange(validation_count, device=p.device)
+                                  * p.safety_value_num_envs // validation_count)
+                self.validation_envs[validation_ids] = True
         self.steps = parameters.safety_value_rollout_steps
         self.last_metrics = {}
 
@@ -571,12 +609,17 @@ class DeterministicSafetySampler:
             self.nod.reset_online_state()
             start = time.monotonic()
             rollout = self.env.rollout(self.steps, self.policy, break_when_any_done=False)
-            self.last_metrics = {}
+            validation = self.validation_envs[:, None].expand(*rollout.batch_size)
+            rollout.set("safety_validation_env", validation)
+            self.last_metrics = dict(
+                validation_env_count=float(self.validation_envs.sum()),
+                training_env_count=float((~self.validation_envs).sum()))
             if self.starts is not None:
                 normal = (torch.arange(rollout.shape[0], device=rollout.device)
                           < self.starts.normal_envs)
                 rollout.set("safety_normal_env", normal[:, None].expand(*rollout.batch_size))
-                self.last_metrics.update(self.starts.update(rollout))
+                self.last_metrics.update(self.starts.update(
+                    rollout, include_envs=~self.validation_envs))
                 active = rollout.get(("agents", "info", "safety_challenging_start"))
                 self.last_metrics.update(challenging_start_frame_ratio=float(active.float().mean()),
                                          normal_env_count=float(normal.sum()),

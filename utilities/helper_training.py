@@ -830,6 +830,7 @@ class Parameters:
         safety_value_positive_weight_cap: float = 4.0,
         safety_value_underestimate_weight: float = 2.0,
         safety_value_challenging_fraction: float = 0.0,
+        safety_value_validation_fraction: float = 0.0,
         safety_value_start_buffer_size: int = 128,
         safety_value_start_lookback: int = 10,
         # Stage 8B: fixed barrier on PPO advantages; legacy JSON keeps Stage 7.
@@ -897,7 +898,7 @@ class Parameters:
         is_using_prioritized_marl: bool = False,  # Whether to use prioritized MARL and action propagation.
         prioritization_method: str = "marl",  # Which method to use for generating priority ranks (options: {"marl", "random"}). Applicable only for prioritized MARL scenarios.
         ppo_training_profile: str = "current",  # original overrides task PPO settings; safety stays independent
-        safety_training_mode: str = "scratch",  # opt-in fixed-policy warmup followed by bounded fine-tuning
+        safety_training_mode: str = "scratch",  # scratch, frozen Value pretraining, or bounded fine-tuning
         safety_finetune_lr: float = 5e-5,
         safety_finetune_target_kl: float = 0.01,
         dgppo_task_mode: str = "gated",  # additive retains task advantages on unsafe samples
@@ -913,13 +914,26 @@ class Parameters:
             # optimizers, GAE, save files and resumed runs see identical values.
             num_epochs, lr, lmbda, clip_epsilon = 60, 2e-4, 0.9, 0.2
 
-        if safety_training_mode not in {'scratch', 'finetune'}:
-            raise ValueError("safety_training_mode must be 'scratch' or 'finetune'")
+        if safety_training_mode not in {'scratch', 'value_pretrain', 'finetune'}:
+            raise ValueError("safety_training_mode must be 'scratch', 'value_pretrain', or 'finetune'")
         if any(not math.isfinite(v) or v <= 0 for v in (safety_finetune_lr, safety_finetune_target_kl)):
             raise ValueError('Fine-tuning learning rate and KL threshold must be positive and finite')
         self.safety_training_mode = safety_training_mode
         self.safety_finetune_lr = safety_finetune_lr
         self.safety_finetune_target_kl = safety_finetune_target_kl
+        if safety_training_mode == 'value_pretrain':
+            if (safety_control_mode != 'dgppo' or not is_using_safety_value_shadow
+                    or is_using_safety_constraint or dgppo_weight != 0
+                    or safety_value_loss_mode != 'balanced'
+                    or safety_value_challenging_fraction <= 0
+                    or safety_value_validation_fraction <= 0
+                    or not training_init_checkpoint or is_load_model or is_continue_train
+                    or is_using_nod_actor or is_using_nod_opinion
+                    or is_using_prioritized_marl or is_prb):
+                raise ValueError(
+                    'Safety Value pretraining requires a pinned task-only initialization, '
+                    'balanced DGPPO loss, challenging and validation samples, and disabled Actor safety control'
+                )
         if safety_training_mode == 'finetune':
             if (safety_control_mode != 'dgppo' or not is_using_safety_constraint or dgppo_weight <= 0
                     or is_using_nod_actor or is_using_nod_opinion or nod_freeze_training
@@ -1035,6 +1049,7 @@ class Parameters:
         self.safety_value_positive_weight_cap = safety_value_positive_weight_cap
         self.safety_value_underestimate_weight = safety_value_underestimate_weight
         self.safety_value_challenging_fraction = safety_value_challenging_fraction
+        self.safety_value_validation_fraction = safety_value_validation_fraction
         self.safety_value_start_buffer_size = safety_value_start_buffer_size
         self.safety_value_start_lookback = safety_value_start_lookback
         self.safety_control_mode = safety_control_mode
@@ -1050,10 +1065,10 @@ class Parameters:
             raise ValueError("Invalid DGPPO safety parameters")
         if safety_control_mode == "dgppo" and (
                 is_using_nod_opinion or is_using_nod_actor or is_using_safety_critic
-                or safety_value_loss_mode != "mse" or not math.isfinite(dt) or dt <= 0
-                or dgppo_alpha * dt >= 1 or safety_value_challenging_fraction != 0
+                or safety_value_loss_mode not in {"mse", "balanced"}
+                or not math.isfinite(dt) or dt <= 0 or dgppo_alpha * dt >= 1
                 or is_observe_ref_path_other_agents):
-            raise ValueError("DGPPO minimal requires no opinion/old Q, MSE, 0 < alpha*dt < 1, and ordinary starts")
+            raise ValueError("DGPPO requires no opinion/old Q, MSE or balanced Value loss, and 0 < alpha*dt < 1")
         if safety_value_loss_mode == "mse" and safety_control_mode != "dgppo":
             raise ValueError("MSE Safety Value loss belongs to the DGPPO minimal mode")
         self.safety_barrier_kappa = safety_barrier_kappa
@@ -1083,6 +1098,9 @@ class Parameters:
         if (not math.isfinite(safety_value_challenging_fraction)
                 or not 0 <= safety_value_challenging_fraction < 1
                 or (safety_value_challenging_fraction > 0 and safety_value_num_envs < 2)
+                or not math.isfinite(safety_value_validation_fraction)
+                or not 0 <= safety_value_validation_fraction < 1
+                or (safety_value_validation_fraction > 0 and safety_value_num_envs < 2)
                 or any(not isinstance(v, int) or v < 1 for v in (
                     safety_value_start_buffer_size, safety_value_start_lookback))):
             raise ValueError("Invalid Stage-8A challenging start configuration")
@@ -1212,7 +1230,8 @@ class Parameters:
 
         self.prioritization_method = prioritization_method
 
-        if (model_name is None) and (scenario_name is not None):
+        self.model_name = model_name
+        if (self.model_name is None) and (scenario_name is not None):
             self.model_name = get_model_name(self)
 
     def to_dict(self):

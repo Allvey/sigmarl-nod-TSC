@@ -144,7 +144,7 @@ def test_no_neighbor_path_or_hidden_world_input_and_checkpoint(tmp_path):
 
 
 @pytest.mark.parametrize('changes', [dict(dgppo_lambda=2), dict(dgppo_alpha=20),
-    dict(dgppo_weight=-1), dict(is_using_nod_opinion=True), dict(safety_value_loss_mode='balanced'),
+    dict(dgppo_weight=-1), dict(is_using_nod_opinion=True), dict(safety_value_loss_mode='legacy'),
     dict(is_observe_ref_path_other_agents=True)])
 def test_configuration_rejects_invalid_combinations(changes):
     opts = json.loads(Path('config_dgppo_minimal.json').read_text()); opts.update(changes)

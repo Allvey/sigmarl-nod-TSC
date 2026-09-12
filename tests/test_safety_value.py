@@ -292,7 +292,10 @@ def test_start_mining_rejects_invalid_history(broken):
 
 @pytest.mark.parametrize('kwargs', [dict(safety_value_challenging_fraction=1.),
     dict(safety_value_challenging_fraction=float('nan')), dict(safety_value_start_lookback=0),
-    dict(safety_value_challenging_fraction=.25, safety_value_num_envs=1)])
+    dict(safety_value_challenging_fraction=.25, safety_value_num_envs=1),
+    dict(safety_value_validation_fraction=1.),
+    dict(safety_value_validation_fraction=float('nan')),
+    dict(safety_value_validation_fraction=.25, safety_value_num_envs=1)])
 def test_invalid_start_configuration(kwargs):
     with pytest.raises(ValueError, match='challenging start'):
         Parameters(**kwargs)
@@ -372,6 +375,7 @@ def test_training_shadow_is_bitwise_isolated_and_loadable(tmp_path, monkeypatch)
             p.nod_num_epochs = 1; p.nod_sequence_length = 8
             p.safety_num_epochs = 1; p.is_using_safety_value_shadow = enabled
             p.safety_value_num_envs = 2; p.safety_value_rollout_steps = 8
+            p.safety_value_validation_fraction = .5 if enabled else 0.
             p.safety_value_num_epochs = 1; p.safety_value_minibatch_size = 4
             p.is_load_model = False; p.is_continue_train = False
             p.where_to_save = str(tmp_path / str(enabled)) + "/"
@@ -392,10 +396,12 @@ def test_training_shadow_is_bitwise_isolated_and_loadable(tmp_path, monkeypatch)
         assert all(m['balanced_loss'] == 1 and m['pair_positive_class_weight'] <= 4 for m in metrics)
         assert replay_checks
         assert all(m['normal_env_count'] == 1 and m['challenge_env_count'] == 1 for m in metrics)
+        assert all(m['validation_env_count'] == 1 and m['training_env_count'] == 1 for m in metrics)
         assert metrics[1]['challenging_start_frame_ratio'] > 0
         for m in metrics:
             for head in ('pair', 'road', 'collision'):
                 assert m['normal_' + head + '_samples'] + m['challenge_' + head + '_samples'] == m[head + '_samples']
+                assert m['training_' + head + '_samples'] + m['validation_' + head + '_samples'] == m[head + '_samples']
                 assert m[head + '_target_positive_count'] + m[head + '_target_nonpositive_count'] == m[head + '_samples']
                 assert m[head + '_early_warning_count'] <= m[head + '_observed_unsafe']
         for final in (False, True):

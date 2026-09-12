@@ -14,7 +14,7 @@ from utilities.mappo_cavs import mappo_cavs
 
 from utilities.constants import SCENARIOS
 
-path = "outputs/ppo_original_dgppo_additive/"  # Match the current from-scratch training output.
+path = "outputs/ppo_original_safety_value_pretrain/"  # Match the current from-scratch training output.
 
 try:
     path_to_json_file = next(

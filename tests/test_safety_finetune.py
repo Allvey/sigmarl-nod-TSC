@@ -22,6 +22,32 @@ def test_finetune_profile_and_phase_switch():
     assert not actor_warmup_frozen(old, SimpleNamespace(barrier_fit_batches=0))
 
 
+def test_value_pretrain_profile_freezes_actor_and_uses_balanced_dgppo_value():
+    p = Parameters.from_json('config_ppo_original_safety_value_pretrain.json')
+    assert p.safety_training_mode == 'value_pretrain'
+    assert p.training_init_checkpoint == 'outputs/ppo_original_task_only/reward7.36'
+    assert p.dgppo_weight == 0 and not p.is_using_safety_constraint
+    assert p.safety_value_loss_mode == 'balanced'
+    assert p.safety_value_challenging_fraction == .25
+    assert p.safety_value_validation_fraction == .25
+    assert actor_warmup_frozen(p, SimpleNamespace(barrier_fit_batches=10_000))
+    manager = SafetyValueManager(p, 10, ('agents', 'observation'))
+    assert manager.dgppo and manager.loss_contract['mode'] == 'balanced'
+    assert manager.loss_contract['validation_fraction'] == .25
+    assert manager.barrier_contract['actor_warmup'] == 'always_frozen'
+    assert Parameters.from_dict(p.to_dict()).to_dict() == p.to_dict()
+
+
+@pytest.mark.parametrize('change', [dict(training_init_checkpoint=None),
+    dict(dgppo_weight=1), dict(is_using_safety_constraint=True),
+    dict(safety_value_loss_mode='mse'), dict(safety_value_challenging_fraction=0),
+    dict(safety_value_validation_fraction=0), dict(is_load_model=True)])
+def test_invalid_value_pretraining_configuration(change):
+    p = Parameters.from_json('config_ppo_original_safety_value_pretrain.json')
+    with pytest.raises(ValueError, match='pretraining'):
+        Parameters.from_dict(dict(p.to_dict(), **change))
+
+
 @pytest.mark.parametrize('change', [dict(training_init_checkpoint=None), dict(dgppo_weight=0),
                                   dict(safety_barrier_warmup_batches=0), dict(is_prb=True),
                                   dict(safety_finetune_target_kl=0), dict(safety_finetune_lr=float('nan'))])

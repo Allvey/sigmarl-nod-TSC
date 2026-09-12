@@ -453,12 +453,14 @@ def mappo_cavs(parameters: Parameters):
         _load_nod_if_available(prefix + '_nod.pth', nod_manager, parameters, load_optimizer=True)
         _bind_frozen_nod(nod_manager, safety_value_manager, parameters)
         safety_manager.load_if_available(prefix + '_safety_critic.pth', load_optimizer=True)
-        finetune = parameters.safety_training_mode == 'finetune'
-        if not safety_value_manager.load_if_available(prefix + '_safety_value.pth', load_optimizer=not finetune):
+        reset_value_training = parameters.safety_training_mode in {'value_pretrain', 'finetune'}
+        if not safety_value_manager.load_if_available(
+                prefix + '_safety_value.pth', load_optimizer=not reset_value_training):
             raise ValueError('Training initialization requires a compatible Safety Value checkpoint')
-        if finetune:
+        if reset_value_training:
             safety_value_manager.updates = safety_value_manager.rollouts = safety_value_manager.frames = 0
             safety_value_manager.barrier_fit_batches = 0
+            safety_value_manager.start_buffer_state = None
         print(f'[INFO] Initialized experiment from {prefix}; output: {parameters.where_to_save}')
 
     # Load an existing model or train a new model?
@@ -767,6 +769,8 @@ def mappo_cavs(parameters: Parameters):
             kl_last = kl_max = 0.
             if finetune:
                 barrier_metrics['finetune_actor_frozen'] = float(freeze_actor)
+            if parameters.safety_training_mode == 'value_pretrain':
+                barrier_metrics['value_pretrain_actor_frozen'] = float(freeze_actor)
             if barrier_metrics['barrier_active']:
                 # NOD's preceding supervised step may leave gradients attached.
                 # Clear those before checking isolation of this PPO backward.

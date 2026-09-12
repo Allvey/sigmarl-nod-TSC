@@ -3,6 +3,8 @@ import torch
 
 
 def actor_warmup_frozen(parameters, manager):
+    if parameters.safety_training_mode == 'value_pretrain':
+        return True
     return (parameters.safety_training_mode == 'finetune'
             and manager.barrier_fit_batches < parameters.safety_barrier_warmup_batches)
 
