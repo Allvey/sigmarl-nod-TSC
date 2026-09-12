@@ -829,6 +829,7 @@ class Parameters:
         safety_value_loss_mode: str = "balanced",
         safety_value_positive_weight_cap: float = 4.0,
         safety_value_underestimate_weight: float = 2.0,
+        safety_value_observed_danger_weight: float = 0.0,
         safety_value_challenging_fraction: float = 0.0,
         safety_value_validation_fraction: float = 0.0,
         safety_value_start_buffer_size: int = 128,
@@ -925,6 +926,7 @@ class Parameters:
             if (safety_control_mode != 'dgppo' or not is_using_safety_value_shadow
                     or is_using_safety_constraint or dgppo_weight != 0
                     or safety_value_loss_mode != 'balanced'
+                    or safety_value_observed_danger_weight <= 0
                     or safety_value_challenging_fraction <= 0
                     or safety_value_validation_fraction <= 0
                     or not training_init_checkpoint or is_load_model or is_continue_train
@@ -1048,6 +1050,7 @@ class Parameters:
         self.safety_value_loss_mode = safety_value_loss_mode
         self.safety_value_positive_weight_cap = safety_value_positive_weight_cap
         self.safety_value_underestimate_weight = safety_value_underestimate_weight
+        self.safety_value_observed_danger_weight = safety_value_observed_danger_weight
         self.safety_value_challenging_fraction = safety_value_challenging_fraction
         self.safety_value_validation_fraction = safety_value_validation_fraction
         self.safety_value_start_buffer_size = safety_value_start_buffer_size
@@ -1106,7 +1109,9 @@ class Parameters:
             raise ValueError("Invalid Stage-8A challenging start configuration")
         if (safety_value_loss_mode not in {"legacy", "balanced", "mse"}
                 or any(not math.isfinite(v) or v < 1 for v in (
-                    safety_value_positive_weight_cap, safety_value_underestimate_weight))):
+                    safety_value_positive_weight_cap, safety_value_underestimate_weight))
+                or not math.isfinite(safety_value_observed_danger_weight)
+                or safety_value_observed_danger_weight < 0):
             raise ValueError("Invalid Stage-8A Safety Value loss configuration")
         if (any(not isinstance(v, int) or v < 1 for v in (
                 safety_value_hidden_dim, safety_value_num_epochs,

@@ -12,7 +12,7 @@ from utilities.helper_training import Parameters
 from utilities.nod_marl.safety_value import (
     PairSafetyValue, SafetyValueManager, discounted_max_targets, isolated_rng, value_state,
     balanced_value_loss, positive_class_weights, value_head_metrics,
-    SafetyStartBuffer, DeterministicSafetySampler,
+    observed_danger_auxiliary_loss, SafetyStartBuffer, DeterministicSafetySampler,
 )
 
 
@@ -176,6 +176,24 @@ def test_no_positive_or_valid_samples_does_not_invent_targets():
     assert loss.item() == 0 and not pred.grad.any()
 
 
+def test_observed_danger_auxiliary_is_early_warning_only_and_head_balanced():
+    pred = torch.zeros(2, 1, 3, requires_grad=True)
+    pred.data[0, 0, 0] = -.1
+    observed = torch.zeros_like(pred)
+    observed[0, 0, 0] = .4
+    observed[1, 0, 0] = .8
+    current = -torch.ones_like(pred)
+    current[1, 0, 0] = .1  # Already unsafe: handled by the physical DGPPO target.
+    valid = torch.zeros_like(pred, dtype=torch.bool)
+    valid[..., 0] = True
+    loss = observed_danger_auxiliary_loss(pred, observed, current, valid)
+    # Positive shortfall .12 plus observed-underestimate shortfall .45.
+    assert loss.item() == pytest.approx(.57)
+    loss.backward()
+    assert pred.grad[0, 0, 0] == pytest.approx(-2.)
+    assert not pred.grad[1:].any()
+
+
 def test_metrics_distinguish_targets_physics_and_early_warning():
     def pair(values):
         x = torch.zeros(len(values), 1, 3)
@@ -230,7 +248,9 @@ def test_loss_contract_migration_keeps_values_and_resets_adam(tmp_path):
 
 
 @pytest.mark.parametrize('kwargs', [dict(safety_value_loss_mode='invalid'),
-    dict(safety_value_positive_weight_cap=.5), dict(safety_value_underestimate_weight=float('nan'))])
+    dict(safety_value_positive_weight_cap=.5), dict(safety_value_underestimate_weight=float('nan')),
+    dict(safety_value_observed_danger_weight=-1),
+    dict(safety_value_observed_danger_weight=float('nan'))])
 def test_invalid_loss_configuration(kwargs):
     with pytest.raises(ValueError, match='loss configuration'):
         Parameters(**kwargs)
@@ -272,6 +292,32 @@ def test_start_mining_is_pre_danger_identity_safe_and_balanced(tmp_path):
     assert other.pools['collision'].buffer[0].abs().sum() > 0
     p.n_agents = 8
     assert not SafetyStartBuffer(p).load_state_dict(saved)
+
+
+def test_start_buffer_rejects_duplicates_and_reports_diversity():
+    p = Parameters(n_agents=2, safety_value_challenging_fraction=.25,
+                   safety_value_start_lookback=3)
+    starts, td = SafetyStartBuffer(p), start_rollout()
+    first = starts.update(td)
+    second = starts.update(td)
+    for name in ('collision', 'road'):
+        assert first[name + '_starts_added'] == 1
+        assert first[name + '_starts_duplicate_rejected'] == 0
+        assert second[name + '_starts_added'] == 0
+        assert second[name + '_starts_duplicate_rejected'] == 1
+        assert second[name + '_start_buffer_size'] == 1
+        assert second[name + '_start_buffer_unique_count'] == 1
+        assert second[name + '_start_buffer_unique_ratio'] == 1
+        assert second[name + '_start_buffer_max_duplicate_count'] == 1
+
+
+def test_start_mining_environment_mask_excludes_selected_rollouts():
+    p = Parameters(n_agents=2, safety_value_challenging_fraction=.25,
+                   safety_value_start_lookback=3)
+    starts, td = SafetyStartBuffer(p), start_rollout()
+    metrics = starts.update(td, include_envs=torch.tensor([True, False]))
+    assert metrics['collision_starts_added'] == 1
+    assert metrics['road_starts_added'] == 0
 
 
 @pytest.mark.parametrize('broken', ['reset', 'done', 'unsafe', 'nonfinite'])
@@ -397,11 +443,24 @@ def test_training_shadow_is_bitwise_isolated_and_loadable(tmp_path, monkeypatch)
         assert replay_checks
         assert all(m['normal_env_count'] == 1 and m['challenge_env_count'] == 1 for m in metrics)
         assert all(m['validation_env_count'] == 1 and m['training_env_count'] == 1 for m in metrics)
+        assert all(m['start_mining_env_count'] == 0 for m in metrics)
+        assert all(m['training_normal_env_count'] == 0 and m['training_challenge_env_count'] == 1
+                   for m in metrics)
+        assert all(m['validation_normal_env_count'] == 1 and m['validation_challenge_env_count'] == 0
+                   for m in metrics)
+        assert all('training_observed_danger_loss' in m and 'training_primary_loss' in m
+                   for m in metrics)
         assert metrics[1]['challenging_start_frame_ratio'] > 0
         for m in metrics:
             for head in ('pair', 'road', 'collision'):
                 assert m['normal_' + head + '_samples'] + m['challenge_' + head + '_samples'] == m[head + '_samples']
                 assert m['training_' + head + '_samples'] + m['validation_' + head + '_samples'] == m[head + '_samples']
+                assert (m['training_normal_' + head + '_samples']
+                        + m['training_challenge_' + head + '_samples']
+                        == m['training_' + head + '_samples'])
+                assert (m['validation_normal_' + head + '_samples']
+                        + m['validation_challenge_' + head + '_samples']
+                        == m['validation_' + head + '_samples'])
                 assert m[head + '_target_positive_count'] + m[head + '_target_nonpositive_count'] == m[head + '_samples']
                 assert m[head + '_early_warning_count'] <= m[head + '_observed_unsafe']
         for final in (False, True):

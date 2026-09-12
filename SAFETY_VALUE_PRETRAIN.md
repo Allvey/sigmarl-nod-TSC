@@ -20,7 +20,7 @@ outputs/ppo_original_task_only/reward7.36
 Results are written to:
 
 ```text
-outputs/ppo_original_safety_value_pretrain/
+outputs/ppo_original_safety_value_pretrain_v2/
 ```
 
 Use `final_safety_value.pth` for the next stage. Intermediate `reward*.pth`
@@ -35,11 +35,17 @@ source task-only weights.
 - Loss is computed as an equal mean over pair, road, and unattributed-collision
   heads. Positive targets receive a capped weight of 4 and underestimated
   positive targets receive an additional weight of 2.
+- An observed-danger auxiliary loss retains the original DGPPO target while
+  requiring identity-contiguous early-warning states to predict at least 0.02
+  risk and not underestimate the observed suffix maximum by more than 0.05.
 - The deterministic shadow sampler uses 32 environments for 128 steps per
   batch. Eight environments are assigned to challenging starts after the
   corresponding buffers contain valid pre-danger states.
 - Eight evenly spaced environments form a held-out validation partition. Their
   transitions are excluded from optimizer loss and from danger-start mining.
+- Danger starts are mined only from ordinary, non-validation environments.
+  Replayed challenge trajectories cannot feed themselves back into the start
+  buffers, and approximately duplicate physical states are rejected.
 - The run uses 70 batches and four Safety Value epochs per batch.
 - `dgppo_weight=0` and `is_using_safety_constraint=false`; `value_pretrain`
   independently forces zero Actor/task-Critic optimizer steps.
@@ -61,8 +67,11 @@ Use the `validation_` metrics in the saved `reward*_data.json`, especially:
 - `validation_road_observed_safe_positive_rate`
 
 Also check `challenge_*` metrics, `challenging_start_frame_ratio`, buffer sizes,
-and per-head positive class weights. Early batches may have no challenging
-frames while the start buffers are being populated.
+per-head positive class weights, `*_starts_duplicate_rejected`, and
+`*_start_buffer_{unique_count,unique_ratio,max_duplicate_count}`. Use the joint
+`validation_normal_*` and `validation_challenge_*` metrics rather than allowing
+replayed starts to hide weak ordinary-start generalization. Early batches may
+have no challenging frames while the start buffers are being populated.
 
 Do not activate gated Actor updates solely because training loss decreases.
 The provisional next-stage gate is validation early-warning recall of at least

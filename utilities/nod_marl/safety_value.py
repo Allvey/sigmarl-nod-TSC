@@ -21,6 +21,8 @@ from .interaction import NOD_PAIR_FEATURE_DIM
 
 VALUE_HEADS = (("pair", slice(0, -2)), ("road", slice(-2, -1)), ("collision", slice(-1, None)))
 UNDERESTIMATE_MARGIN = 0.05
+OBSERVED_DANGER_POSITIVE_MARGIN = 0.02
+START_DEDUP_ATOL = 1e-4
 
 
 @torch.no_grad()
@@ -52,6 +54,23 @@ def balanced_value_loss(prediction, target, valid, positive_weights, underestima
         low = positive & (pred.detach() < y - UNDERESTIMATE_MARGIN)
         weights = weights * torch.where(low, y.new_tensor(underestimate_weight), y.new_tensor(1.))
         losses.append((weights * F.smooth_l1_loss(pred, y, reduction="none")).sum() / weights.sum())
+    return torch.stack(losses).mean() if losses else prediction.sum() * 0.
+
+
+def observed_danger_auxiliary_loss(prediction, observed, current_g, valid):
+    """Penalize missed physical danger without replacing DGPPO targets."""
+    losses = []
+    for _, selection in VALUE_HEADS:
+        mask = valid[..., selection]
+        pred = prediction[..., selection]
+        obs = observed[..., selection].detach()
+        g = current_g[..., selection].detach()
+        warning = mask & (g <= 0) & (obs > 0)
+        if not warning.any():
+            continue
+        positive_shortfall = (OBSERVED_DANGER_POSITIVE_MARGIN - pred[warning]).clamp_min(0)
+        observed_shortfall = (obs[warning] - pred[warning] - UNDERESTIMATE_MARGIN).clamp_min(0)
+        losses.append((positive_shortfall + observed_shortfall).mean())
     return torch.stack(losses).mean() if losses else prediction.sum() * 0.
 
 
@@ -233,9 +252,43 @@ class SafetyStartBuffer:
         self.pools = {name: InitialStateBuffer(buffer=torch.zeros(
             p.safety_value_start_buffer_size, p.n_agents, 9, device=p.device))
             for name in ("collision", "road")}
-        self.contract = dict(version=1, scenario=p.scenario_type, agents=p.n_agents,
+        self.contract = dict(version=2, scenario=p.scenario_type, agents=p.n_agents,
                              dt=p.dt, lookback=self.lookback, capacity=p.safety_value_start_buffer_size,
+                             dedup_atol=START_DEDUP_ATOL,
                              scenario_probabilities=list(p.cpm_scenario_probabilities))
+
+    @staticmethod
+    def _matching_recordings(pool, recording):
+        if not pool.valid_size:
+            return torch.zeros(0, device=recording.device, dtype=torch.bool)
+        delta = (pool.buffer[:pool.valid_size] - recording).abs()
+        return (delta <= START_DEDUP_ATOL).flatten(1).all(-1)
+
+    def _add_unique(self, name, recording):
+        pool = self.pools[name]
+        if self._matching_recordings(pool, recording).any():
+            return False
+        pool.add(recording)
+        return True
+
+    def _diversity_metrics(self, name):
+        pool = self.pools[name]
+        size = pool.valid_size
+        if not size:
+            return dict(unique_count=0., unique_ratio=0., max_duplicate_count=0.)
+        data = pool.buffer[:size]
+        remaining = torch.ones(size, device=data.device, dtype=torch.bool)
+        counts = []
+        for index in range(size):
+            if not remaining[index]:
+                continue
+            matches = ((data - data[index]).abs() <= START_DEDUP_ATOL).flatten(1).all(-1)
+            matches &= remaining
+            counts.append(int(matches.sum()))
+            remaining[matches] = False
+        unique = len(counts)
+        return dict(unique_count=float(unique), unique_ratio=float(unique / size),
+                    max_duplicate_count=float(max(counts)))
 
     def sample(self, env_index):
         self.active[env_index] = False
@@ -263,7 +316,7 @@ class SafetyStartBuffer:
                 hazards[name] &= include_envs[:, None]
         metrics = {}
         for name, hazard in hazards.items():
-            added, seen = 0, set()
+            added, duplicates, seen = 0, 0, set()
             for env, t in hazard.nonzero().tolist():
                 episode = (env, *gen[env, t].reshape(-1).tolist())
                 if episode in seen:
@@ -281,11 +334,19 @@ class SafetyStartBuffer:
                         or not (ng[env, start:t+1] == identity).all()
                         or done[env, start:t].any()):
                     continue
-                self.pools[name].add(states[env, start].detach())
+                if self._add_unique(name, states[env, start].detach()):
+                    added += 1
+                else:
+                    duplicates += 1
                 seen.add(episode)
-                added += 1
             metrics[name + "_starts_added"] = float(added)
+            metrics[name + "_starts_duplicate_rejected"] = float(duplicates)
             metrics[name + "_start_buffer_size"] = float(self.pools[name].valid_size)
+            diversity = self._diversity_metrics(name)
+            metrics.update({name + "_start_buffer_" + key: value
+                            for key, value in diversity.items()})
+            metrics[name + "_start_buffer_fill_ratio"] = float(
+                self.pools[name].valid_size / self.pools[name].buffer_size)
         return metrics
 
     def state_dict(self):
@@ -298,8 +359,9 @@ class SafetyStartBuffer:
             return False
         for name, pool in self.pools.items():
             saved = state["pools"][name]
-            pool.buffer.copy_(saved["buffer"])
-            pool.pointer, pool.valid_size = saved["pointer"], saved["valid_size"]
+            pool.reset()
+            for recording in saved["buffer"][:saved["valid_size"]]:
+                self._add_unique(name, recording)
         return True
 
 
@@ -373,6 +435,14 @@ class SafetyValueManager:
                                   lmbda=parameters.lmbda, clip_epsilon=parameters.clip_epsilon))
         if parameters.safety_value_validation_fraction:
             self.loss_contract["validation_fraction"] = parameters.safety_value_validation_fraction
+        if parameters.safety_value_observed_danger_weight:
+            self.loss_contract.update(
+                observed_danger_weight=parameters.safety_value_observed_danger_weight,
+                observed_danger_positive_margin=OBSERVED_DANGER_POSITIVE_MARGIN,
+                observed_danger_underestimate_margin=UNDERESTIMATE_MARGIN,
+                observed_danger_target="identity_contiguous_physical_suffix_max",
+                observed_danger_mask="current_safe_and_observed_unsafe",
+            )
         if parameters.safety_training_mode == 'value_pretrain':
             self.barrier_contract.update(safety_training_mode='value_pretrain',
                                          actor_warmup='always_frozen', actor_control='disabled')
@@ -441,6 +511,18 @@ class SafetyValueManager:
                     before, y, observed, current["g"], group_valid).items()})
                 metrics[name + "_valid_samples"] = float(group_valid.sum())
             fit_valid = valid & training[..., None, None]
+            if normal is not None:
+                joint_groups = (
+                    ("training_normal", training & normal),
+                    ("training_challenge", training & ~normal),
+                    ("validation_normal", validation & normal),
+                    ("validation_challenge", validation & ~normal),
+                )
+                for name, selection in joint_groups:
+                    group_valid = valid & selection[..., None, None]
+                    metrics.update({name + "_" + k: v for k, v in value_head_metrics(
+                        before, y, observed, current["g"], group_valid).items()})
+                    metrics[name + "_valid_samples"] = float(group_valid.sum())
         positive_weights = positive_class_weights(
             y, fit_valid, self.parameters.safety_value_positive_weight_cap)
         balanced = self.parameters.safety_value_loss_mode == "balanced"
@@ -456,8 +538,8 @@ class SafetyValueManager:
                            observed_steps_mean=float(steps[valid].mean()),
                            next_value_delta_abs=float((next_value - before)[valid].abs().mean()))
         batch = {k: v.flatten(0, 1) for k, v in current.items()}
-        target, masks = y.flatten(0, 1), fit_valid.flatten(0, 1)
-        losses = []
+        target, physical, masks = (x.flatten(0, 1) for x in (y, observed, fit_valid))
+        losses, primary_losses, observed_losses = [], [], []
         for _ in range(self.parameters.safety_value_num_epochs):
             order = torch.randperm(target.shape[0], generator=self.generator)
             for ids in order.split(self.parameters.safety_value_minibatch_size):
@@ -467,19 +549,25 @@ class SafetyValueManager:
                     continue
                 pred = self.model({k: v[ids] for k, v in batch.items()})
                 if balanced:
-                    loss = balanced_value_loss(
+                    primary_loss = balanced_value_loss(
                         pred, target[ids], mask, positive_weights,
                         self.parameters.safety_value_underestimate_weight)
                 elif self.dgppo:
-                    loss = 0.5 * F.mse_loss(pred[mask], target[ids][mask])
+                    primary_loss = 0.5 * F.mse_loss(pred[mask], target[ids][mask])
                 else:
-                    loss = F.smooth_l1_loss(pred[mask], target[ids][mask])
+                    primary_loss = F.smooth_l1_loss(pred[mask], target[ids][mask])
+                observed_loss = observed_danger_auxiliary_loss(
+                    pred, physical[ids], batch["g"][ids], mask)
+                loss = (primary_loss + self.parameters.safety_value_observed_danger_weight
+                        * observed_loss)
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.model.parameters(), 1., error_if_nonfinite=True)
                 self.optimizer.step()
                 self.updates += 1
                 losses.append(float(loss.detach()))
+                primary_losses.append(float(primary_loss.detach()))
+                observed_losses.append(float(observed_loss.detach()))
         self.optimizer.zero_grad(set_to_none=True)
         with torch.no_grad():
             for dest, src in zip(self.target.parameters() if self.target is not None else [], self.model.parameters()):
@@ -489,6 +577,8 @@ class SafetyValueManager:
             self.barrier_fit_batches += 1
         self.frames += td.numel()
         metrics.update(optimizer_updates=float(len(losses)), training_loss=float(np.mean(losses)) if losses else 0.,
+                       training_primary_loss=float(np.mean(primary_losses)) if primary_losses else 0.,
+                       training_observed_danger_loss=float(np.mean(observed_losses)) if observed_losses else 0.,
                        deterministic_frames=float(td.numel()), total_deterministic_frames=float(self.frames))
         return metrics
 
@@ -618,12 +708,18 @@ class DeterministicSafetySampler:
                 normal = (torch.arange(rollout.shape[0], device=rollout.device)
                           < self.starts.normal_envs)
                 rollout.set("safety_normal_env", normal[:, None].expand(*rollout.batch_size))
+                mining_envs = ~self.validation_envs & normal
                 self.last_metrics.update(self.starts.update(
-                    rollout, include_envs=~self.validation_envs))
+                    rollout, include_envs=mining_envs))
                 active = rollout.get(("agents", "info", "safety_challenging_start"))
                 self.last_metrics.update(challenging_start_frame_ratio=float(active.float().mean()),
                                          normal_env_count=float(normal.sum()),
-                                         challenge_env_count=float((~normal).sum()))
+                                         challenge_env_count=float((~normal).sum()),
+                                         start_mining_env_count=float(mining_envs.sum()),
+                                         validation_normal_env_count=float((self.validation_envs & normal).sum()),
+                                         validation_challenge_env_count=float((self.validation_envs & ~normal).sum()),
+                                         training_normal_env_count=float((~self.validation_envs & normal).sum()),
+                                         training_challenge_env_count=float((~self.validation_envs & ~normal).sum()))
                 self.manager.start_buffer_state = self.starts.state_dict()
             return rollout, time.monotonic() - start
 
