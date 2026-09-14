@@ -1232,6 +1232,18 @@ class ScenarioRoadTraffic(BaseScenario):
             )
             self.state_buffer.add(state_add)
 
+        elif getattr(self.parameters, "fix_respawn_training", False):
+            # Re-anchor this car's reward displacement after teleporting. Keep
+            # the pointer, previous history slots, and other cars untouched.
+            i = int(agent_index)
+            self.state_buffer.get_latest()[env_index, i] = torch.cat((
+                agents[i].state.pos[env_index], agents[i].state.rot[env_index],
+                agents[i].state.vel[env_index],
+                self.ref_paths_agent_related.scenario_id[env_index, i].reshape(1),
+                self.ref_paths_agent_related.path_id[env_index, i].reshape(1),
+                self.ref_paths_agent_related.point_id[env_index, i].reshape(1),
+            ))
+
         if hasattr(self, "traj_pos_buffer"):
             if not is_reset_single_agent:
                 pos_add = torch.stack([a.state.pos for a in agents], dim=1)
@@ -2743,6 +2755,20 @@ class ScenarioRoadTraffic(BaseScenario):
 
         return obs_self
 
+    def _single_agent_respawn_mask(self):
+        """Upcoming single-car resets, captured before done() mutates the world."""
+        car_collision = self.collisions.with_agents.any(dim=-1)
+        road_collision = self.collisions.with_lanelets
+        candidates = self.collisions.with_entry_segments | self.collisions.with_exit_segments
+        env_done = self.timer.step == (self.parameters.max_steps - 1)
+        if self.parameters.is_testing_mode:
+            candidates = candidates | car_collision | road_collision
+        else:
+            env_done = env_done | car_collision.any(-1) | road_collision.any(-1)
+            if self.parameters.scenario_type == "CPM_entire":
+                return torch.zeros_like(candidates)
+        return candidates & ~env_done.unsqueeze(-1)
+
     def done(self):
         # print("[DEBUG] done()")
         is_collision_with_agents = self.collisions.with_agents.view(
@@ -2777,12 +2803,7 @@ class ScenarioRoadTraffic(BaseScenario):
             is_done = is_max_steps_reached  # In test mode, we only reset the whole env if the maximum time steps are reached
 
             # Reset single agent
-            agents_reset = (
-                self.collisions.with_agents.any(dim=-1)
-                | self.collisions.with_lanelets
-                | self.collisions.with_entry_segments
-                | self.collisions.with_exit_segments
-            )
+            agents_reset = self._single_agent_respawn_mask()
             agents_reset_indices = torch.where(agents_reset)
             for env_idx, agent_idx in zip(
                 agents_reset_indices[0], agents_reset_indices[1]
@@ -2801,10 +2822,7 @@ class ScenarioRoadTraffic(BaseScenario):
                 # Reset the whole system only when collisions occur. Reset a single agents if it leaves an entry or an exit
 
                 # Reset single agnet
-                agents_reset = (
-                    self.collisions.with_entry_segments
-                    | self.collisions.with_exit_segments
-                )
+                agents_reset = self._single_agent_respawn_mask()
                 agents_reset_indices = torch.where(agents_reset)
                 for env_idx, agent_idx in zip(
                     agents_reset_indices[0], agents_reset_indices[1]
@@ -3066,6 +3084,10 @@ class ScenarioRoadTraffic(BaseScenario):
                 agent.state.ang_vel,
             ], -1)
             info["safety_challenging_start"] = self.safety_start_buffer.active[:, None].clone()
+        if getattr(self.parameters, "fix_respawn_training", False):
+            # VMAS clones info before done(). This remains available even when
+            # the respawn occurs on the final step of a collector batch.
+            info["task_respawn"] = self._single_agent_respawn_mask()[:, agent_index].clone()
         return info
 
     def extra_render(self, env_index: int = 0):

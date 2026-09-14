@@ -12,10 +12,12 @@ from utilities.evaluation_base import Evaluation
 
 model_paths = [
     "outputs/dgppo_minimal_v2/",
-    "outputs/dgppo_minimal_v2/",
+    "outputs/dgppo_v2_gated/",
+    "outputs/dgppo_v2_respawn_training/",
 ]
-# Same checkpoint and seeds; only the next-decision refresh differs.
-refresh_respawn_observations = [False, True]
+# M0: original v2; M1: previous observation-only retraining;
+# M2: gated retraining with reward and task-lifetime boundaries corrected.
+refresh_respawn_observations = [False, True, True]
 
 num_models = len(model_paths)
 x_ticks = [f"$M_{{{idx}}}$" for idx in range(0, num_models)]
@@ -30,7 +32,7 @@ fig_sizes = {
 
 y_limits = {
     "episode_reward": [-1, 8],
-    "collision_rate": [0, 3],
+    "collision_rate": [0, 10],
     "centerline_deviation": [0, 100],
     "average_speed": [70, 100],
     "smoothness": [0, 100],
@@ -38,13 +40,14 @@ y_limits = {
 
 legends = [
     "v2",
-    "v2 + respawn refresh",
+    "v2 observation refresh",
+    "v2 respawn training fix",
 ]
 is_show_different_collisions = True
 
 render_titles = legends
 
-video_names = ["v2", "v2_respawn_refresh"]
+video_names = ["v2", "v2_observation_refresh", "v2_respawn_training"]
 
 scenario_types = [
     "CPM_entire",
@@ -74,8 +77,8 @@ for i_scenario in scenario_types:
         simulation_steps=1200,
         is_show_different_collisions=is_show_different_collisions,
         x_ticks=x_ticks,
-        where_to_save_eva_results=f"outputs/dgppo_respawn_comparison/eva_{i_scenario}",
-        where_to_save_logging="outputs/dgppo_respawn_comparison/log.txt",
+        where_to_save_eva_results=f"outputs/dgppo_respawn_training_comparison/eva_{i_scenario}",
+        where_to_save_logging="outputs/dgppo_respawn_training_comparison/log.txt",
         legends=legends,
         render_titles=render_titles,
         num_simulations_per_model=8,

@@ -851,7 +851,9 @@ class Evaluation:
                 self._init_eva_matrices()  # Only need to be done once
 
             self.episode_reward[self.model_idx] = torch.tensor(
-                self.saved_data.episode_reward_mean_list or [], dtype=torch.float32
+                [float("nan") if value is None else value
+                 for value in (self.saved_data.episode_reward_mean_list or [])],
+                dtype=torch.float32,
             )
 
             self._evaluate_model_i()

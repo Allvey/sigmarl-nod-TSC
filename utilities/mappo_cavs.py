@@ -80,6 +80,8 @@ from utilities.helper_training import (
     save,
     compute_td_error,
     get_observation_key,
+    prepare_task_episode_boundaries,
+    completed_environment_reward,
 )
 
 from scenarios.road_traffic import ScenarioRoadTraffic
@@ -728,17 +730,8 @@ def mappo_cavs(parameters: Parameters):
         for tensordict_data in collector:
             # Snapshot the same pre-PPO policy on an isolated deterministic rollout.
             shadow_data, shadow_seconds = shadow_sampler.collect() if shadow_sampler else (None, 0.)
-            tensordict_data.set(
-                ("next", "agents", "done"),
-                tensordict_data.get(("next", "done"))
-                .unsqueeze(-1)
-                .expand(tensordict_data.get_item_shape(("next", env.reward_key))),
-            )
-            tensordict_data.set(
-                ("next", "agents", "terminated"),
-                tensordict_data.get(("next", "terminated"))
-                .unsqueeze(-1)
-                .expand(tensordict_data.get_item_shape(("next", env.reward_key))),
+            prepare_task_episode_boundaries(
+                tensordict_data, fix_respawn_training=parameters.fix_respawn_training,
             )
 
             with torch.no_grad():
@@ -982,14 +975,15 @@ def mappo_cavs(parameters: Parameters):
 
             collector.update_policy_weights_()  # Updates the policy weights if the policy of the data collector and the trained policy live on different devices
 
-            # Logging
-            done = tensordict_data.get(("next", "agents", "done"))
-            episode_reward_mean_raw = (
-                tensordict_data.get(("next", "agents", "episode_reward"))[done]
-                .mean()
-                .item()
+            # RewardSum is environment-scoped; task GAE respawns must not
+            # introduce partial episode returns into logs or model selection.
+            episode_reward_mean_raw, completed_env_episodes = completed_environment_reward(
+                tensordict_data
             )
-            episode_reward_mean = round(episode_reward_mean_raw, 2)
+            episode_reward_mean = (
+                round(episode_reward_mean_raw, 2)
+                if episode_reward_mean_raw is not None else None
+            )
             episode_reward_mean_list.append(episode_reward_mean_raw)
 
             def _safe_get(td, key_path):
@@ -1032,15 +1026,18 @@ def mappo_cavs(parameters: Parameters):
             collision_lanelets_rate_list.append(collision_lanelets_rate)
             collision_total_rate_list.append(collision_total_rate)
 
+            reward_display = f"{episode_reward_mean:.2f}" if episode_reward_mean is not None else "N/A (no completed env)"
             pbar.set_description(
-                f"Episode mean reward = {episode_reward_mean:.2f} | collision = {collision_total_rate:.4f}",
+                f"Episode mean reward = {reward_display} | collision = {collision_total_rate:.4f}",
                 refresh=False,
             )
 
             # env.scenario.iter = pbar.n # A way to pass the information from the training algorithm to the environment
 
             # Do not select an unchanged warmup Actor as the best fine-tuned model.
-            if parameters.is_save_intermediate_model and not (finetune and freeze_actor):
+            if (parameters.is_save_intermediate_model
+                    and not (finetune and freeze_actor)
+                    and episode_reward_mean is not None):
                 # Update the current mean episode reward
                 parameters.episode_reward_mean_current = episode_reward_mean
                 save_data.episode_reward_mean_list = episode_reward_mean_list
@@ -1136,11 +1133,13 @@ def mappo_cavs(parameters: Parameters):
 
             if wandb is not None and getattr(wandb, "run", None) is not None:
                 log_payload = {
-                    "reward/episode_mean": episode_reward_mean,
+                    "reward/completed_env_episodes": completed_env_episodes,
                     "collision/agents_rate": collision_agents_rate,
                     "collision/lanelets_rate": collision_lanelets_rate,
                     "collision/total_rate": collision_total_rate,
                 }
+                if episode_reward_mean is not None:
+                    log_payload["reward/episode_mean"] = episode_reward_mean
 
                 # Log current learning rate
                 try:

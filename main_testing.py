@@ -14,7 +14,7 @@ from utilities.mappo_cavs import mappo_cavs
 
 from utilities.constants import SCENARIOS
 
-path = "outputs/dgppo_minimal_v2/"
+path = "outputs/dgppo_v2_respawn_training/"
 
 try:
     path_to_json_file = next(
@@ -53,9 +53,9 @@ try:
             # roundabout_1, intersection_1/2/3, CPM_mixed
         )
         parameters.n_agents = SCENARIOS[parameters.scenario_type]["n_agents"]
-        variant = "refresh" if parameters.refresh_respawn_observations else "v2"
+        variant = os.path.basename(os.path.normpath(path))
         rollout_output_dir = os.path.join(
-            "outputs/dgppo_respawn_comparison", parameters.scenario_type, variant
+            "outputs/dgppo_respawn_training_comparison", parameters.scenario_type, variant
         )
         os.makedirs(rollout_output_dir, exist_ok=True)
 

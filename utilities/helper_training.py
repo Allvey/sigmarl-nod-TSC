@@ -91,6 +91,40 @@ def get_model_name(parameters):
 ##################################################
 ## Custom Classes
 ##################################################
+def completed_environment_reward(tensordict):
+    """Mean accumulated reward over cars in completed environment episodes.
+
+    RewardSum resets at environment boundaries, whereas agents.done may also
+    contain task-only respawn boundaries. Return None when no episode ended;
+    a partial return is not a candidate for best-checkpoint selection.
+    """
+    episode_reward = tensordict.get(("next", "agents", "episode_reward"))
+    env_done = tensordict.get(("next", "done")).bool()
+    completed = int(env_done.sum().item())
+    if completed == 0:
+        return None, 0
+    mask = env_done.unsqueeze(-1).expand_as(episode_reward)
+    return episode_reward[mask].mean().item(), completed
+
+
+def prepare_task_episode_boundaries(tensordict, *, fix_respawn_training=False):
+    """Set task-only GAE boundaries without changing physical safety labels.
+
+    A respawn ends that car's task lifetime: neither bootstrap nor the GAE
+    trace may use its new occupant. Environment timeouts retain their existing
+    terminated flag (and therefore their existing bootstrap semantics).
+    """
+    reward = tensordict.get(("next", "agents", "reward"))
+    done = tensordict.get(("next", "done")).unsqueeze(-1).expand_as(reward)
+    terminated = tensordict.get(("next", "terminated")).unsqueeze(-1).expand_as(reward)
+    if fix_respawn_training:
+        respawn = tensordict.get(("next", "agents", "info", "task_respawn")).bool()
+        done = done | respawn
+        terminated = terminated | respawn
+    tensordict.set(("next", "agents", "done"), done)
+    tensordict.set(("next", "agents", "terminated"), terminated)
+
+
 class TransformedEnvCustom(TransformedEnv):
     """Rollout video support and optional post-respawn decision refresh."""
 
@@ -925,11 +959,15 @@ class Parameters:
         safety_finetune_target_kl: float = 0.01,
         dgppo_task_mode: str = "gated",  # additive retains task advantages on unsafe samples
         refresh_respawn_observations: bool = False,
+        fix_respawn_training: bool = False,
     ):
         if dgppo_task_mode not in {"gated", "additive"}:
             raise ValueError("dgppo_task_mode must be 'gated' or 'additive'")
         self.dgppo_task_mode = dgppo_task_mode
         self.refresh_respawn_observations = refresh_respawn_observations
+        if fix_respawn_training and not refresh_respawn_observations:
+            raise ValueError("fix_respawn_training requires refresh_respawn_observations")
+        self.fix_respawn_training = fix_respawn_training
         if ppo_training_profile not in {"current", "original"}:
             raise ValueError("ppo_training_profile must be 'current' or 'original'")
         self.ppo_training_profile = ppo_training_profile

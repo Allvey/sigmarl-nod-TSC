@@ -13,4 +13,6 @@ print(f"[INFO] PPO profile: {parameters.ppo_training_profile}; epochs={parameter
 print(f"[INFO] Safety training: {parameters.safety_training_mode}; "
       f"task mode={parameters.dgppo_task_mode}; warmup fits={parameters.safety_barrier_warmup_batches}; "
       f"KL limit={parameters.safety_finetune_target_kl}")
+print(f"[INFO] Respawn: observations={parameters.refresh_respawn_observations}; "
+      f"training boundaries/reward={parameters.fix_respawn_training}; seed={parameters.seed}")
 mappo_cavs(parameters=parameters)
