@@ -403,6 +403,12 @@ class CircularBuffer:
 
         return self.buffer[index]
 
+    def replace_latest(self, recording, env_mask):
+        """Refresh selected environments without advancing observation history."""
+        if self.valid_size == 0:
+            raise RuntimeError("Cannot refresh an empty observation buffer")
+        self.buffer[(self.pointer - 1) % self.buffer_size, env_mask] = recording[env_mask]
+
     def reset(self):
         """Reset the buffer."""
         self.buffer[:] = 0

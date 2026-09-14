@@ -365,6 +365,9 @@ class ScenarioRoadTraffic(BaseScenario):
         self.nod_agent_generation = torch.zeros(
             (batch_dim, self.n_agents), device=device, dtype=torch.long
         )
+        self.respawn_observation_pending = torch.zeros(
+            batch_dim, device=device, dtype=torch.bool
+        )
         self.deadlock_tracker = DeadlockTracker(self.parameters)
         # Current maps have no traffic-light/right-of-way restriction input.
         # A signal/rule controller can set this mask before the next physical step.
@@ -1101,6 +1104,7 @@ class ScenarioRoadTraffic(BaseScenario):
         for env_i in (
             [env_index] if env_index is not None else range(self.world.batch_dim)
         ):
+            self.respawn_observation_pending[env_i] = is_reset_single_agent
             if is_reset_single_agent:
                 reset_agent_index = int(
                     agent_index.item()
@@ -2127,7 +2131,7 @@ class ScenarioRoadTraffic(BaseScenario):
                 n_points_shift=-2,
             )
 
-    def observation(self, agent: Agent):
+    def observation(self, agent: Agent, refresh_mask=None):
         """
         Generate an observation for the given agent in all envs.
 
@@ -2152,7 +2156,7 @@ class ScenarioRoadTraffic(BaseScenario):
         agent_index = self.world.agents.index(agent)
 
         if agent_index == 0:  # Avoid repeated computations
-            self._update_observation_and_normalize(agent, agent_index)
+            self._update_observation_and_normalize(agent, agent_index, refresh_mask)
 
         # Observation of other agents
         obs_other_agents = self._observe_other_agents(agent_index)
@@ -2177,8 +2181,30 @@ class ScenarioRoadTraffic(BaseScenario):
 
         return obs
 
-    def _update_observation_and_normalize(self, agent, agent_index):
+    def refresh_respawn_observations(self):
+        """Build next-decision data after all single-car resets have completed.
+
+        VMAS has already cloned the physical transition before calling done().
+        Refresh every car in affected environments, since neighbor data also
+        changes. Replace the current buffer slot instead of adding a time step.
+        """
+        mask = self.respawn_observation_pending.clone()
+        observations = [
+            self.observation(agent, refresh_mask=mask).clone()
+            for agent in self.world.agents
+        ]
+        infos = [self.info(agent) for agent in self.world.agents]
+        self.respawn_observation_pending.zero_()
+        return mask, observations, infos
+
+    def _update_observation_and_normalize(self, agent, agent_index, refresh_mask=None):
         """Update observation and normalize them."""
+        def record(buffer, value):
+            if refresh_mask is None:
+                buffer.add(value)
+            else:
+                buffer.replace_latest(value, refresh_mask)
+
         positions_global = torch.stack(
             [a.state.pos for a in self.world.agents], dim=0
         ).transpose(0, 1)
@@ -2201,27 +2227,27 @@ class ScenarioRoadTraffic(BaseScenario):
         ).repeat(self.world.batch_dim, 1)
 
         # Add new observation & normalize
-        self.observations.past_distance_to_agents.add(
+        record(self.observations.past_distance_to_agents,
             self.distances.agents / self.normalizers.distance_lanelet
         )
-        self.observations.past_distance_to_ref_path.add(
+        record(self.observations.past_distance_to_ref_path,
             self.distances.ref_paths / self.normalizers.distance_lanelet
         )
-        self.observations.past_distance_to_left_boundary.add(
+        record(self.observations.past_distance_to_left_boundary,
             torch.min(self.distances.left_boundaries, dim=-1)[0]
             / self.normalizers.distance_lanelet
         )
-        self.observations.past_distance_to_right_boundary.add(
+        record(self.observations.past_distance_to_right_boundary,
             torch.min(self.distances.right_boundaries, dim=-1)[0]
             / self.normalizers.distance_lanelet
         )
-        self.observations.past_distance_to_boundaries.add(
+        record(self.observations.past_distance_to_boundaries,
             self.distances.boundaries / self.normalizers.distance_lanelet
         )
-        self.observations.past_lengths.add(
+        record(self.observations.past_lengths,
             lengths_global / self.normalizers.distance_agent
         )  # Use distance to agents as the normalizer
-        self.observations.past_widths.add(
+        record(self.observations.past_widths,
             widths_global / self.normalizers.distance_agent
         )
 
@@ -2321,7 +2347,7 @@ class ScenarioRoadTraffic(BaseScenario):
                         rot_i=rot_i,
                     )
             # Add new observations & normalize
-            self.observations.past_pos.add(
+            record(self.observations.past_pos,
                 pos_i_others
                 / (
                     self.normalizers.pos
@@ -2329,9 +2355,9 @@ class ScenarioRoadTraffic(BaseScenario):
                     else self.normalizers.pos_world
                 )
             )
-            self.observations.past_rot.add(rot_i_others / self.normalizers.rot)
-            self.observations.past_vel.add(vel_i_others / self.normalizers.v)
-            self.observations.past_short_term_ref_points.add(
+            record(self.observations.past_rot, rot_i_others / self.normalizers.rot)
+            record(self.observations.past_vel, vel_i_others / self.normalizers.v)
+            record(self.observations.past_short_term_ref_points,
                 ref_i_others
                 / (
                     self.normalizers.pos
@@ -2339,7 +2365,7 @@ class ScenarioRoadTraffic(BaseScenario):
                     else self.normalizers.pos_world
                 )
             )
-            self.observations.past_left_boundary.add(
+            record(self.observations.past_left_boundary,
                 l_b_i_others
                 / (
                     self.normalizers.pos
@@ -2347,7 +2373,7 @@ class ScenarioRoadTraffic(BaseScenario):
                     else self.normalizers.pos_world
                 )
             )
-            self.observations.past_right_boundary.add(
+            record(self.observations.past_right_boundary,
                 r_b_i_others
                 / (
                     self.normalizers.pos
@@ -2355,7 +2381,7 @@ class ScenarioRoadTraffic(BaseScenario):
                     else self.normalizers.pos_world
                 )
             )
-            self.observations.past_vertices.add(
+            record(self.observations.past_vertices,
                 ver_i_others
                 / (
                     self.normalizers.pos
@@ -2366,7 +2392,7 @@ class ScenarioRoadTraffic(BaseScenario):
 
         else:  # Global coordinate system
             # Store new observations
-            self.observations.past_pos.add(
+            record(self.observations.past_pos,
                 positions_global
                 / (
                     self.normalizers.pos
@@ -2374,12 +2400,12 @@ class ScenarioRoadTraffic(BaseScenario):
                     else self.normalizers.pos_world
                 )
             )
-            self.observations.past_vel.add(
+            record(self.observations.past_vel,
                 torch.stack([a.state.vel for a in self.world.agents], dim=1)
                 / self.normalizers.v
             )
-            self.observations.past_rot.add(rotations_global[:] / self.normalizers.rot)
-            self.observations.past_vertices.add(
+            record(self.observations.past_rot, rotations_global[:] / self.normalizers.rot)
+            record(self.observations.past_vertices,
                 self.vertices[:, :, 0:4, :]
                 / (
                     self.normalizers.pos
@@ -2387,7 +2413,7 @@ class ScenarioRoadTraffic(BaseScenario):
                     else self.normalizers.pos_world
                 )
             )
-            self.observations.past_short_term_ref_points.add(
+            record(self.observations.past_short_term_ref_points,
                 self.ref_paths_agent_related.short_term[:]
                 / (
                     self.normalizers.pos
@@ -2395,7 +2421,7 @@ class ScenarioRoadTraffic(BaseScenario):
                     else self.normalizers.pos_world
                 )
             )
-            self.observations.past_left_boundary.add(
+            record(self.observations.past_left_boundary,
                 self.ref_paths_agent_related.nearing_points_left_boundary
                 / (
                     self.normalizers.pos
@@ -2403,7 +2429,7 @@ class ScenarioRoadTraffic(BaseScenario):
                     else self.normalizers.pos_world
                 )
             )
-            self.observations.past_right_boundary.add(
+            record(self.observations.past_right_boundary,
                 self.ref_paths_agent_related.nearing_points_right_boundary
                 / (
                     self.normalizers.pos
@@ -2414,16 +2440,16 @@ class ScenarioRoadTraffic(BaseScenario):
 
         # Add new observation - actions & normalize
         if agent.action.u is None:
-            self.observations.past_action_vel.add(self.constants.empty_action_vel)
-            self.observations.past_action_steering.add(
+            record(self.observations.past_action_vel, self.constants.empty_action_vel)
+            record(self.observations.past_action_steering,
                 self.constants.empty_action_steering
             )
         else:
-            self.observations.past_action_vel.add(
+            record(self.observations.past_action_vel,
                 torch.stack([a.action.u[:, 0] for a in self.world.agents], dim=1)
                 / self.normalizers.action_vel
             )
-            self.observations.past_action_steering.add(
+            record(self.observations.past_action_steering,
                 torch.stack([a.action.u[:, 1] for a in self.world.agents], dim=1)
                 / self.normalizers.action_steering
             )

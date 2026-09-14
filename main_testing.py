@@ -14,7 +14,7 @@ from utilities.mappo_cavs import mappo_cavs
 
 from utilities.constants import SCENARIOS
 
-path = "outputs/ppo_original_dgppo_additive/"  # Match the current from-scratch training output.
+path = "outputs/dgppo_minimal_v2/"
 
 try:
     path_to_json_file = next(
@@ -32,6 +32,7 @@ try:
         # Safety-only rollout, including when loading older training JSON files.
         parameters.is_using_deadlock_critic = False
         parameters.is_testing_mode = True
+        parameters.refresh_respawn_observations = True  # False reproduces v2 decisions.
         parameters.is_real_time_rendering = True
         parameters.is_save_eval_results = False
         parameters.is_load_model = True
@@ -52,6 +53,11 @@ try:
             # roundabout_1, intersection_1/2/3, CPM_mixed
         )
         parameters.n_agents = SCENARIOS[parameters.scenario_type]["n_agents"]
+        variant = "refresh" if parameters.refresh_respawn_observations else "v2"
+        rollout_output_dir = os.path.join(
+            "outputs/dgppo_respawn_comparison", parameters.scenario_type, variant
+        )
+        os.makedirs(rollout_output_dir, exist_ok=True)
 
         parameters.is_save_simulation_video = True
         parameters.is_visualize_short_term_path = False
@@ -69,7 +75,7 @@ try:
         parameters.is_print_agent_speed = True
         parameters.print_speed_interval = 1
         parameters.is_save_agent_speed = True
-        parameters.agent_speed_log_path = os.path.join(path, "agent_speeds.csv")
+        parameters.agent_speed_log_path = os.path.join(rollout_output_dir, "agent_speeds.csv")
         parameters.agent_speed_log_interval = 1
         env, policy, priority_module, parameters = mappo_cavs(parameters=parameters)
 
@@ -189,6 +195,6 @@ try:
             out_td = rollout_result
             frame_list = []
         if len(frame_list) > 0:
-            save_video(os.path.join(path, "video"), frame_list, fps=1 / parameters.dt)
+            save_video(os.path.join(rollout_output_dir, "video"), frame_list, fps=1 / parameters.dt)
 except StopIteration:
     raise FileNotFoundError("No json file found.")

@@ -11,8 +11,11 @@ from utilities.evaluation_base import Evaluation
 
 
 model_paths = [
-    "outputs/ppo_original_dgppo_additive/",
+    "outputs/dgppo_minimal_v2/",
+    "outputs/dgppo_minimal_v2/",
 ]
+# Same checkpoint and seeds; only the next-decision refresh differs.
+refresh_respawn_observations = [False, True]
 
 num_models = len(model_paths)
 x_ticks = [f"$M_{{{idx}}}$" for idx in range(0, num_models)]
@@ -34,13 +37,14 @@ y_limits = {
 }
 
 legends = [
-    "Our (tase26)",
+    "v2",
+    "v2 + respawn refresh",
 ]
 is_show_different_collisions = True
 
-render_titles = [path.rsplit("/", 2)[-2] for path in model_paths]
+render_titles = legends
 
-video_names = [path.rsplit("/", 2)[-2][0:2] for path in model_paths]
+video_names = ["v2", "v2_respawn_refresh"]
 
 scenario_types = [
     "CPM_entire",
@@ -62,6 +66,7 @@ for i_scenario in scenario_types:
     evaluator = Evaluation(
         scenario_type=i_scenario,
         model_paths=model_paths,
+        refresh_respawn_observations=refresh_respawn_observations,
         fitst_model_index=0,
         num_agents=n_agents,
         fig_sizes=fig_sizes,
@@ -69,8 +74,8 @@ for i_scenario in scenario_types:
         simulation_steps=1200,
         is_show_different_collisions=is_show_different_collisions,
         x_ticks=x_ticks,
-        where_to_save_eva_results=f"outputs/ppo_original_dgppo_additive/eva_{i_scenario}",
-        where_to_save_logging=f"outputs/ppo_original_dgppo_additive/log.txt",
+        where_to_save_eva_results=f"outputs/dgppo_respawn_comparison/eva_{i_scenario}",
+        where_to_save_logging="outputs/dgppo_respawn_comparison/log.txt",
         legends=legends,
         render_titles=render_titles,
         num_simulations_per_model=8,

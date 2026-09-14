@@ -92,9 +92,30 @@ def get_model_name(parameters):
 ## Custom Classes
 ##################################################
 class TransformedEnvCustom(TransformedEnv):
-    """
-    Slightly modify the function `rollout`, `_rollout_stop_early`, and `_rollout_nonstop` to enable returning a frame list to save evaluation video
-    """
+    """Rollout video support and optional post-respawn decision refresh."""
+
+    def _refresh_respawn_decision(self, tensordict):
+        scenario = self.base_env.scenario
+        if not getattr(scenario.parameters, "refresh_respawn_observations", False):
+            return tensordict
+        if not scenario.respawn_observation_pending.any():
+            return tensordict
+
+        # step_mdp can share tensors with the recorded physical transition.
+        # Never mutate its reward, collision labels, or successor observation.
+        decision = tensordict.clone()
+        mask, observations, infos = scenario.refresh_respawn_observations()
+        observation = torch.stack([self.base_env.read_obs(obs) for obs in observations], dim=1)
+        decision.get(("agents", "observation"))[mask] = observation[mask]
+        info = torch.stack([self.base_env.read_info(item) for item in infos], dim=1)
+        decision_info = decision.get(("agents", "info"))
+        for key in info.keys(True, True):
+            decision_info.get(key)[mask] = info.get(key)[mask]
+        return decision
+
+    def step_and_maybe_reset(self, tensordict):
+        transition, decision = super().step_and_maybe_reset(tensordict)
+        return transition, self._refresh_respawn_decision(decision)
 
     def rollout(
         self,
@@ -256,6 +277,8 @@ class TransformedEnvCustom(TransformedEnv):
             )
             if any_done:
                 break
+
+            tensordict = self._refresh_respawn_decision(tensordict)
 
             if callback is not None:
                 if is_save_simulation_video:
@@ -901,10 +924,12 @@ class Parameters:
         safety_finetune_lr: float = 5e-5,
         safety_finetune_target_kl: float = 0.01,
         dgppo_task_mode: str = "gated",  # additive retains task advantages on unsafe samples
+        refresh_respawn_observations: bool = False,
     ):
         if dgppo_task_mode not in {"gated", "additive"}:
             raise ValueError("dgppo_task_mode must be 'gated' or 'additive'")
         self.dgppo_task_mode = dgppo_task_mode
+        self.refresh_respawn_observations = refresh_respawn_observations
         if ppo_training_profile not in {"current", "original"}:
             raise ValueError("ppo_training_profile must be 'current' or 'original'")
         self.ppo_training_profile = ppo_training_profile

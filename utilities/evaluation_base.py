@@ -192,6 +192,12 @@ class Evaluation:
         self.saved_data = None
 
         self.num_models = len(self.model_paths)
+        self.refresh_respawn_observations = kwargs.pop(
+            "refresh_respawn_observations", [False] * self.num_models
+        )
+        if (len(self.refresh_respawn_observations) != self.num_models
+                or any(type(value) is not bool for value in self.refresh_respawn_observations)):
+            raise ValueError("refresh_respawn_observations must contain one bool per model")
 
         self.x_ticks = kwargs.pop(
             "x_ticks", [f"$M_{{{idx}}}$" for idx in range(0, self.num_models)]
@@ -224,6 +230,7 @@ class Evaluation:
         self.parameters.where_to_save = os.path.join(self.model_i_path, "")
         self.parameters.scenario_type = self.scenario_type
         self.parameters.is_testing_mode = True
+        self.parameters.refresh_respawn_observations = self.refresh_respawn_observations[self.model_i]
         self.parameters.is_real_time_rendering = False
         self.parameters.is_save_eval_results = True
         self.parameters.is_load_model = True
@@ -260,15 +267,14 @@ class Evaluation:
         """
         out_td = self._get_simulation_outputs()
 
-        positions = out_td["agents", "info", "pos"]
-        velocities = out_td["agents", "info", "vel"]
-        is_collision_with_agents = out_td[
-            "agents", "info", "is_collision_with_agents"
-        ].bool()
-        is_collision_with_lanelets = out_td[
-            "agents", "info", "is_collision_with_lanelets"
-        ].bool()
-        distance_ref = out_td["agents", "info", "distance_ref"]
+        # Both A/B variants use the physical post-action frame. Decision inputs
+        # may already describe a respawn and must not erase a collision event.
+        physical_info = out_td["next", "agents", "info"]
+        positions = physical_info["pos"]
+        velocities = physical_info["vel"]
+        is_collision_with_agents = physical_info["is_collision_with_agents"].bool()
+        is_collision_with_lanelets = physical_info["is_collision_with_lanelets"].bool()
+        distance_ref = physical_info["distance_ref"]
 
         is_collide = is_collision_with_agents | is_collision_with_lanelets
 
@@ -326,16 +332,18 @@ class Evaluation:
             find_the_highest_reward_among_all_models(self.model_i_path)
         )
         self.parameters.model_name = get_model_name(parameters=self.parameters)
+        refresh_suffix = "_respawn_refresh" if self.parameters.refresh_respawn_observations else ""
         path_eval_out_td = (
             self.parameters.where_to_save
             + self.parameters.model_name
-            + f"_out_td_{self.parameters.scenario_type}.pth"
+            + f"_out_td_{self.parameters.scenario_type}{refresh_suffix}.pth"
         )
         # Load simulation outputs if exist; otherwise run simulation.
         # Measuring inference time requires a fresh rollout, because cached
         # TensorDicts do not execute the policy.
         should_load_cached_out_td = (
             os.path.exists(path_eval_out_td)
+            and self.parameters.is_load_out_td
             and (not self.is_render)
             and (not self.is_measure_policy_inference_time)
         )
@@ -1096,8 +1104,15 @@ class Evaluation:
         cprint(log_CS)
 
         # Save the evaluation results to a txt file
+        os.makedirs(os.path.dirname(self.where_to_save_logging) or ".", exist_ok=True)
         with open(self.where_to_save_logging, "a") as file:
             file.write(f"Scenario: {self.parameters.scenario_type}\n")
+            file.write("Metric source: next.agents.info (physical frame before respawn)\n")
+            for model_i in range(self.num_models):
+                file.write(
+                    f"M{model_i}: {self.model_paths[model_i]}, "
+                    f"refresh_respawn_observations={self.refresh_respawn_observations[model_i]}\n"
+                )
             file.write(f"{log_CR_AA}\n")
             file.write(f"{log_CR_AL}\n")
             file.write(f"{log_CR_total}\n")
