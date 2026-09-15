@@ -14,7 +14,7 @@ from utilities.mappo_cavs import mappo_cavs
 
 from utilities.constants import SCENARIOS
 
-path = "outputs/dgppo_v2_respawn_training/"
+path = "outputs/dgppo_value_lr_low/"  # Alternative: outputs/dgppo_value_lr_control/
 
 try:
     path_to_json_file = next(
@@ -36,7 +36,7 @@ try:
         parameters.is_real_time_rendering = True
         parameters.is_save_eval_results = False
         parameters.is_load_model = True
-        parameters.is_load_final_model = False
+        parameters.is_load_final_model = True
         parameters.is_load_out_td = False
         parameters.max_steps = 1200  # 1200 -> 1 min
         if parameters.is_load_out_td:
@@ -45,17 +45,19 @@ try:
             parameters.num_vmas_envs = 1
 
         parameters.scenario_type = (
-            "intersection_2"
+            # "intersection_2"
             # "roundabout_1"
-            # "CPM_entire"
+            "CPM_entire"
             # "CPM_mixed"  
             # "on_ramp_1"
             # roundabout_1, intersection_1/2/3, CPM_mixed
         )
         parameters.n_agents = SCENARIOS[parameters.scenario_type]["n_agents"]
         variant = os.path.basename(os.path.normpath(path))
+        if parameters.is_load_final_model:
+            variant += "_final"
         rollout_output_dir = os.path.join(
-            "outputs/dgppo_respawn_training_comparison", parameters.scenario_type, variant
+            "outputs/dgppo_value_lr_final_comparison", parameters.scenario_type, variant
         )
         os.makedirs(rollout_output_dir, exist_ok=True)
 

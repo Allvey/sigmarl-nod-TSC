@@ -960,7 +960,18 @@ class Parameters:
         dgppo_task_mode: str = "gated",  # additive retains task advantages on unsafe samples
         refresh_respawn_observations: bool = False,
         fix_respawn_training: bool = False,
+        training_lateral_reset_probability: float = 0.0,
+        training_lateral_reset_max_m: float = 0.02,
+        training_lateral_reset_clearance_m: float = 0.002,
     ):
+        if not math.isfinite(training_lateral_reset_probability) or not 0 <= training_lateral_reset_probability <= 1:
+            raise ValueError("training_lateral_reset_probability must be in [0, 1]")
+        if any(not math.isfinite(v) or v < 0 for v in (
+                training_lateral_reset_max_m, training_lateral_reset_clearance_m)):
+            raise ValueError("Lateral reset distances must be finite and nonnegative")
+        self.training_lateral_reset_probability = training_lateral_reset_probability
+        self.training_lateral_reset_max_m = training_lateral_reset_max_m
+        self.training_lateral_reset_clearance_m = training_lateral_reset_clearance_m
         if dgppo_task_mode not in {"gated", "additive"}:
             raise ValueError("dgppo_task_mode must be 'gated' or 'additive'")
         self.dgppo_task_mode = dgppo_task_mode

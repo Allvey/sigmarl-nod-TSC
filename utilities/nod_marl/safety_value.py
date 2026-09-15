@@ -299,6 +299,22 @@ class SafetyStartBuffer:
         return True
 
 
+def equivalent_barrier_contract(saved, current):
+    """Ignore duration only when both DGPPO contracts disable scheduling.
+
+    Normalize copies to remain compatible with existing checkpoints while
+    retaining warmup resets for actual constraint or schedule changes.
+    """
+    if not isinstance(saved, dict):
+        return saved == current
+    saved, current = dict(saved), dict(current)
+    if (saved.get("mode") == current.get("mode") == "dgppo"
+            and saved.get("schedule") is False and current.get("schedule") is False):
+        saved.pop("schedule_iters", None)
+        current.pop("schedule_iters", None)
+    return saved == current
+
+
 class SafetyValueManager:
     """Independent shadow learner; never registered with the PPO optimizer."""
 
@@ -492,12 +508,17 @@ class SafetyValueManager:
             self.target.load_state_dict(checkpoint["target"])
         self.updates, self.rollouts, self.frames = (checkpoint[k] for k in ("updates", "rollouts", "frames"))
         loss_changed = checkpoint.get("loss_contract", {"mode": "legacy"}) != self.loss_contract
-        barrier_changed = checkpoint.get('barrier_contract') != self.barrier_contract
+        barrier_changed = not equivalent_barrier_contract(
+            checkpoint.get('barrier_contract'), self.barrier_contract)
         self.barrier_fit_batches = (checkpoint.get('barrier_fit_batches', 0)
                                    if load_optimizer and not barrier_changed and not loss_changed else 0)
         if load_optimizer:
             if not loss_changed:
                 self.optimizer.load_state_dict(checkpoint["optimizer"])
+                # Adam state loading also restores its old learning rate.
+                # Keep the moments but honor the explicit experiment config.
+                for group in self.optimizer.param_groups:
+                    group["lr"] = self.parameters.safety_value_lr
             else:
                 # Retain compatible Value/target weights; old Adam moments were
                 # fitted with another loss. Do not silently reuse them.

@@ -68,6 +68,7 @@ from utilities.helper_scenario import (
 from utilities.map_manager import MapManager
 
 from utilities.constants import SCENARIOS, AGENTS
+from utilities.reset_augmentation import safe_lateral_position
 
 
 class ScenarioRoadTraffic(BaseScenario):
@@ -1421,8 +1422,43 @@ class ScenarioRoadTraffic(BaseScenario):
 
             agents[i_agent].set_rot(rot_start, batch_index=env_i)
             agents[i_agent].set_vel(vel_start, batch_index=env_i)
+            self._apply_training_lateral_reset(
+                env_i, i_agent, is_reset_single_agent, ref_path, agents)
 
         return ref_path, path_id
+
+    def _apply_training_lateral_reset(self, env_i, i_agent, is_reset_single_agent,
+                                      ref_path, agents):
+        p = self.parameters
+        # Disabled/evaluation paths consume no RNG; recorded states bypass this
+        # hook entirely. Both PPO and the training Safety Value sampler use it.
+        if (p.is_testing_mode or p.training_lateral_reset_probability == 0
+                or p.training_lateral_reset_max_m == 0):
+            return
+        if torch.rand((), device=self.world.device) >= p.training_lateral_reset_probability:
+            return
+        if not hasattr(self, "lateral_reset_stats"):
+            self.lateral_reset_stats = dict(attempted=0, applied=0, rejected=0)
+        self.lateral_reset_stats['attempted'] += 1
+        offset = (2 * torch.rand((), device=self.world.device) - 1) * p.training_lateral_reset_max_m
+        # On a whole-env reset, later cars have not been initialized yet; their
+        # own resets will check against this car's final, possibly shifted pose.
+        indices = range(len(agents)) if is_reset_single_agent else range(int(i_agent))
+        others = [agents[j].state.pos[env_i] for j in indices if j != int(i_agent)]
+        agent = agents[i_agent]
+        positions = torch.stack(others) if others else agent.state.pos.new_empty((0, 2))
+        candidate = safe_lateral_position(
+            agent.state.pos[env_i], agent.state.rot[env_i, 0], offset,
+            width=agent.shape.width, length=agent.shape.length,
+            left=ref_path['left_boundary_shared'], right=ref_path['right_boundary_shared'],
+            is_loop=ref_path['is_loop'], other_positions=positions,
+            min_distance=self.constants.reset_agent_min_distance,
+            clearance=p.training_lateral_reset_clearance_m)
+        if candidate is None:
+            self.lateral_reset_stats['rejected'] += 1
+        else:
+            agent.set_pos(candidate, batch_index=env_i)
+            self.lateral_reset_stats['applied'] += 1
 
     def _reset_agent_related_ref_path(
         self, env_i, i_agent, ref_path, path_id, extended_points

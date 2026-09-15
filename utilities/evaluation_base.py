@@ -192,6 +192,15 @@ class Evaluation:
         self.saved_data = None
 
         self.num_models = len(self.model_paths)
+        self.expected_checkpoint_names = kwargs.pop("expected_checkpoint_names", None)
+        if (self.expected_checkpoint_names is not None
+                and len(self.expected_checkpoint_names) != self.num_models):
+            raise ValueError("expected_checkpoint_names must have one entry per model")
+        self.model_run_details = [""] * self.num_models
+        self.load_final_models = kwargs.pop("load_final_models", [False] * self.num_models)
+        if (len(self.load_final_models) != self.num_models
+                or any(type(value) is not bool for value in self.load_final_models)):
+            raise ValueError("load_final_models must contain one bool per model")
         self.refresh_respawn_observations = kwargs.pop(
             "refresh_respawn_observations", [False] * self.num_models
         )
@@ -234,7 +243,7 @@ class Evaluation:
         self.parameters.is_real_time_rendering = False
         self.parameters.is_save_eval_results = True
         self.parameters.is_load_model = True
-        self.parameters.is_load_final_model = False
+        self.parameters.is_load_final_model = self.load_final_models[self.model_i]
         self.parameters.is_load_out_td = True
         self.parameters.n_agents = self.num_agents
         self.parameters.max_steps = self.simulation_steps
@@ -332,10 +341,26 @@ class Evaluation:
             find_the_highest_reward_among_all_models(self.model_i_path)
         )
         self.parameters.model_name = get_model_name(parameters=self.parameters)
+        checkpoint_name = "final" if self.parameters.is_load_final_model else self.parameters.model_name
+        if self.parameters.is_load_final_model:
+            for suffix in ("policy", "critic", "safety_value"):
+                path = os.path.join(self.model_i_path, f"final_{suffix}.pth")
+                if not os.path.isfile(path):
+                    raise FileNotFoundError(path)
+        if (self.expected_checkpoint_names is not None
+                and self.expected_checkpoint_names[self.model_i] is not None
+                and checkpoint_name != self.expected_checkpoint_names[self.model_i]):
+            raise ValueError(f"Expected {self.expected_checkpoint_names[self.model_i]}, "
+                             f"found {checkpoint_name} in {self.model_i_path}")
+        self.model_run_details[self.model_i] = (
+            f"checkpoint={checkpoint_name}, seed={self.parameters.seed}, "
+            f"task_mode={self.parameters.dgppo_task_mode}, "
+            f"fix_respawn_training={self.parameters.fix_respawn_training}"
+        )
         refresh_suffix = "_respawn_refresh" if self.parameters.refresh_respawn_observations else ""
         path_eval_out_td = (
             self.parameters.where_to_save
-            + self.parameters.model_name
+            + checkpoint_name
             + f"_out_td_{self.parameters.scenario_type}{refresh_suffix}.pth"
         )
         # Load simulation outputs if exist; otherwise run simulation.
@@ -1113,7 +1138,8 @@ class Evaluation:
             for model_i in range(self.num_models):
                 file.write(
                     f"M{model_i}: {self.model_paths[model_i]}, "
-                    f"refresh_respawn_observations={self.refresh_respawn_observations[model_i]}\n"
+                    f"refresh_respawn_observations={self.refresh_respawn_observations[model_i]}, "
+                    f"{self.model_run_details[model_i]}\n"
                 )
             file.write(f"{log_CR_AA}\n")
             file.write(f"{log_CR_AL}\n")
