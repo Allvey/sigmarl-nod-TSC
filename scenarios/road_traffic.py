@@ -68,6 +68,7 @@ from utilities.helper_scenario import (
 from utilities.map_manager import MapManager
 
 from utilities.constants import SCENARIOS, AGENTS
+from utilities.navigation_boundary import NavigationBoundaryCache
 
 
 class ScenarioRoadTraffic(BaseScenario):
@@ -1460,6 +1461,14 @@ class ScenarioRoadTraffic(BaseScenario):
             :,
         ] = ref_path["center_line_vec_normalized"][-1, :]
 
+        if self.parameters.use_navigation_boundary or self.parameters.record_navigation_metrics:
+            if not hasattr(self, "navigation_routes"):
+                self.navigation_routes = NavigationBoundaryCache(
+                    self.world.batch_dim, self.n_agents,
+                    2 * max(max(a.shape.width, a.shape.length) for a in self.world.agents),
+                    self.world.device)
+            self.navigation_routes[(int(env_i), int(i_agent))] = ref_path
+
         n_points_left_b = ref_path["left_boundary_shared"].shape[0]
         self.ref_paths_agent_related.left_boundary[
             env_i, i_agent, 0:n_points_left_b, :
@@ -2177,8 +2186,15 @@ class ScenarioRoadTraffic(BaseScenario):
 
         return obs
 
+    def _update_navigation_geometry(self):
+        vertices = torch.stack([get_rectangle_vertices(a.state.pos, a.state.rot,
+            a.shape.width, a.shape.length) for a in self.world.agents], dim=1)
+        self.navigation_distances, self.navigation_violation = self.navigation_routes.evaluate(vertices)
+
     def _update_observation_and_normalize(self, agent, agent_index):
         """Update observation and normalize them."""
+        if self.parameters.use_navigation_boundary or self.parameters.record_navigation_metrics:
+            self._update_navigation_geometry()
         positions_global = torch.stack(
             [a.state.pos for a in self.world.agents], dim=0
         ).transpose(0, 1)
@@ -2208,11 +2224,13 @@ class ScenarioRoadTraffic(BaseScenario):
             self.distances.ref_paths / self.normalizers.distance_lanelet
         )
         self.observations.past_distance_to_left_boundary.add(
-            torch.min(self.distances.left_boundaries, dim=-1)[0]
+            (self.navigation_distances[..., 0] if self.parameters.use_navigation_boundary
+             else torch.min(self.distances.left_boundaries, dim=-1)[0])
             / self.normalizers.distance_lanelet
         )
         self.observations.past_distance_to_right_boundary.add(
-            torch.min(self.distances.right_boundaries, dim=-1)[0]
+            (self.navigation_distances[..., 1] if self.parameters.use_navigation_boundary
+             else torch.min(self.distances.right_boundaries, dim=-1)[0])
             / self.normalizers.distance_lanelet
         )
         self.observations.past_distance_to_boundaries.add(
@@ -2948,13 +2966,27 @@ class ScenarioRoadTraffic(BaseScenario):
                 self.distances.left_boundaries.amin(-1),
                 self.distances.right_boundaries.amin(-1),
             )
+            safety_collision = self.collisions.with_agents.any(-1) | self.collisions.with_lanelets
+            if self.parameters.use_navigation_boundary:
+                navigation_clearance = self.navigation_distances.amin(-1)
+                # Unsigned distance alone would classify a car far outside as safe.
+                navigation_clearance = torch.where(self.navigation_violation,
+                    -navigation_clearance.clamp_min(1e-6), navigation_clearance)
+                clearance = torch.minimum(clearance, navigation_clearance)
+                safety_collision = safety_collision | self.navigation_violation
             margins = safety_margins(
-                nod_positions, clearance,
-                self.collisions.with_agents.any(-1) | self.collisions.with_lanelets,
+                nod_positions, clearance, safety_collision,
                 self.parameters.safety_safe_distance,
                 self.parameters.safety_boundary_margin,
             )
             safety_fields["safety_margins"] = margins[:, agent_index]
+
+        if self.parameters.use_navigation_boundary or self.parameters.record_navigation_metrics:
+            safety_fields.update(
+                navigation_violation=self.navigation_violation[:, agent_index],
+                navigation_clearance=self.navigation_distances[:, agent_index].amin(-1),
+                physical_road_collision=self.collisions.with_lanelets[:, agent_index],
+                physical_agent_collision=self.collisions.with_agents[:, agent_index].any(-1))
 
         deadlock_fields = {}
         if getattr(self.parameters, "is_using_deadlock_critic", True):

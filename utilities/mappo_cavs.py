@@ -454,7 +454,9 @@ def mappo_cavs(parameters: Parameters):
         _bind_frozen_nod(nod_manager, safety_value_manager, parameters)
         safety_manager.load_if_available(prefix + '_safety_critic.pth', load_optimizer=True)
         finetune = parameters.safety_training_mode == 'finetune'
-        if not safety_value_manager.load_if_available(prefix + '_safety_value.pth', load_optimizer=not finetune):
+        if parameters.training_reset_safety_value:
+            print('[INFO] New experiment: fresh Safety Value and warmup; policy/critic initialized from checkpoint')
+        elif not safety_value_manager.load_if_available(prefix + '_safety_value.pth', load_optimizer=not finetune):
             raise ValueError('Training initialization requires a compatible Safety Value checkpoint')
         if finetune:
             safety_value_manager.updates = safety_value_manager.rollouts = safety_value_manager.frames = 0

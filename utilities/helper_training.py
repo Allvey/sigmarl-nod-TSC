@@ -901,7 +901,15 @@ class Parameters:
         safety_finetune_lr: float = 5e-5,
         safety_finetune_target_kl: float = 0.01,
         dgppo_task_mode: str = "gated",  # additive retains task advantages on unsafe samples
+        use_navigation_boundary: bool = False,
+        record_navigation_metrics: bool = False,
+        training_reset_safety_value: bool = False,
     ):
+        if use_navigation_boundary and not is_observe_distance_to_boundaries:
+            raise ValueError("Navigation boundary mode requires the v2 boundary-distance observation layout")
+        self.use_navigation_boundary = use_navigation_boundary
+        self.record_navigation_metrics = record_navigation_metrics
+        self.training_reset_safety_value = training_reset_safety_value
         if dgppo_task_mode not in {"gated", "additive"}:
             raise ValueError("dgppo_task_mode must be 'gated' or 'additive'")
         self.dgppo_task_mode = dgppo_task_mode
