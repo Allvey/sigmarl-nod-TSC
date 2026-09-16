@@ -31,6 +31,23 @@ NEIGHBOR_SPEED = 19
 NOD_PAIR_FEATURE_DIM = 20
 
 
+def nod_observation_inputs(features: Tensor, edge_mask: Tensor, mode: str):
+    """One input contract for online inference and ordered NOD training.
+
+    Local mode uses every visible neighbor, never a route-derived edge mask.
+    The seven path channels stay as zero padding to preserve network shapes.
+    Invisible slots carry neither private state nor path information.
+    """
+    if mode == "legacy_paths":
+        return features, edge_mask.bool()
+    if mode != "local_kinematics":
+        raise ValueError("Invalid NOD observation mode")
+    visible = features[..., VISIBLE] > 0.5
+    features = features.clone()
+    features[..., CONFLICT_VALID:OVERLAP_RISK + 1] = 0.
+    return torch.where(visible.unsqueeze(-1), features, 0.), visible
+
+
 def _gather_agents(values: Tensor, indices: Tensor) -> Tensor:
     """Gather ``[B,N,...]`` values using ``[B,K]`` agent indices."""
 
@@ -192,6 +209,7 @@ def build_directed_interactions(
     conflict_radius: float,
     max_speed: float,
     eps: float = 1e-6,
+    observation_mode: str = "legacy_paths",
 ) -> Dict[str, Tensor]:
     """Build stable directed candidates and a dynamic interaction mask.
 
@@ -256,19 +274,25 @@ def build_directed_interactions(
         torch.full_like(distance, float(ttc_limit)),
     ).clamp(0.0, float(ttc_limit))
 
-    ego_path = torch.cat(
-        [positions[:, ego_index].unsqueeze(1), short_term_paths[:, ego_index]], dim=1
-    )
-    neighbor_paths = _gather_agents(short_term_paths, candidate_ids)
-    neighbor_paths = torch.cat([neighbor_pos.unsqueeze(2), neighbor_paths], dim=2)
-    ego_path = ego_path.unsqueeze(1).expand(-1, candidate_ids.shape[1], -1, -1)
-
-    (
-        min_path_distance,
-        ego_conflict_distance,
-        neighbor_conflict_distance,
-        path_intersects,
-    ) = _closest_path_approach(ego_path, neighbor_paths, eps)
+    if observation_mode == "local_kinematics":
+        # Do not even read neighbors' private routes in this branch.
+        min_path_distance = torch.full_like(distance, float("inf"))
+        ego_conflict_distance = torch.zeros_like(distance)
+        neighbor_conflict_distance = torch.zeros_like(distance)
+        path_intersects = torch.zeros_like(distance, dtype=torch.bool)
+    else:
+        ego_path = torch.cat(
+            [positions[:, ego_index].unsqueeze(1), short_term_paths[:, ego_index]], dim=1
+        )
+        neighbor_paths = _gather_agents(short_term_paths, candidate_ids)
+        neighbor_paths = torch.cat([neighbor_pos.unsqueeze(2), neighbor_paths], dim=2)
+        ego_path = ego_path.unsqueeze(1).expand(-1, candidate_ids.shape[1], -1, -1)
+        (
+            min_path_distance,
+            ego_conflict_distance,
+            neighbor_conflict_distance,
+            path_intersects,
+        ) = _closest_path_approach(ego_path, neighbor_paths, eps)
     conflict_valid = path_intersects | (
         min_path_distance <= float(conflict_radius)
     )
@@ -324,6 +348,7 @@ def build_directed_interactions(
         dim=-1,
     )
     assert features.shape[-1] == NOD_PAIR_FEATURE_DIM
+    features, edge_mask = nod_observation_inputs(features, edge_mask, observation_mode)
 
     return {
         "features": features,

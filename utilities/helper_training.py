@@ -759,6 +759,7 @@ class Parameters:
         # NOD opinion model and Stage-4 opinion-conditioned actor
         is_using_nod_opinion: bool = True,
         is_using_nod_actor: bool = True,
+        nod_observation_mode: str = "legacy_paths",  # local_kinematics enables communication-free DGPPO + NOD
         nod_message_dim: int = 32,
         nod_message_hidden_dim: int = 64,
         nod_message_scale: float = 0.1,
@@ -902,6 +903,17 @@ class Parameters:
         safety_finetune_target_kl: float = 0.01,
         dgppo_task_mode: str = "gated",  # additive retains task advantages on unsafe samples
     ):
+        if nod_observation_mode not in {"legacy_paths", "local_kinematics"}:
+            raise ValueError("Invalid NOD observation mode")
+        if nod_observation_mode == "local_kinematics" and is_observe_ref_path_other_agents:
+            raise ValueError("Local NOD cannot observe neighbors' reference paths")
+        self.nod_observation_mode = nod_observation_mode
+        dgppo_nod = (is_using_nod_opinion and is_using_nod_actor
+                     and nod_observation_mode == "local_kinematics")
+        if safety_control_mode == "dgppo" and (
+                ((is_using_nod_opinion or is_using_nod_actor) and not dgppo_nod)
+                or (nod_freeze_training and not dgppo_nod)):
+            raise ValueError("DGPPO NOD requires both opinion and Actor inputs in local_kinematics mode")
         if dgppo_task_mode not in {"gated", "additive"}:
             raise ValueError("dgppo_task_mode must be 'gated' or 'additive'")
         self.dgppo_task_mode = dgppo_task_mode
@@ -922,11 +934,10 @@ class Parameters:
         self.safety_finetune_target_kl = safety_finetune_target_kl
         if safety_training_mode == 'finetune':
             if (safety_control_mode != 'dgppo' or not is_using_safety_constraint or dgppo_weight <= 0
-                    or is_using_nod_actor or is_using_nod_opinion or nod_freeze_training
                     or is_using_prioritized_marl or is_prb or not is_using_safety_value_shadow
                     or safety_barrier_warmup_batches < 1
                     or (not is_load_model and not training_init_checkpoint)):
-                raise ValueError('Safety fine-tuning requires a pinned DGPPO initialization, positive warmup, and no NOD/priority replay')
+                raise ValueError('Safety fine-tuning requires a pinned DGPPO initialization, positive warmup, and no priority replay')
             # A fine-tuning LR deliberately takes precedence over the PPO profile.
             lr = safety_finetune_lr
             lr_min = min(lr_min, lr)
@@ -1049,11 +1060,11 @@ class Parameters:
                 or not isinstance(dgppo_schedule, bool)):
             raise ValueError("Invalid DGPPO safety parameters")
         if safety_control_mode == "dgppo" and (
-                is_using_nod_opinion or is_using_nod_actor or is_using_safety_critic
+                is_using_safety_critic
                 or safety_value_loss_mode != "mse" or not math.isfinite(dt) or dt <= 0
                 or dgppo_alpha * dt >= 1 or safety_value_challenging_fraction != 0
                 or is_observe_ref_path_other_agents):
-            raise ValueError("DGPPO minimal requires no opinion/old Q, MSE, 0 < alpha*dt < 1, and ordinary starts")
+            raise ValueError("DGPPO requires no old Q, MSE, 0 < alpha*dt < 1, and ordinary starts")
         if safety_value_loss_mode == "mse" and safety_control_mode != "dgppo":
             raise ValueError("MSE Safety Value loss belongs to the DGPPO minimal mode")
         self.safety_barrier_kappa = safety_barrier_kappa
@@ -1214,6 +1225,8 @@ class Parameters:
 
         if (model_name is None) and (scenario_name is not None):
             self.model_name = get_model_name(self)
+        else:
+            self.model_name = model_name
 
     def to_dict(self):
         # Create a dictionary representation of the instance

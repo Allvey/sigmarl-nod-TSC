@@ -363,6 +363,12 @@ class SafetyValueManager:
                     normalization="raw_task_GAE_including_warmup", ppo_training_profile="original",
                     task_ppo=dict(num_epochs=parameters.num_epochs, lr=parameters.lr,
                                   lmbda=parameters.lmbda, clip_epsilon=parameters.clip_epsilon))
+            if parameters.is_using_nod_actor:
+                # Only the policy/warmup contract changes, not Value features,
+                # targets or compatible Value weights.
+                self.barrier_contract.update(
+                    nod_actor=True, nod_observation_mode=parameters.nod_observation_mode,
+                    opinion_controls_alpha=False)
         if parameters.safety_training_mode == 'finetune':
             self.barrier_contract.update(safety_training_mode='finetune',
                                          actor_warmup='frozen_until_value_fit_batches',

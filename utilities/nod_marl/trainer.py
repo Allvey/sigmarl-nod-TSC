@@ -10,7 +10,7 @@ from torch import Tensor
 import torch.nn.functional as F
 
 from .counterfactual import build_counterfactual_labels
-from .interaction import NOD_PAIR_FEATURE_DIM
+from .interaction import NOD_PAIR_FEATURE_DIM, nod_observation_inputs
 from .opinion import NODOpinionModel
 
 
@@ -67,6 +67,7 @@ class NODOpinionManager:
         pair_feature_dim: int = NOD_PAIR_FEATURE_DIM,
     ):
         self.parameters = parameters
+        self.observation_mode = getattr(parameters, "nod_observation_mode", "legacy_paths")
         self.enabled = bool(getattr(parameters, "is_using_nod_opinion", True))
         self.n_neighbors = max(1, int(getattr(parameters, "n_agents", 2)) - 1)
         dt = float(parameters.dt)
@@ -199,8 +200,8 @@ class NODOpinionManager:
             # the cached context instead of stepping a recurrent state.
             return None
 
-        pair_features = pair_features.detach()
-        edge_mask = edge_mask.detach().bool()
+        pair_features, edge_mask = nod_observation_inputs(
+            pair_features.detach(), edge_mask.detach(), self.observation_mode)
         neighbor_indices = neighbor_indices.detach().long()
         ego_generations = ego_generations.detach().long()
         if ego_generations.ndim == 3 and ego_generations.shape[-1] == 1:
@@ -304,8 +305,8 @@ class NODOpinionManager:
             self.last_metrics = {"enabled": 1.0, "missing_rollout_fields": 1.0}
             return self.last_metrics
 
-        pair_features = pair_features.detach()
-        edge_mask = edge_mask.detach().bool()
+        pair_features, edge_mask = nod_observation_inputs(
+            pair_features.detach(), edge_mask.detach(), self.observation_mode)
         neighbor_indices = neighbor_indices.detach().long()
         ego_generations = ego_generations.detach().long()
         if ego_generations.ndim == 4 and ego_generations.shape[-1] == 1:
@@ -523,6 +524,7 @@ class NODOpinionManager:
     def checkpoint_state(self) -> Dict:
         return {
             "version": self.checkpoint_version,
+            "observation_mode": self.observation_mode,
             "pair_feature_dim": self.model.pair_feature_dim,
             "history_mode": self.model.history_mode,
             "model": self.model.state_dict(),
@@ -531,6 +533,11 @@ class NODOpinionManager:
         }
 
     def load_checkpoint(self, checkpoint: Dict, load_optimizer: bool = False) -> bool:
+        mode = checkpoint.get("observation_mode", "legacy_paths") if isinstance(checkpoint, dict) else "legacy_paths"
+        if mode != self.observation_mode:
+            self.last_load_info = "incompatible NOD observation mode"
+            self.reset_online_state()
+            return False
         version = checkpoint.get("version") if isinstance(checkpoint, dict) else None
         state_dict = (
             checkpoint.get("model", checkpoint)

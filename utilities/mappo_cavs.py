@@ -122,16 +122,27 @@ def _load_nod_if_available(
     parameters: Parameters,
     *,
     load_optimizer: bool,
+    allow_fresh: bool = False,
 ):
     """Load an optional NOD sidecar without affecting old checkpoints."""
 
-    if not nod_manager.enabled or not os.path.exists(path_nod):
+    if not nod_manager.enabled:
+        return False
+    strict_local = parameters.nod_observation_mode == 'local_kinematics' and parameters.is_using_nod_actor
+    if not os.path.exists(path_nod):
+        if strict_local and not allow_fresh:
+            raise FileNotFoundError(f'Local NOD Actor requires its NOD checkpoint: {path_nod}')
+        nod_manager.last_load_info = 'fresh NOD; no source sidecar'
+        if strict_local:
+            print('[INFO] Initializing local NOD from scratch; supervised training remains enabled')
         return False
     checkpoint = torch.load(path_nod, map_location=parameters.device)
     loaded = nod_manager.load_checkpoint(
         checkpoint, load_optimizer=load_optimizer
     )
     if not loaded:
+        if strict_local and not allow_fresh:
+            raise ValueError(f'Local NOD Actor requires a compatible NOD checkpoint: {nod_manager.last_load_info}')
         print(
             colored(
                 f"[WARN] {nod_manager.last_load_info}; starting NOD fresh.",
@@ -170,8 +181,8 @@ def _load_policy_checkpoint(
 
     Legacy Actor layers are matched by their ``agent_networks`` suffix. The
     original observation columns are retained in the enlarged first layer;
-    the new opinion-message and previous-action columns keep their normal
-    initialization. This changes no external checkpoint or command interface.
+    local-kinematics mode zeroes the new message/previous-action columns to
+    preserve a base policy's initial distribution. Legacy migration is unchanged.
     """
 
     state_dict = torch.load(path, map_location=parameters.device)
@@ -223,13 +234,22 @@ def _load_policy_checkpoint(
             and source_value.shape[1] >= actor_base_observation_dim
             and target_value.shape[1] > source_value.shape[1]
         ):
-            expanded_value = target_value.clone()
+            if parameters.nod_observation_mode == 'local_kinematics':
+                if source_value.shape[1] != actor_base_observation_dim:
+                    raise ValueError('Local NOD migration requires a base-observation-only Actor')
+                expanded_value = torch.zeros_like(target_value)
+            else:
+                expanded_value = target_value.clone()
             expanded_value[:, :actor_base_observation_dim] = source_value[
                 :, :actor_base_observation_dim
             ]
             migrated[target_key] = expanded_value
             matched += 1
             expanded += 1
+    if parameters.nod_observation_mode == 'local_kinematics':
+        expected = sum('agent_networks.' in key for key in current)
+        if matched != expected or expanded != 1:
+            raise ValueError('Incomplete base Actor migration to local NOD')
     if matched == 0:
         policy.load_state_dict(state_dict)
     policy.load_state_dict(migrated)
@@ -442,15 +462,20 @@ def mappo_cavs(parameters: Parameters):
         prefix = parameters.training_init_checkpoint
         if os.path.realpath(os.path.dirname(prefix)) == os.path.realpath(parameters.where_to_save):
             raise ValueError('Training initialization must use a separate output directory')
-        required_suffixes = ('policy', 'critic', 'safety_value') + (('nod',) if nod_manager.enabled else ())
+        local_nod = nod_manager.enabled and parameters.nod_observation_mode == 'local_kinematics'
+        required_suffixes = ('policy', 'critic', 'safety_value') + (
+            ('nod',) if nod_manager.enabled and (not local_nod or parameters.nod_freeze_training) else ())
         for suffix in required_suffixes:
             if not os.path.isfile(prefix + '_' + suffix + '.pth'):
                 raise FileNotFoundError(f'Missing training initialization: {prefix}_{suffix}.pth')
-        _load_policy_checkpoint(prefix + '_policy.pth', policy, parameters,
-                                actor_base_observation_dim=actor_base_observation_dim,
-                                use_nod_actor=use_nod_actor)
+        policy_load = _load_policy_checkpoint(prefix + '_policy.pth', policy, parameters,
+                                             actor_base_observation_dim=actor_base_observation_dim,
+                                             use_nod_actor=use_nod_actor)
         critic.load_state_dict(torch.load(prefix + '_critic.pth', map_location=parameters.device))
-        _load_nod_if_available(prefix + '_nod.pth', nod_manager, parameters, load_optimizer=True)
+        _load_nod_if_available(
+            prefix + '_nod.pth', nod_manager, parameters,
+            load_optimizer=parameters.safety_training_mode != 'finetune',
+            allow_fresh=local_nod and policy_load == 'migrated' and not parameters.nod_freeze_training)
         _bind_frozen_nod(nod_manager, safety_value_manager, parameters)
         safety_manager.load_if_available(prefix + '_safety_critic.pth', load_optimizer=True)
         finetune = parameters.safety_training_mode == 'finetune'

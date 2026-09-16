@@ -2887,6 +2887,7 @@ class ScenarioRoadTraffic(BaseScenario):
                     )
                 ),
                 max_speed=float(self.max_speed),
+                observation_mode=self.parameters.nod_observation_mode,
             )
             nod_neighbor_indices = nod_interaction["neighbor_indices"]
             nod_neighbor_generation = torch.gather(
