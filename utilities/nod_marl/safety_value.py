@@ -339,8 +339,12 @@ class SafetyValueManager:
             interaction_distance=parameters.nod_interaction_distance,
             conflict_radius=parameters.nod_conflict_radius, ttc_limit=parameters.nod_ttc_limit,
         )
-        if parameters.use_navigation_boundary:
+        if parameters.use_navigation_boundary and parameters.navigation_boundary_mode == "safety":
             self.contract.update(boundary_semantics="navigation_corridor_footprint_v1",
+                                 boundary_observation=("navigation_distance" if parameters.observe_navigation_boundary
+                                                       else "shared_distance"))
+        elif parameters.observe_navigation_boundary:
+            self.contract.update(boundary_semantics="shared_road_navigation_observation_v1",
                                  boundary_observation="navigation_distance")
         self.loss_contract = ({"mode": "legacy"} if parameters.safety_value_loss_mode == "legacy" else dict(
             mode="balanced", positive_weight_cap=parameters.safety_value_positive_weight_cap,

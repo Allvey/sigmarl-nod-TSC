@@ -198,7 +198,9 @@ def test_contract_prevents_loading_old_boundary_value(tmp_path):
     root = Path(__file__).resolve().parents[1]
     a, b = [json.loads((root / f'config_{name}.json').read_text())
             for name in ('dgppo_navigation_control', 'dgppo_navigation')]
-    assert {k for k in a if a[k] != b[k]} == {'where_to_save', 'use_navigation_boundary'}
+    # The user may extend either training budget independently; compare the
+    # model/environment settings rather than the selected run duration.
+    assert {k for k in a if k != 'n_iters' and a[k] != b[k]} == {'where_to_save', 'use_navigation_boundary'}
 
 
 @pytest.mark.parametrize('config', ['config_dgppo_navigation_control.json', 'config_dgppo_navigation.json'])

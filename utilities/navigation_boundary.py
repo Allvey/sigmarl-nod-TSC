@@ -6,6 +6,11 @@ closed-loop corridor: the two connecting seam segments cancel in the ray test.
 import torch
 
 
+def navigation_task_penalty(violation, road_collision, road_penalty, ratio):
+    """Per-frame soft lane violation cost; physical road collisions take priority."""
+    return (violation.bool() & ~road_collision.bool()).to(road_penalty.dtype) * road_penalty * ratio
+
+
 def point_segment_distance(points, line):
     delta = line[1:] - line[:-1]
     u = ((points[..., None, :] - line[:-1]) * delta).sum(-1) / delta.square().sum(-1).clamp_min(1e-12)

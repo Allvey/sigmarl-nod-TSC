@@ -80,6 +80,9 @@ def evaluate(args):
                 deviation *= env.base_env.scenario.normalizers.distance_ref / AGENTS['width'] * 100
                 row = dict(model=str(folder), checkpoint=checkpoint, scene=scene,
                            navigation_boundary=p.use_navigation_boundary, seed=args.seed,
+                           observe_navigation_boundary=p.observe_navigation_boundary,
+                           navigation_boundary_mode=p.navigation_boundary_mode,
+                           navigation_penalty_ratio=p.navigation_penalty_ratio,
                            envs=args.envs, steps=args.steps)
                 for name, values in [('navigation_violation_pct', nav), ('road_collision_pct', road),
                                      ('agent_collision_pct', car), ('road_env_event_pct', event),
@@ -88,7 +91,7 @@ def evaluate(args):
                                      per_env=values.tolist())
                 report['results'].append(row)
                 (output / 'summary.json').write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
-                line = (f'{scene} | {folder.name} ({checkpoint}) | '
+                line = (f'{scene} | {folder.name} ({checkpoint}, mode={p.navigation_boundary_mode}) | '
                         f'road events={event.mean():.2f}% | navigation occupancy={nav.mean():.2f}% | '
                         f'speed={speed.mean():.2f}% | deviation={deviation.mean():.2f}%')
                 print(line, flush=True)

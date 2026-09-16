@@ -68,7 +68,7 @@ from utilities.helper_scenario import (
 from utilities.map_manager import MapManager
 
 from utilities.constants import SCENARIOS, AGENTS
-from utilities.navigation_boundary import NavigationBoundaryCache
+from utilities.navigation_boundary import NavigationBoundaryCache, navigation_task_penalty
 
 
 class ScenarioRoadTraffic(BaseScenario):
@@ -1461,7 +1461,8 @@ class ScenarioRoadTraffic(BaseScenario):
             :,
         ] = ref_path["center_line_vec_normalized"][-1, :]
 
-        if self.parameters.use_navigation_boundary or self.parameters.record_navigation_metrics:
+        if (self.parameters.use_navigation_boundary or self.parameters.observe_navigation_boundary
+                or self.parameters.record_navigation_metrics):
             if not hasattr(self, "navigation_routes"):
                 self.navigation_routes = NavigationBoundaryCache(
                     self.world.batch_dim, self.n_agents,
@@ -1680,6 +1681,12 @@ class ScenarioRoadTraffic(BaseScenario):
         # [update] mutual distances between agents, vertices of each agent, and collision matrices
         self._update_state_before_rewarding(agent, agent_index)
 
+        if (agent_index == 0 and self.parameters.use_navigation_boundary
+                and self.parameters.navigation_boundary_mode == "task"):
+            # Reward precedes observation in VMAS. Read the current physical
+            # footprint, never the previous decision's cached violation flag.
+            self._update_navigation_geometry()
+
         ##################################################
         ## [reward] forward movement
         ##################################################
@@ -1803,6 +1810,12 @@ class ScenarioRoadTraffic(BaseScenario):
             is_collide_with_lanelets * self.penalties.collide_with_boundaries
         )
         self.rew += penalty_collide_lanelet
+
+        if (self.parameters.use_navigation_boundary
+                and self.parameters.navigation_boundary_mode == "task"):
+            self.rew += navigation_task_penalty(
+                self.navigation_violation[:, agent_index], is_collide_with_lanelets,
+                self.penalties.collide_with_boundaries, self.parameters.navigation_penalty_ratio)
 
         ##################################################
         ## [penalty/reward] time
@@ -2189,11 +2202,19 @@ class ScenarioRoadTraffic(BaseScenario):
     def _update_navigation_geometry(self):
         vertices = torch.stack([get_rectangle_vertices(a.state.pos, a.state.rot,
             a.shape.width, a.shape.length) for a in self.world.agents], dim=1)
+        # Task reward and observation read the same post-physics frame. Reuse
+        # it only while both poses and cached route assignments are unchanged.
+        if (self.navigation_routes.groups is not None
+                and hasattr(self, "_navigation_geometry_vertices")
+                and torch.equal(vertices, self._navigation_geometry_vertices)):
+            return
         self.navigation_distances, self.navigation_violation = self.navigation_routes.evaluate(vertices)
+        self._navigation_geometry_vertices = vertices
 
     def _update_observation_and_normalize(self, agent, agent_index):
         """Update observation and normalize them."""
-        if self.parameters.use_navigation_boundary or self.parameters.record_navigation_metrics:
+        if (self.parameters.use_navigation_boundary or self.parameters.observe_navigation_boundary
+                or self.parameters.record_navigation_metrics):
             self._update_navigation_geometry()
         positions_global = torch.stack(
             [a.state.pos for a in self.world.agents], dim=0
@@ -2224,12 +2245,12 @@ class ScenarioRoadTraffic(BaseScenario):
             self.distances.ref_paths / self.normalizers.distance_lanelet
         )
         self.observations.past_distance_to_left_boundary.add(
-            (self.navigation_distances[..., 0] if self.parameters.use_navigation_boundary
+            (self.navigation_distances[..., 0] if self.parameters.observe_navigation_boundary
              else torch.min(self.distances.left_boundaries, dim=-1)[0])
             / self.normalizers.distance_lanelet
         )
         self.observations.past_distance_to_right_boundary.add(
-            (self.navigation_distances[..., 1] if self.parameters.use_navigation_boundary
+            (self.navigation_distances[..., 1] if self.parameters.observe_navigation_boundary
              else torch.min(self.distances.right_boundaries, dim=-1)[0])
             / self.normalizers.distance_lanelet
         )
@@ -2967,7 +2988,8 @@ class ScenarioRoadTraffic(BaseScenario):
                 self.distances.right_boundaries.amin(-1),
             )
             safety_collision = self.collisions.with_agents.any(-1) | self.collisions.with_lanelets
-            if self.parameters.use_navigation_boundary:
+            if (self.parameters.use_navigation_boundary
+                    and self.parameters.navigation_boundary_mode == "safety"):
                 navigation_clearance = self.navigation_distances.amin(-1)
                 # Unsigned distance alone would classify a car far outside as safe.
                 navigation_clearance = torch.where(self.navigation_violation,
@@ -2981,12 +3003,19 @@ class ScenarioRoadTraffic(BaseScenario):
             )
             safety_fields["safety_margins"] = margins[:, agent_index]
 
-        if self.parameters.use_navigation_boundary or self.parameters.record_navigation_metrics:
+        if (self.parameters.use_navigation_boundary or self.parameters.observe_navigation_boundary
+                or self.parameters.record_navigation_metrics):
             safety_fields.update(
                 navigation_violation=self.navigation_violation[:, agent_index],
                 navigation_clearance=self.navigation_distances[:, agent_index].amin(-1),
                 physical_road_collision=self.collisions.with_lanelets[:, agent_index],
-                physical_agent_collision=self.collisions.with_agents[:, agent_index].any(-1))
+                physical_agent_collision=self.collisions.with_agents[:, agent_index].any(-1),
+                navigation_task_penalty=navigation_task_penalty(
+                    self.navigation_violation[:, agent_index], self.collisions.with_lanelets[:, agent_index],
+                    self.penalties.collide_with_boundaries,
+                    self.parameters.navigation_penalty_ratio if (
+                        self.parameters.use_navigation_boundary
+                        and self.parameters.navigation_boundary_mode == "task") else 0.0))
 
         deadlock_fields = {}
         if getattr(self.parameters, "is_using_deadlock_critic", True):

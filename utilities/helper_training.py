@@ -904,8 +904,23 @@ class Parameters:
         use_navigation_boundary: bool = False,
         record_navigation_metrics: bool = False,
         training_reset_safety_value: bool = False,
+        navigation_boundary_mode: str = "safety",
+        navigation_penalty_ratio: float = 0.1,
+        observe_navigation_boundary: bool = None,
     ):
-        if use_navigation_boundary and not is_observe_distance_to_boundaries:
+        # Missing in older checkpoints: preserve their coupled observation mode.
+        if observe_navigation_boundary is None:
+            observe_navigation_boundary = use_navigation_boundary
+        if not isinstance(observe_navigation_boundary, bool):
+            raise ValueError("observe_navigation_boundary must be a boolean or None")
+        self.observe_navigation_boundary = observe_navigation_boundary
+        if navigation_boundary_mode not in {"safety", "task"}:
+            raise ValueError("navigation_boundary_mode must be 'safety' or 'task'")
+        if not math.isfinite(navigation_penalty_ratio) or not 0 <= navigation_penalty_ratio <= 1:
+            raise ValueError("navigation_penalty_ratio must be finite and in [0, 1]")
+        self.navigation_boundary_mode = navigation_boundary_mode
+        self.navigation_penalty_ratio = navigation_penalty_ratio
+        if observe_navigation_boundary and not is_observe_distance_to_boundaries:
             raise ValueError("Navigation boundary mode requires the v2 boundary-distance observation layout")
         self.use_navigation_boundary = use_navigation_boundary
         self.record_navigation_metrics = record_navigation_metrics
