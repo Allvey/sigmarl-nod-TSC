@@ -369,6 +369,18 @@ class SafetyValueManager:
                 self.barrier_contract.update(
                     nod_actor=True, nod_observation_mode=parameters.nod_observation_mode,
                     opinion_controls_alpha=False)
+            if parameters.dgppo_opinion_alpha:
+                self.barrier_contract.update(
+                    opinion_controls_alpha=True, alpha_span=parameters.dgppo_alpha_span,
+                    opinion="cached_preaction_z_world_slot_generation",
+                    opinion_alpha_rule="base_plus_span_z_when_value_negative_and_g_nonpositive",
+                    missing_opinion="fixed_alpha", unsafe_opinion="fixed_alpha")
+                # Gain=1 preserves the old contract exactly, including resume
+                # warmup. A changed gain invalidates only the barrier contract.
+                if parameters.dgppo_alpha_gain != 1.0:
+                    self.barrier_contract.update(
+                        alpha_gain=parameters.dgppo_alpha_gain,
+                        opinion_alpha_rule="base_plus_span_clipped_gain_z_when_value_negative_and_g_nonpositive")
         if parameters.safety_training_mode == 'finetune':
             self.barrier_contract.update(safety_training_mode='finetune',
                                          actor_warmup='frozen_until_value_fit_batches',

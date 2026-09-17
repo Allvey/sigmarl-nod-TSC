@@ -13,8 +13,9 @@ import json
 from utilities.mappo_cavs import mappo_cavs
 
 from utilities.constants import SCENARIOS
+from utilities.nod_marl.visualization import opinion_alpha_lines
 
-path = "outputs/dgppo_nod_fixed_finetune/"  # Match the current from-scratch training output.
+path = "outputs/dgppo_nod_opinion_gain2_finetune/"  # Match the current from-scratch training output.
 
 try:
     path_to_json_file = next(
@@ -44,10 +45,10 @@ try:
             parameters.num_vmas_envs = 1
 
         parameters.scenario_type = (
-            "intersection_2"
+            "interchange_1"
             # "roundabout_1"
             # "CPM_entire"
-            # "CPM_mixed"  
+            # "CPM_mixed"
             # "on_ramp_1"
             # roundabout_1, intersection_1/2/3, CPM_mixed
         )
@@ -60,6 +61,9 @@ try:
         parameters.is_visualize_observed_neighbors = False
         # 固定展示邻居的智能体索引（0-based）。可按需修改。
         parameters.visualize_observed_neighbors_agent_index = 0
+        # 显示该车对可见邻居的 z 和训练规则 alpha；0 对应画面中的车辆 1。
+        parameters.is_visualize_nod_alpha = True
+        parameters.is_visualize_agent_id = True
         # 关闭“未来三个位置点”可视化
         parameters.is_visualize_future_three_points = False
         parameters.is_visualize_agent_trajectory = True
@@ -71,6 +75,7 @@ try:
         parameters.is_save_agent_speed = True
         parameters.agent_speed_log_path = os.path.join(path, "agent_speeds.csv")
         parameters.agent_speed_log_interval = 1
+        parameters.dgppo_alpha_gain = 2.0
         env, policy, priority_module, parameters = mappo_cavs(parameters=parameters)
 
         os.makedirs(path, exist_ok=True)
@@ -166,6 +171,17 @@ try:
             except Exception as e:
                 print(f"[SpeedLog] Skipped speed logging due to error: {e}")
 
+            if parameters.is_visualize_nod_alpha:
+                # Nonstop rollout supplies the transition root (pre-action
+                # context); the rendered world has already advanced one step.
+                env.scenario.nod_alpha_overlay = {
+                    0: opinion_alpha_lines(
+                        td, getattr(env.scenario, "safety_value_manager", None),
+                        agent_index=int(parameters.visualize_observed_neighbors_agent_index),
+                        env_index=0,
+                        decision_time=(max(0, step_val - 1) * parameters.dt
+                                       if step_val is not None else None))
+                }
             return env.render(mode="rgb_array", visualize_when_rgb=True)
 
         try:

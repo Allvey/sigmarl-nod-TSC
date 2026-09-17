@@ -3702,6 +3702,19 @@ class ScenarioRoadTraffic(BaseScenario):
             except Exception:
                 pass
 
+        if getattr(self.parameters, "is_visualize_nod_alpha", False):
+            # Pixel-space overlay, also captured by rgb_array/video rendering.
+            lines = getattr(self, "nod_alpha_overlay", {}).get(env_index, [])
+            panel_width = 530
+            x = max(10, self.viewer_size[0] - panel_width)
+            for row, text in enumerate(lines):
+                geom = rendering.TextLine(
+                    text=text, x=x, y=self.viewer_size[1] - 24 - row * 22,
+                    font_size=12)
+                geom.add_attr(rendering.Transform())
+                geom.set_color(*Color.black100)
+                geoms.append(geom)
+
         return geoms
 
 

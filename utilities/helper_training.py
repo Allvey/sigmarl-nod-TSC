@@ -837,6 +837,9 @@ class Parameters:
         safety_control_mode: str = "legacy_q",
         dgppo_lambda: float = 0.95,
         dgppo_alpha: float = 10.0,
+        dgppo_opinion_alpha: bool = False,
+        dgppo_alpha_span: float = 5.0,
+        dgppo_alpha_gain: float = 1.0,
         dgppo_eps: float = 0.01,
         dgppo_weight: float = 1.0,
         dgppo_schedule: bool = True,
@@ -881,6 +884,7 @@ class Parameters:
         # Optional visualization of observed neighbors (for debugging)
         is_visualize_observed_neighbors: bool = False,
         visualize_observed_neighbors_agent_index: int = 0,
+        is_visualize_nod_alpha: bool = False,
         # Save/Load
         is_save_intermediate_model: bool = True,  # Whether to save intermediate model (also called checkpoint) with the hightest episode reward
         is_load_model: bool = False,  # Whether to load saved model
@@ -1051,6 +1055,9 @@ class Parameters:
         self.safety_control_mode = safety_control_mode
         self.dgppo_lambda = dgppo_lambda
         self.dgppo_alpha = dgppo_alpha
+        self.dgppo_opinion_alpha = dgppo_opinion_alpha
+        self.dgppo_alpha_span = dgppo_alpha_span
+        self.dgppo_alpha_gain = dgppo_alpha_gain
         self.dgppo_eps = dgppo_eps
         self.dgppo_weight = dgppo_weight
         self.dgppo_schedule = dgppo_schedule
@@ -1065,6 +1072,17 @@ class Parameters:
                 or dgppo_alpha * dt >= 1 or safety_value_challenging_fraction != 0
                 or is_observe_ref_path_other_agents):
             raise ValueError("DGPPO requires no old Q, MSE, 0 < alpha*dt < 1, and ordinary starts")
+        if (not isinstance(dgppo_opinion_alpha, bool)
+                or not math.isfinite(dgppo_alpha_span) or dgppo_alpha_span < 0
+                or isinstance(dgppo_alpha_gain, bool)
+                or not math.isfinite(dgppo_alpha_gain) or dgppo_alpha_gain <= 0):
+            raise ValueError("Invalid DGPPO opinion alpha parameters")
+        if dgppo_opinion_alpha and (
+                safety_control_mode != 'dgppo' or not dgppo_nod
+                or not is_using_safety_constraint or not is_using_safety_value_shadow
+                or dgppo_alpha_span >= dgppo_alpha
+                or (dgppo_alpha + dgppo_alpha_span) * dt >= 1):
+            raise ValueError("DGPPO opinion alpha requires local NOD, Safety Value, and 0 < alpha(z)*dt < 1")
         if safety_value_loss_mode == "mse" and safety_control_mode != "dgppo":
             raise ValueError("MSE Safety Value loss belongs to the DGPPO minimal mode")
         self.safety_barrier_kappa = safety_barrier_kappa
@@ -1210,6 +1228,7 @@ class Parameters:
             agent_trajectory_interp_use_catmull_rom
         )
         self.is_visualize_observed_neighbors = is_visualize_observed_neighbors
+        self.is_visualize_nod_alpha = is_visualize_nod_alpha
         self.visualize_observed_neighbors_agent_index = (
             visualize_observed_neighbors_agent_index
         )

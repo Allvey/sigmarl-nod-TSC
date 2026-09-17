@@ -9,31 +9,32 @@ from .safety_value import same_entities, VALUE_HEADS
 
 
 @torch.no_grad()
-def aligned_opinion_kappa(td, current, *, minimum, maximum):
+def aligned_opinions(td, current):
     """Cached pre-action z (last context coordinate), aligned by world slot.
 
-    Missing/invalid opinions use minimum, never masquerade as neutral z=0.
+    Missing/invalid opinions have available=False, never masquerade as neutral.
     Neighbor generations are verified against the current world identities;
     successor continuity remains the barrier's separate validity check.
     """
     n = current['g'].shape[-2]
     shape = current['g'][..., :n].shape
-    kappas = current['g'].new_full(shape, minimum)
-    opinions = torch.zeros_like(kappas)
-    available = torch.zeros_like(kappas, dtype=torch.bool)
-    info = td.get(('agents', 'info'))
+    opinions = current['g'].new_zeros(shape)
+    available = torch.zeros_like(opinions, dtype=torch.bool)
+    info = td.get(('agents', 'info'), default=None)
+    if info is None:
+        return available, opinions
     keys = ['nod_actor_edge_context', 'nod_actor_edge_mask', 'nod_actor_context_ready',
             'nod_neighbor_indices', 'nod_neighbor_generation', 'nod_edge_mask']
     context, mask, ready, ids, generations, physical_mask = [info.get(k, default=None) for k in keys]
     if any(x is None for x in (context, mask, ready, ids, generations, physical_mask)):
-        return kappas, available, opinions
+        return available, opinions
     ids = ids.long()
     z = context[..., -1].detach()
     if z.shape != ids.shape or mask.shape != ids.shape or generations.shape != ids.shape:
         raise ValueError('Opinion cache and neighbor identities have incompatible shapes')
     safe_ids = ids.clamp(0, n - 1)
     valid_id = (ids >= 0) & (ids < n)
-    counts = torch.zeros_like(kappas, dtype=torch.long)
+    counts = torch.zeros_like(opinions, dtype=torch.long)
     counts.scatter_add_(-1, safe_ids, valid_id.long())
     unique = counts.gather(-1, safe_ids) == 1
     expected = current['other_gen'][..., :n].gather(-1, safe_ids)
@@ -43,7 +44,15 @@ def aligned_opinion_kappa(td, current, *, minimum, maximum):
     opinions.scatter_add_(-1, safe_ids, torch.where(valid, z, 0.))
     available.scatter_add_(-1, safe_ids, valid)
     available &= current['valid'][..., :n]
-    available &= ~torch.eye(n, dtype=torch.bool, device=kappas.device)
+    available &= ~torch.eye(n, dtype=torch.bool, device=opinions.device)
+    return available, opinions
+
+
+@torch.no_grad()
+def aligned_opinion_kappa(td, current, *, minimum, maximum):
+    """Legacy barrier mapping: missing opinions retain the minimum kappa."""
+    available, opinions = aligned_opinions(td, current)
+    kappas = torch.full_like(opinions, minimum)
     mapped = (minimum + maximum) / 2 + (maximum - minimum) / 2 * opinions
     kappas = torch.where(available, mapped, kappas)
     return kappas, available, opinions
