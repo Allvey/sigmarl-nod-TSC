@@ -14,8 +14,16 @@ from utilities.mappo_cavs import mappo_cavs
 
 from utilities.constants import SCENARIOS
 from utilities.nod_marl.visualization import opinion_alpha_lines
+from utilities.testing_rule_policy import TestingRulePolicy
 
 path = "outputs/dgppo_nod_opinion_gain2_finetune/"  # Match the current from-scratch training output.
+
+# 仅用于可视化测试：索引从0开始。下面把车辆2设为中等让行规则车。
+# 可选 yielding（主动让行）、moderate（中等）、non_yielding（不主动让行）。
+# 可同时指定多辆，例如 {1: "yielding", 2: "non_yielding"}；{} 恢复全策略控制。
+rule_vehicles = {1: "moderate"}
+rule_cruise_speed = 1.0  # m/s，所有类型共用，转弯时适度减速。
+test_output = os.path.join(path, "rule_vehicle_visualization") if rule_vehicles else path
 
 try:
     path_to_json_file = next(
@@ -45,7 +53,7 @@ try:
             parameters.num_vmas_envs = 1
 
         parameters.scenario_type = (
-            "interchange_1"
+            "intersection_2"
             # "roundabout_1"
             # "CPM_entire"
             # "CPM_mixed"
@@ -73,12 +81,22 @@ try:
         parameters.is_print_agent_speed = True
         parameters.print_speed_interval = 1
         parameters.is_save_agent_speed = True
-        parameters.agent_speed_log_path = os.path.join(path, "agent_speeds.csv")
+        parameters.agent_speed_log_path = os.path.join(test_output, "agent_speeds.csv")
         parameters.agent_speed_log_interval = 1
         parameters.dgppo_alpha_gain = 2.0
         env, policy, priority_module, parameters = mappo_cavs(parameters=parameters)
+        if rule_vehicles:
+            policy = TestingRulePolicy(policy, env.scenario, rule_vehicles,
+                                       cruise_speed=rule_cruise_speed)
 
-        os.makedirs(path, exist_ok=True)
+        os.makedirs(test_output, exist_ok=True)
+        if rule_vehicles:
+            with open(os.path.join(test_output, "rule_setup.json"), "w") as setup_file:
+                json.dump(dict(scenario=parameters.scenario_type, vehicles=rule_vehicles,
+                               controller_version="rear_aware_risk_v3",
+                               cruise_speed=rule_cruise_speed, seed=parameters.seed,
+                               checkpoint="final" if parameters.is_load_final_model else parameters.model_name),
+                          setup_file, indent=2)
         speed_log_f = None
         if getattr(parameters, "is_save_agent_speed", False):
             speed_log_path = getattr(
@@ -182,6 +200,8 @@ try:
                         decision_time=(max(0, step_val - 1) * parameters.dt
                                        if step_val is not None else None))
                 }
+            if rule_vehicles:
+                env.scenario.testing_rule_overlay = {0: policy.overlay_lines(0)}
             return env.render(mode="rgb_array", visualize_when_rgb=True)
 
         try:
@@ -204,7 +224,9 @@ try:
         else:
             out_td = rollout_result
             frame_list = []
+        if rule_vehicles:
+            policy.save_diagnostics(out_td, os.path.join(test_output, 'rule_diagnostics.csv'))
         if len(frame_list) > 0:
-            save_video(os.path.join(path, "video"), frame_list, fps=1 / parameters.dt)
+            save_video(os.path.join(test_output, "video"), frame_list, fps=1 / parameters.dt)
 except StopIteration:
     raise FileNotFoundError("No json file found.")

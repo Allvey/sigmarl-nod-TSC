@@ -3041,6 +3041,11 @@ class ScenarioRoadTraffic(BaseScenario):
                 agent.state.ang_vel,
             ], -1)
             info["safety_challenging_start"] = self.safety_start_buffer.active[:, None].clone()
+        if self.parameters.is_testing_mode:
+            # Preserve per-vehicle terminal contacts before auto-respawn. The
+            # older is_collision_with_lanelets field is an environment aggregate.
+            info['testing_road_contact'] = self.collisions.with_lanelets[:, agent_index].clone()
+            info['testing_route_error'] = self.distances.ref_paths[:, agent_index].clone()
         return info
 
     def extra_render(self, env_index: int = 0):
@@ -3689,8 +3694,12 @@ class ScenarioRoadTraffic(BaseScenario):
                     )
                     px = float(label_pos[0].item()) * scalex + transx
                     py = float(label_pos[1].item()) * scaley + transy
+                    rule_profile = getattr(self, "testing_rule_profiles", {}).get(agent_i)
+                    rule_badge = {"yielding": "Y", "moderate": "M", "non_yielding": "N"}
+                    label = (f"{agent_i + 1} [R:{rule_badge[rule_profile]}]"
+                             if rule_profile else str(agent_i + 1))
                     geom = rendering.TextLine(
-                        text=str(agent_i + 1),
+                        text=label,
                         x=px,
                         y=py,
                         font_size=14,
@@ -3714,6 +3723,13 @@ class ScenarioRoadTraffic(BaseScenario):
                 geom.add_attr(rendering.Transform())
                 geom.set_color(*Color.black100)
                 geoms.append(geom)
+
+        rule_lines = getattr(self, "testing_rule_overlay", {}).get(env_index, [])
+        for row, text in enumerate(rule_lines):
+            geom = rendering.TextLine(text=text, x=12, y=18 + 22 * (len(rule_lines) - 1 - row), font_size=12)
+            geom.add_attr(rendering.Transform())
+            geom.set_color(*Color.black100)
+            geoms.append(geom)
 
         return geoms
 
