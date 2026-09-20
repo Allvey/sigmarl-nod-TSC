@@ -1321,9 +1321,13 @@ class ScenarioRoadTraffic(BaseScenario):
         else:
             is_feasible_initial_position_found = False
             random_count = 0
+            coordinated_rule = (self.parameters.is_testing_mode
+                                and i_agent in getattr(self, 'testing_rule_profiles', {}))
 
             # Ramdomly generate initial states for each agent
             while not is_feasible_initial_position_found:
+                if coordinated_rule and random_count >= 5000:
+                    raise RuntimeError('No safe rule-vehicle insertion slot is available; reduce test traffic density')
                 if random_count >= 20:
                     cprint(
                         f"Reset agent(s): random_count = {random_count}.",
@@ -1349,6 +1353,11 @@ class ScenarioRoadTraffic(BaseScenario):
                 random_point_id = torch.randint(
                     start_point_idx, end_point_idx, (1,)
                 ).item()
+                zones = ref_path.get('testing_rule_conflict_intervals', []) if coordinated_rule else []
+                if zones:
+                    progress = float(ref_path['testing_rule_arc'][random_point_id])
+                    if any(entry-.02 < progress < exit_+.02 for entry, exit_ in zones):
+                        continue
 
                 self.ref_paths_agent_related.point_id[
                     env_i, i_agent
@@ -1396,6 +1405,8 @@ class ScenarioRoadTraffic(BaseScenario):
                 torch.rand(1, dtype=torch.float32, device=self.world.device)
                 * agents[i_agent].max_speed
             )  # Random initial velocity
+            if self.parameters.is_testing_mode and i_agent in getattr(self, 'testing_rule_profiles', {}):
+                vel_start_abs.zero_()
             vel_start = torch.hstack(
                 [
                     vel_start_abs * torch.cos(rot_start),
@@ -3046,6 +3057,10 @@ class ScenarioRoadTraffic(BaseScenario):
             # older is_collision_with_lanelets field is an environment aggregate.
             info['testing_road_contact'] = self.collisions.with_lanelets[:, agent_index].clone()
             info['testing_route_error'] = self.distances.ref_paths[:, agent_index].clone()
+            rule_indices = list(getattr(self, 'testing_rule_profiles', {}))
+            info['testing_rule_contact'] = (
+                self.collisions.with_agents[:, agent_index, rule_indices].any(-1)
+                if agent_index in rule_indices else torch.zeros_like(is_collision_with_agents))
         return info
 
     def extra_render(self, env_index: int = 0):

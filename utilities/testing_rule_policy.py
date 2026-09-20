@@ -7,6 +7,8 @@ from numbers import Real
 import torch
 from torch import nn
 
+from utilities.testing_rule_coordinator import RuleCoordinator
+
 
 # Physical profiles: same path tracker/cruise speed; only interaction response differs.
 PROFILES = {
@@ -15,7 +17,8 @@ PROFILES = {
     'non_yielding': dict(horizon=1.0, longitudinal=0.20, lateral=0.10),
 }
 REASONS = {0: 'clear', 1: 'slow-conflict', 2: 'stop-conflict',
-           3: 'ignore-traffic', 4: 'least-risk', 5: 'rear-aware'}
+           3: 'ignore-traffic', 4: 'least-risk', 5: 'rear-aware',
+           7: 'reserved-go', 8: 'reservation-wait', 9: 'keep-reservation'}
 
 
 def assign_rule_vehicles(n_agents, fraction, profile_weights, *, seed, actor_index=0):
@@ -257,6 +260,7 @@ class TestingRulePolicy(nn.Module):
         self.previous = {}
         self.neighbor_history = {}
         self.status = {}
+        self.coordinator = RuleCoordinator(scenario, self.vehicles)
         scenario.testing_rule_profiles = self.vehicles
 
     @torch.no_grad()
@@ -281,7 +285,9 @@ class TestingRulePolicy(nn.Module):
             same_generation = old_generation == generation
             yielding = yielding & same_generation
             previous_speed = torch.where(same_generation, previous_speed, measured_speed)
-            other = [j for j in range(s.n_agents) if j != i]
+            # Other rule vehicles are handled together by trajectory reservation;
+            # their known intended motion must not also trigger local yielding.
+            other = [j for j in range(s.n_agents) if j not in self.vehicles]
             other_generation = s.nod_agent_generation[:, other]
             prior_generation, prior_velocity = self.neighbor_history.get(
                 i, (other_generation, vel[:, other]))
@@ -316,6 +322,24 @@ class TestingRulePolicy(nn.Module):
                 if key not in diagnostics:
                     diagnostics[key] = torch.zeros_like(actions[..., :1], dtype=value.dtype)
                 diagnostics[key][:, i, 0] = value
+        actions, coordination, blocking, wait_time, infeasible = self.coordinator.coordinate(actions)
+        for i in self.vehicles:
+            yielding, _, details = self.status[i]
+            active = coordination[:, i] != 0
+            details['reason'] = torch.where(active, coordination[:, i], details['reason'])
+            details['blocker'] = torch.where(active & (blocking[:, i] >= 0), blocking[:, i], details['blocker'])
+            details['reservation_wait'] = wait_time[:, i]
+            details['reservation_infeasible'] = infeasible[:, i]
+            yielding = yielding | (coordination[:, i] == 8)
+            yielding_mask[:, i, 0] = yielding
+            targets[:, i, 0] = torch.where(active, actions[:, i, 0], targets[:, i, 0])
+            generation = s.nod_agent_generation[:, i]
+            self.previous[i] = (generation.clone(), yielding.clone(), actions[:, i, 0].clone())
+            self.status[i] = (yielding.clone(), actions[:, i].clone(), details)
+            for key, value in details.items():
+                if key not in diagnostics:
+                    diagnostics[key] = torch.zeros_like(actions[..., :1], dtype=value.dtype)
+                diagnostics[key][:, i, 0] = value
         td.set(('agents', 'action'), actions)
         td.set(('agents', 'rule_controlled'), mask)
         td.set(('agents', 'rule_yielding'), yielding_mask)
@@ -345,7 +369,8 @@ class TestingRulePolicy(nn.Module):
     def save_diagnostics(self, rollout, path):
         """Log every transition, including final steps and pre-reset contacts."""
         fields = ['env', 'step', 't_sec', 'agent', 'generation', 'profile', 'reason',
-                  'blocker', 'ttc', 'all_blocked', 'rear_risk', 'speed_command', 'target_speed', 'actual_speed_next',
+                  'blocker', 'ttc', 'all_blocked', 'rear_risk', 'reservation_wait', 'reservation_infeasible',
+                  'rule_contact', 'speed_command', 'target_speed', 'actual_speed_next',
                   'route_error', 'route_error_next', 'road_contact', 'vehicle_contact',
                   'road_events', 'vehicle_contact_events']
         with open(path, 'w', newline='') as file:
@@ -374,6 +399,10 @@ class TestingRulePolicy(nn.Module):
                             ttc=float(td['agents', 'rule_ttc'][i]),
                             all_blocked=int(td['agents', 'rule_all_blocked'][i]),
                             rear_risk=int(td['agents', 'rule_rear_risk'][i]),
+                            reservation_wait=float(td['agents', 'rule_reservation_wait'][i]),
+                            reservation_infeasible=int(td['agents', 'rule_reservation_infeasible'][i]),
+                            rule_contact=int(td.get(('next', 'agents', 'info', 'testing_rule_contact'),
+                                                    default=torch.zeros(self.scenario.n_agents, dtype=torch.bool))[i]),
                             speed_command=float(td['agents', 'action'][i, 0]),
                             target_speed=float(td['agents', 'rule_target_speed'][i]),
                             actual_speed_next=float(td['next', 'agents', 'info', 'nod_world_vel'][i].norm()),

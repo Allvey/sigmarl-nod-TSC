@@ -15,6 +15,7 @@ from utilities.mappo_cavs import mappo_cavs
 from utilities.constants import SCENARIOS
 from utilities.nod_marl.visualization import opinion_alpha_lines
 from utilities.testing_rule_policy import TestingRulePolicy, assign_rule_vehicles
+from utilities.testing_rule_coordinator import CONTROLLER_VERSION
 
 path = "outputs/dgppo_nod_opinion_gain2_finetune/"  # Match the current from-scratch training output.
 
@@ -68,16 +69,17 @@ try:
             seed=rule_assignment_seed, actor_index=reserved_actor_index)
             if rule_fraction is not None else dict(manual_rule_vehicles))
         if rule_fraction is None:
-            test_output = os.path.join(path, "rule_vehicle_visualization") if rule_vehicles else path
+            test_output = os.path.join(path, "rule_vehicle_visualization", CONTROLLER_VERSION) if rule_vehicles else path
         else:
             mix = "_".join(f"{name}_{rule_profile_weights[name]:g}" for name in rule_profile_weights)
             run_name = (f"{parameters.scenario_type}_fraction_{rule_fraction:g}_{mix}"
-                        f"_seed{rule_assignment_seed}_actor{reserved_actor_index}").replace(".", "p")
+                        f"_seed{rule_assignment_seed}_actor{reserved_actor_index}_{CONTROLLER_VERSION}").replace(".", "p")
             test_output = os.path.join(path, "rule_vehicle_visualization", run_name)
         displayed_roles = {i + 1: profile for i, profile in rule_vehicles.items()}
         print(f"[Rule vehicles] {len(rule_vehicles)}/{parameters.n_agents} "
               f"({len(rule_vehicles) / parameters.n_agents:.1%}): "
               f"{displayed_roles}")
+        print(f"[Test output] {os.path.abspath(test_output)}")
 
         parameters.is_save_simulation_video = True
         parameters.is_visualize_short_term_path = False
@@ -118,7 +120,7 @@ try:
                                                for name in rule_profile_weights} if rule_fraction is not None else None,
                                assignment_seed=rule_assignment_seed if rule_fraction is not None else None,
                                reserved_actor_index=reserved_actor_index if rule_fraction is not None else None,
-                               controller_version="rear_aware_risk_v3",
+                               controller_version=CONTROLLER_VERSION,
                                cruise_speed=rule_cruise_speed, seed=parameters.seed,
                                checkpoint="final" if parameters.is_load_final_model else parameters.model_name),
                           setup_file, indent=2)
