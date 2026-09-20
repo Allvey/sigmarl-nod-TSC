@@ -14,16 +14,18 @@ from utilities.mappo_cavs import mappo_cavs
 
 from utilities.constants import SCENARIOS
 from utilities.nod_marl.visualization import opinion_alpha_lines
-from utilities.testing_rule_policy import TestingRulePolicy
+from utilities.testing_rule_policy import TestingRulePolicy, assign_rule_vehicles
 
 path = "outputs/dgppo_nod_opinion_gain2_finetune/"  # Match the current from-scratch training output.
 
-# 仅用于可视化测试：索引从0开始。下面把车辆2设为中等让行规则车。
-# 可选 yielding（主动让行）、moderate（中等）、non_yielding（不主动让行）。
-# 可同时指定多辆，例如 {1: "yielding", 2: "non_yielding"}；{} 恢复全策略控制。
-rule_vehicles = {1: "moderate"}
+# 比例模式：8辆车、比例0.5时分配4辆规则车；车辆1留给Actor观察NOD。
+# 设为None则使用下方的手动映射；0表示全部Actor，1需要把保留索引设为None。
+rule_fraction = 0.5
+rule_profile_weights = {"yielding": 0.25, "moderate": 0.5, "non_yielding": 0.25}
+rule_assignment_seed = 123  # 仅用于控制类型分配，不改变环境随机种子。
+reserved_actor_index = 0  # 0-based；设为None可选择所有车辆。
+manual_rule_vehicles = {1: "moderate"}  # 仅在rule_fraction=None时使用。
 rule_cruise_speed = 1.0  # m/s，所有类型共用，转弯时适度减速。
-test_output = os.path.join(path, "rule_vehicle_visualization") if rule_vehicles else path
 
 try:
     path_to_json_file = next(
@@ -61,6 +63,21 @@ try:
             # roundabout_1, intersection_1/2/3, CPM_mixed
         )
         parameters.n_agents = SCENARIOS[parameters.scenario_type]["n_agents"]
+        rule_vehicles = (assign_rule_vehicles(
+            parameters.n_agents, rule_fraction, rule_profile_weights,
+            seed=rule_assignment_seed, actor_index=reserved_actor_index)
+            if rule_fraction is not None else dict(manual_rule_vehicles))
+        if rule_fraction is None:
+            test_output = os.path.join(path, "rule_vehicle_visualization") if rule_vehicles else path
+        else:
+            mix = "_".join(f"{name}_{rule_profile_weights[name]:g}" for name in rule_profile_weights)
+            run_name = (f"{parameters.scenario_type}_fraction_{rule_fraction:g}_{mix}"
+                        f"_seed{rule_assignment_seed}_actor{reserved_actor_index}").replace(".", "p")
+            test_output = os.path.join(path, "rule_vehicle_visualization", run_name)
+        displayed_roles = {i + 1: profile for i, profile in rule_vehicles.items()}
+        print(f"[Rule vehicles] {len(rule_vehicles)}/{parameters.n_agents} "
+              f"({len(rule_vehicles) / parameters.n_agents:.1%}): "
+              f"{displayed_roles}")
 
         parameters.is_save_simulation_video = True
         parameters.is_visualize_short_term_path = False
@@ -90,9 +107,17 @@ try:
                                        cruise_speed=rule_cruise_speed)
 
         os.makedirs(test_output, exist_ok=True)
-        if rule_vehicles:
+        if rule_fraction is not None or rule_vehicles:
             with open(os.path.join(test_output, "rule_setup.json"), "w") as setup_file:
                 json.dump(dict(scenario=parameters.scenario_type, vehicles=rule_vehicles,
+                               mode="fraction" if rule_fraction is not None else "manual",
+                               requested_fraction=rule_fraction,
+                               actual_fraction=len(rule_vehicles) / parameters.n_agents,
+                               profile_weights=rule_profile_weights if rule_fraction is not None else None,
+                               profile_counts={name: list(rule_vehicles.values()).count(name)
+                                               for name in rule_profile_weights} if rule_fraction is not None else None,
+                               assignment_seed=rule_assignment_seed if rule_fraction is not None else None,
+                               reserved_actor_index=reserved_actor_index if rule_fraction is not None else None,
                                controller_version="rear_aware_risk_v3",
                                cruise_speed=rule_cruise_speed, seed=parameters.seed,
                                checkpoint="final" if parameters.is_load_final_model else parameters.model_name),

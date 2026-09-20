@@ -1,10 +1,13 @@
 # 可视化测试中的规则车辆
 
-运行 `python main_testing.py`。脚本顶部控制哪些车辆由规则驾驶：
+运行 `python main_testing.py`。脚本顶部按比例配置规则车辆：
 
 ```python
-rule_vehicles = {1: "moderate"}  # 车辆2；索引从0开始
-rule_cruise_speed = 1.0         # 自由行驶目标速度上限，m/s
+rule_fraction = 0.5  # 8辆车时选4辆规则车
+rule_profile_weights = {"yielding": 0.25, "moderate": 0.5, "non_yielding": 0.25}
+rule_assignment_seed = 123
+reserved_actor_index = 0  # 保留车辆1给Actor；索引从0开始
+rule_cruise_speed = 1.0  # 三种规则车共用的自由行驶速度上限，m/s
 ```
 
 类型可选：
@@ -13,7 +16,9 @@ rule_cruise_speed = 1.0         # 自由行驶目标速度上限，m/s
 - `moderate`：中等让行，预测时域 1.0 秒。
 - `non_yielding`：不因邻车主动减速，仍跟踪本车路线、转弯减速。
 
-例如 `{1: "yielding", 2: "non_yielding"}` 同时放入两种规则车；设为 `{}` 恢复全部 Actor 控制。类型绑定到车辆槽位，重生后仍是同种类型，但速度指令和让行状态重新初始化。编号越界或类型错误会报错。
+规则车总数按 `floor(N * rule_fraction + 0.5)` 取整；三种类型的权重必须非负且总和为 1，然后按最大余数法分配这个整数总数。例如 8 辆车、比例 0.5、上述权重，会分配 1 辆 `yielding`、2 辆 `moderate`、1 辆 `non_yielding`。实际比例为 4/8；若比例为 0.3，则取整为 2/8，即实际 25%。独立的 `rule_assignment_seed` 只用于选择槽位和类型，不改变环境的随机序列。相同配置会得到相同分配，分配在一次视频内固定，车辆重生后类型不变，但内部速度与让行状态会重新初始化。
+
+默认保留车辆1给 Actor，以便继续观察其 NOD 意见。若请求的规则车数量超过剩余槽位，会报错；需要 100% 规则车时将 `reserved_actor_index = None`。要恢复全部 Actor，设 `rule_fraction = 0`。要手动指定车辆，设 `rule_fraction = None` 并编辑 `manual_rule_vehicles`，例如 `{1: "yielding", 2: "non_yielding"}`。手动映射 `{}` 也恢复全部 Actor。控制类型仅决定让行响应，三种规则车仍使用相同的巡航速度。
 
 ## 道路跟踪与让行修复
 
@@ -39,16 +44,16 @@ rule_cruise_speed = 1.0         # 自由行驶目标速度上限，m/s
 
 右上角继续显示选定车辆的 NOD 意见/alpha；可用 `visualize_observed_neighbors_agent_index=0` 观察 Actor 车辆1。控制类型不进入 Actor 或 NOD 输入，NOD 在线意见仍根据真实运动更新。
 
-启用规则车时，文件保存到模型目录下的 `rule_vehicle_visualization/`：
+比例模式的文件保存在模型目录下的 `rule_vehicle_visualization/` 的配置子目录中，目录名包括地图、比例、类型权重、分配种子及保留的 Actor 槽位；手动模式仍使用 `rule_vehicle_visualization/`：
 
 - `video.mp4`：可视化视频。
 - `agent_speeds.csv`：全部车辆速度。
-- `rule_setup.json`：地图、规则类型、巡航速度、种子、模型和控制器版本。
+- `rule_setup.json`：请求与实际比例、逐车类型映射、各类型实际数量、巡航速度、两种种子、模型和控制器版本。比例为 0 时也会保存此文件。
 - `rule_diagnostics.csv`：逐步记录每辆规则车的原因、阻挡车辆、预测冲突时间、目标/指令/实际速度、路线偏差、道路及车间接触。
 
 重复运行会覆盖该子目录中的同名文件。旧视频不会因修改代码自动更新，需要重新运行。
 
-诊断 CSV 中 `agent` 和 `blocker` 从 1 编号，`env` 从 0 编号；`generation` 区分车辆重生。`all_blocked` 表示四档候选均有前向预测冲突，`rear_risk` 表示预测存在后方接近风险。`route_error` 对应决策前状态，`route_error_next`、`actual_speed_next` 和接触标志对应动作执行后的状态。`ttc` 为全速候选首次预测冲突时间，无预测冲突时为 `inf`。累计 `road_events` 和 `vehicle_contact_events` 按接触开始计数，同一次持续接触不重复计数；车间计数不区分接触对象。日志包含末步，并使用重生前的接触信息，避免漏计或将别的车辆道路碰撞归到规则车。
+`rule_setup.json` 中的车辆映射键是从 0 开始的槽位索引；画面车辆编号从 1 开始。诊断 CSV 中 `agent` 和 `blocker` 从 1 编号，`env` 从 0 编号；`generation` 区分车辆重生。`all_blocked` 表示四档候选均有前向预测冲突，`rear_risk` 表示预测存在后方接近风险。`route_error` 对应决策前状态，`route_error_next`、`actual_speed_next` 和接触标志对应动作执行后的状态。`ttc` 为全速候选首次预测冲突时间，无预测冲突时为 `inf`。累计 `road_events` 和 `vehicle_contact_events` 按接触开始计数，同一次持续接触不重复计数；车间计数不区分接触对象。日志包含末步，并使用重生前的接触信息，避免漏计或将别的车辆道路碰撞归到规则车。
 
 ## 接入范围与验证
 
@@ -60,9 +65,11 @@ rule_cruise_speed = 1.0         # 自由行驶目标速度上限，m/s
 python -m pytest -q tests/test_testing_rule_policy.py tests/test_nod_visualization.py
 ```
 
-本次验证结果：
+比例分配验证：30 项自动化检查通过；固定种子生成的 4 辆规则车为槽位 1/3/4/7，分别是 `moderate`/`non_yielding`/`moderate`/`yielding`。加载现有模型在 `intersection_2` 完成 79 步混合控制检查，所有动作有限，规则车的 Actor log-prob 被标记为 NaN，其他车辆保持有效。完整可视化入口也已运行：视频可解码，`rule_setup.json` 记录 50% 实际比例和 1/2/1 类型数量，`rule_diagnostics.csv` 包含 4 辆规则车各 1199 步的记录；视频为 1198 帧。此次运行不是多种子性能或安全评估。
 
-- 上述检查 21 项通过，覆盖动作替换、速度历史与重生重置、圆弧跟踪几何、闭环/填充路线、前后车风险、全候选风险比较、交叉减速和逐车接触日志。
+此前单规则车验证结果：
+
+- 单规则车相关检查覆盖动作替换、速度历史与重生重置、圆弧跟踪几何、闭环/填充路线、前后车风险、全候选风险比较、交叉减速和逐车接触日志。
 - `intersection_2` 的 6 条路线，分别以 0.2 和 0.6m/s 初速度进行无邻车干扰测试：12 个案例全部驶出，未发生道路碰撞，最大路线偏差约 0.0203m。
 - 加载现有 `reward7.28`，车辆2为 `moderate`、巡航上限 1.0m/s，在 `intersection_2` 的固定种子完成 1199 步（59.95 秒）混合测试：规则车道路接触事件 0 次、车间接触事件 1 次（约 19.95 秒）、速度低于 0.03m/s 的时间占比约 8.5%，最大路线偏差约 0.0196m。第 248–263 步与第 677–708 步中没有出现对应截图所示的持续停车或车间接触。由于策略动作影响后续轨迹，时间窗口并不保证保留原截图中完全相同的车辆位置和交通状态。
 

@@ -5,7 +5,41 @@ import pytest
 import torch
 from tensordict import TensorDict
 
-from utilities.testing_rule_policy import rule_command, TestingRulePolicy as MixedPolicy
+from utilities.testing_rule_policy import assign_rule_vehicles, rule_command, TestingRulePolicy as MixedPolicy
+
+
+def test_rule_fraction_assignment_has_exact_counts_and_preserves_actor():
+    import random
+    weights={'yielding': .25, 'moderate': .5, 'non_yielding': .25}
+    global_rng=random.getstate()
+    assigned=assign_rule_vehicles(8, .5, weights, seed=123, actor_index=0)
+    assert random.getstate()==global_rng
+    assert len(assigned)==4 and 0 not in assigned
+    assert [list(assigned.values()).count(name) for name in weights]==[1,2,1]
+    assert assigned==assign_rule_vehicles(8, .5, weights, seed=123, actor_index=0)
+    assert assign_rule_vehicles(8, 0, weights, seed=123)=={}
+
+
+def test_rule_fraction_rounding_and_full_rule_population():
+    weights={'yielding': .25, 'moderate': .5, 'non_yielding': .25}
+    assigned=assign_rule_vehicles(8, .3, weights, seed=123)
+    assert len(assigned)==2  # 30% of eight rounds to two slots (25% actual).
+    assert list(assigned.values()).count('moderate')==1
+    all_rule=assign_rule_vehicles(3, 1, weights, seed=123, actor_index=None)
+    assert set(all_rule)=={0,1,2}
+
+
+@pytest.mark.parametrize('n_agents,fraction,weights,seed,actor_index',[
+    (8, -.1, {'yielding': .25, 'moderate': .5, 'non_yielding': .25}, 123, 0),
+    (8, 1.1, {'yielding': .25, 'moderate': .5, 'non_yielding': .25}, 123, 0),
+    (8, 1, {'yielding': .25, 'moderate': .5, 'non_yielding': .25}, 123, 0),
+    (8, .5, {'yielding': .25, 'moderate': .5, 'non_yielding': .24}, 123, 0),
+    (8, .5, {'yielding': .25, 'moderate': .75}, 123, 0),
+    (8, .5, {'yielding': .25, 'moderate': .5, 'non_yielding': .25}, 123, 8),
+])
+def test_rule_fraction_rejects_invalid_setup(n_agents,fraction,weights,seed,actor_index):
+    with pytest.raises(ValueError):
+        assign_rule_vehicles(n_agents,fraction,weights,seed=seed,actor_index=actor_index)
 
 
 def command(profile, distance=.5, neighbor_speed=-.6, was_yielding=False):
@@ -86,6 +120,27 @@ def test_wrapper_changes_only_rule_slots_and_blocks_training():
     s.parameters.is_testing_mode=False
     with pytest.raises(RuntimeError): wrapper(TensorDict({},[1]))
     with pytest.raises(ValueError): MixedPolicy(actor,s,{1:'moderate'})
+
+
+def test_multiple_rule_slots_share_one_actor_call_and_keep_other_slots_intact(tmp_path):
+    import csv
+    actor=DummyActor()
+    wrapper=MixedPolicy(actor,scenario(),{0:'yielding',1:'moderate'})
+    td=wrapper(TensorDict({},[1]))
+    assert actor.calls==1
+    assert td['agents','rule_controlled'][0,:,0].tolist()==[True,True,False]
+    assert torch.isnan(td['agents','sample_log_prob'][0,:2]).all()
+    assert torch.isfinite(td['agents','sample_log_prob'][0,2])
+    assert (td['agents','action'][0,2]==.123).all()
+    td['agents','info','nod_ego_generation']=torch.zeros(1,3,dtype=torch.long)
+    td['next','agents','info','testing_road_contact']=torch.zeros(1,3,dtype=torch.bool)
+    td['next','agents','info','is_collision_with_agents']=torch.zeros(1,3,dtype=torch.bool)
+    td['next','agents','info','testing_route_error']=torch.zeros(1,3)
+    td['next','agents','info','nod_world_vel']=torch.zeros(1,3,2)
+    csv_path=tmp_path/'rules.csv'
+    wrapper.save_diagnostics(torch.stack([td],1),csv_path)
+    rows=list(csv.DictReader(open(csv_path)))
+    assert [row['agent'] for row in rows]==['1','2']
 
 
 @pytest.mark.parametrize('vehicles',[{9:'moderate'},{1:'unknown'}])

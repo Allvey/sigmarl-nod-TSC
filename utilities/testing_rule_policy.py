@@ -1,6 +1,8 @@
 """Visualization-only mixed control; never use these rollouts for PPO."""
 import math
 import csv
+import random
+from numbers import Real
 
 import torch
 from torch import nn
@@ -14,6 +16,43 @@ PROFILES = {
 }
 REASONS = {0: 'clear', 1: 'slow-conflict', 2: 'stop-conflict',
            3: 'ignore-traffic', 4: 'least-risk', 5: 'rear-aware'}
+
+
+def assign_rule_vehicles(n_agents, fraction, profile_weights, *, seed, actor_index=0):
+    """Make one reproducible test-only slot assignment without touching global RNGs."""
+    if not isinstance(n_agents, int) or isinstance(n_agents, bool) or n_agents < 1:
+        raise ValueError('n_agents must be a positive integer')
+    if isinstance(fraction, bool) or not isinstance(fraction, Real) or not math.isfinite(fraction) or not 0 <= fraction <= 1:
+        raise ValueError('rule fraction must be between 0 and 1')
+    if not isinstance(seed, int) or isinstance(seed, bool):
+        raise ValueError('rule assignment seed must be an integer')
+    if actor_index is not None and (not isinstance(actor_index, int) or isinstance(actor_index, bool)
+                                    or not 0 <= actor_index < n_agents):
+        raise ValueError('reserved Actor index is outside the scenario')
+    if not isinstance(profile_weights, dict) or set(profile_weights) != set(PROFILES):
+        raise ValueError(f'rule profile weights must specify exactly {tuple(PROFILES)}')
+    weights = [profile_weights[name] for name in PROFILES]
+    total_weight = sum(weights) if all(isinstance(w, Real) for w in weights) else math.nan
+    if any(isinstance(w, bool) or not isinstance(w, Real) or not math.isfinite(w) or w < 0
+           for w in weights) or not math.isclose(total_weight, 1., rel_tol=0, abs_tol=1e-9):
+        raise ValueError('rule profile weights must be nonnegative and sum to 1')
+    weights = [w / total_weight for w in weights]
+
+    count = math.floor(n_agents * fraction + .5)
+    eligible = [i for i in range(n_agents) if i != actor_index]
+    if count > len(eligible):
+        raise ValueError(f'{count} rule vehicles requested but only {len(eligible)} slots are available; '
+                         'set actor_index=None to allow all vehicles to be rule-controlled')
+
+    expected = [count * w for w in weights]
+    counts = [math.floor(value) for value in expected]
+    for k in sorted(range(len(counts)), key=lambda k: (-(expected[k] - counts[k]), k))[:count - sum(counts)]:
+        counts[k] += 1
+    rng = random.Random(seed)
+    indices = rng.sample(eligible, count)
+    profiles = [name for name, amount in zip(PROFILES, counts) for _ in range(amount)]
+    rng.shuffle(profiles)
+    return dict(sorted(zip(indices, profiles)))
 
 
 def route_geometry(pos, path, lengths=None, loops=None):
