@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 
-CONTROLLER_VERSION = 'coordinated_rules_v4'
+CONTROLLER_VERSION = 'coordinated_rules_v6'
 DEFAULT_RULE_LATERAL_ACCEL = 1.8
 
 
@@ -269,6 +269,20 @@ class RuleCoordinator:
         if not owners and eligible:
             winner = min(eligible, key=lambda i: (-self.requests[env,zone_id,i][1], bounds[i][0]-progress[i], i))
             owners[winner] = int(s.nod_agent_generation[env,winner])
+        # A merge owner may be behind an already aligned car on the exit.
+        # Prevent its token from holding that leader at this zone's entrance.
+        # Share the grant only with a leader of EVERY current owner; crossing
+        # traffic cannot obtain this exemption. Physical reservations still
+        # check all cars, so this grants eligibility, never unconditional motion.
+        relations = self._leader_relations(cars, initial)
+        holders = tuple(owners)
+        if holders:
+            for i in self.indices:
+                if (i not in owners and bounds[i]
+                        and bounds[i][0]-.4 <= progress[i] <= bounds[i][0]
+                        and next_zone[i] == zone_id
+                        and all((i, j) in relations for j in holders)):
+                    owners[i] = int(s.nod_agent_generation[env,i])
         for i in self.indices:
             if bounds[i] and progress[i] <= bounds[i][0] and i not in owners:
                 stop_at = bounds[i][0]-.035
@@ -323,6 +337,65 @@ class RuleCoordinator:
             generated.append(action)
         return np.asarray(trajectory), np.asarray(generated)
 
+    def _gate_allows(self, i, trajectory, cars, initial):
+        if 'stop_at' not in cars[i]:
+            return True
+        limit = max(cars[i]['stop_at']+.008, self._progress(initial[i][0][:2], cars[i]))
+        return not (self._progress(trajectory[1:, :2], cars[i]) > limit+1e-6).any()
+
+    def _repair_joint_wait(self, cars, initial, desired, trajectories, plans):
+        """Replace two limited reservations atomically, only after joint checks.
+
+        Sequential planning can reject each car against the other's terminal
+        stop even though both moving is feasible. Search paired replacements,
+        including their terminal stops, without overriding local Actor yielding
+        or crossing gates. Unrelated reservations remain committed.
+        """
+        limited = [i for i in self.indices if plans[i][0, 0] < desired[i][0]-1e-4]
+        candidates = {}
+        for i in limited:
+            candidates[i] = [(trajectories[i], plans[i])]
+            for fraction, duration in ((1., self.steps-4), (.65, self.steps-4),
+                                      (1., max(1, self.steps//3)), (.3, self.steps-4)):
+                trajectory, commands = self._predict(
+                    initial[i], cars[i], desired=desired[i], fraction=fraction, drive_steps=duration)
+                if self._gate_allows(i, trajectory, cars, initial):
+                    candidates[i].append((trajectory, commands))
+        changed = set()
+        for offset, i in enumerate(limited):
+            for j in limited[offset+1:]:
+                if i in changed or j in changed:
+                    continue
+                if np.linalg.norm(initial[i][0][:2]-initial[j][0][:2]) > 1.5:
+                    continue
+                best = None
+                best_gain = 1e-5
+                for ti, pi in candidates[i]:
+                    for tj, pj in candidates[j]:
+                        if min(pi[0, 0], pj[0, 0]) <= 1e-4:
+                            continue
+                        # Do not rescue one car by newly stopping the other.
+                        if pi[0, 0] < plans[i][0, 0] or pj[0, 0] < plans[j][0, 0]:
+                            continue
+                        if max(pi[0, 0]-plans[i][0, 0], pj[0, 0]-plans[j][0, 0]) < 1e-4:
+                            continue
+                        gain = self.dt*(pi[:, 0].sum()+pj[:, 0].sum()
+                                        -plans[i][:, 0].sum()-plans[j][:, 0].sum())
+                        if gain <= best_gain:
+                            continue
+                        trial = dict(trajectories)
+                        trial.update({i: ti, j: tj})
+                        if not all(self._gate_allows(k, trial[k], cars, initial) for k in self.indices):
+                            continue
+                        if any(swept_conflict(trial[a], trial[b], cars[a]['size'], cars[b]['size'])
+                               for index, a in enumerate(self.indices) for b in self.indices[index+1:]):
+                            continue
+                        best, best_gain = (ti, pi, tj, pj), gain
+                if best is not None:
+                    trajectories[i], plans[i], trajectories[j], plans[j] = best
+                    changed.update((i, j))
+        return changed
+
     def coordinate(self, actions):
         s = self.scenario
         output = actions.clone()
@@ -331,6 +404,11 @@ class RuleCoordinator:
         blocker = torch.full(shape, -1, dtype=torch.long, device=actions.device)
         waiting = actions.new_zeros(shape)
         infeasible = torch.zeros(shape, dtype=torch.bool, device=actions.device)
+        self.last_diagnostics = {
+            'gate_owner': torch.full_like(blocker, -1),
+            'gate_distance': torch.full_like(waiting, float('inf')),
+            'coordination_desired_speed': actions[..., 0].clone(),
+        }
         if len(self.indices) < 2:
             return output, reason, blocker, waiting, infeasible
         for env in range(actions.shape[0]):
@@ -343,6 +421,11 @@ class RuleCoordinator:
                               agent.state.vel[env].detach().cpu().numpy(),
                               float(agent.state.ang_vel[env, 0]) if hasattr(agent.state, 'ang_vel') else 0.)
             self._assign_crossing(env, cars, initial)
+            for i in self.indices:
+                if 'stop_at' in cars[i]:
+                    self.last_diagnostics['gate_owner'][env, i] = cars[i].get('gate_owner', -1)
+                    self.last_diagnostics['gate_distance'][env, i] = float(
+                        cars[i]['stop_at']-self._progress(initial[i][0][:2], cars[i]))
             stop_trajectories, stop_plans = {}, {}
             for i in self.indices:
                 stop_trajectories[i], stop_plans[i] = self._predict(initial[i], cars[i])
@@ -363,12 +446,8 @@ class RuleCoordinator:
                 blocked = [j for j in self.indices if j != i and swept_conflict(
                     trajectory, stop_trajectories[j] if j in pending else trajectories[j],
                     cars[i]['size'], cars[j]['size'])]
-                if 'stop_at' in cars[i]:
-                    # Retained plans also obey today's gate. A plan that was
-                    # allowed yesterday cannot bypass a changed crossing grant.
-                    limit = max(cars[i]['stop_at']+.008, self._progress(initial[i][0][:2], cars[i]))
-                    if (self._progress(trajectory[1:,:2], cars[i]) > limit+1e-6).any():
-                        blocked.append(-2)
+                if not self._gate_allows(i, trajectory, cars, initial):
+                    blocked.append(-2)
                 return blocked
 
             # A respawn can invalidate old reservations. Start again with stop
@@ -380,6 +459,7 @@ class RuleCoordinator:
             # Existing motion gets a short commitment and waiting age resolves
             # crossing ties, but a same-lane leader always precedes its rear car.
             order = self._priority_order(cars, initial, ages, plans)
+            previous_ages = dict(ages)
             pending = set(order)
             for i in order:
                 pending.remove(i)
@@ -411,6 +491,17 @@ class RuleCoordinator:
                     reason[env, i] = 9
                 blocker[env, i] = first_blocker if limited or invalid else -1
                 ages[i] = ages[i]+self.dt if limited else max(0., ages[i]-self.dt)
+                waiting[env, i] = ages[i]
+                self.ages[env, i] = ages[i]
+                self.plans[env, i] = (int(s.nod_agent_generation[env, i]), plans[i].copy())
+            desired_all = {i: actions[env, i].detach().cpu().numpy() for i in self.indices}
+            repaired = self._repair_joint_wait(cars, initial, desired_all, trajectories, plans)
+            for i in repaired:
+                output[env, i] = torch.as_tensor(plans[i][0], device=actions.device, dtype=actions.dtype)
+                reason[env, i] = 10
+                blocker[env, i] = -1
+                limited = plans[i][0, 0] < desired_all[i][0]-1e-4
+                ages[i] = previous_ages[i]+self.dt if limited else max(0., previous_ages[i]-self.dt)
                 waiting[env, i] = ages[i]
                 self.ages[env, i] = ages[i]
                 self.plans[env, i] = (int(s.nod_agent_generation[env, i]), plans[i].copy())

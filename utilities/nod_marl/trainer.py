@@ -326,6 +326,8 @@ class NODOpinionManager:
             safe_distance=float(getattr(self.parameters, "nod_safe_distance", 0.25)),
             label_slope=float(getattr(self.parameters, "nod_label_slope", 12.0)),
             label_margin=float(getattr(self.parameters, "nod_label_margin", 0.02)),
+            mode=getattr(self.parameters, "nod_label_mode", "instantaneous"),
+            reference_seconds=float(getattr(self.parameters, "nod_reference_seconds", 2.0)),
         )
 
         batch_size, time_steps = pair_features.shape[:2]
@@ -519,6 +521,12 @@ class NODOpinionManager:
             "expired_edges": float(outputs["expired_edges"]),
         }
         self.last_metrics = metrics
+        if bool(calibration_valid.any()):
+            metrics['label_positive_ratio'] = float((valid_label > .5).float().mean())
+            metrics['label_neutral_ratio'] = float((valid_label == .5).float().mean())
+        if 'reference_active' in labels:
+            metrics['label_reference_active_ratio'] = float(
+                labels['reference_active'][edge_mask].float().mean()) if bool(edge_mask.any()) else 0.
         return metrics
 
     def checkpoint_state(self) -> Dict:

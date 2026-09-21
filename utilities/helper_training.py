@@ -787,6 +787,8 @@ class Parameters:
         nod_safe_distance: float = 0.25,
         nod_label_slope: float = 12.0,
         nod_label_margin: float = 0.02,
+        nod_label_mode: str = "instantaneous",
+        nod_reference_seconds: float = 2.0,
         nod_nll_weight: float = 1.0,
         nod_calibration_weight: float = 1.0,
         nod_max_grad_norm: float = 1.0,
@@ -1191,6 +1193,12 @@ class Parameters:
         self.nod_safe_distance = nod_safe_distance
         self.nod_label_slope = nod_label_slope
         self.nod_label_margin = nod_label_margin
+        if nod_label_mode not in {"instantaneous", "interaction"}:
+            raise ValueError("nod_label_mode must be instantaneous or interaction")
+        if not 0 < nod_reference_seconds < float("inf"):
+            raise ValueError("nod_reference_seconds must be positive and finite")
+        self.nod_label_mode = nod_label_mode
+        self.nod_reference_seconds = nod_reference_seconds
         self.nod_nll_weight = nod_nll_weight
         self.nod_calibration_weight = nod_calibration_weight
         self.nod_max_grad_norm = nod_max_grad_norm

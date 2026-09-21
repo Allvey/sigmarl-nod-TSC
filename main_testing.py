@@ -17,7 +17,7 @@ from utilities.nod_marl.visualization import opinion_alpha_lines
 from utilities.testing_rule_policy import TestingRulePolicy, assign_rule_vehicles
 from utilities.testing_rule_coordinator import CONTROLLER_VERSION
 
-path = "outputs/dgppo_nod_opinion_gain2_finetune/"  # Match the current from-scratch training output.
+path = "outputs/dgppo_nod_interaction_finetune/"  # Match the current from-scratch training output.
 
 # 比例模式：8辆车、比例0.5时分配4辆规则车；车辆1留给Actor观察NOD。
 # 设为None则使用下方的手动映射；0表示全部Actor，1需要把保留索引设为None。

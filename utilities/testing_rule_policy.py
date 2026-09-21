@@ -18,7 +18,8 @@ PROFILES = {
 }
 REASONS = {0: 'clear', 1: 'slow-conflict', 2: 'stop-conflict',
            3: 'ignore-traffic', 4: 'least-risk', 5: 'rear-aware',
-           7: 'reserved-go', 8: 'reservation-wait', 9: 'keep-reservation'}
+           7: 'reserved-go', 8: 'reservation-wait', 9: 'keep-reservation',
+           10: 'joint-reserved-go'}
 
 
 def assign_rule_vehicles(n_agents, fraction, profile_weights, *, seed, actor_index=0):
@@ -336,6 +337,8 @@ class TestingRulePolicy(nn.Module):
             details['blocker'] = torch.where(active & (blocking[:, i] >= 0), blocking[:, i], details['blocker'])
             details['reservation_wait'] = wait_time[:, i]
             details['reservation_infeasible'] = infeasible[:, i]
+            for key, values in self.coordinator.last_diagnostics.items():
+                details[key] = values[:, i]
             yielding = yielding | (coordination[:, i] == 8)
             yielding_mask[:, i, 0] = yielding
             targets[:, i, 0] = torch.where(active, actions[:, i, 0], targets[:, i, 0])
@@ -370,12 +373,19 @@ class TestingRulePolicy(nn.Module):
                 who = f'A{blocker+1}' if blocker >= 0 else '-'
                 lines.append(f'A{i+1}: {profile} | {state} {who} | v={float(action[env_index,0]):.2f}')
                 lines.append(f'  route error={float(details["error"][env_index]):.3f}m')
+                gate_distance = float(details['gate_distance'][env_index])
+                if math.isfinite(gate_distance):
+                    owner = int(details['gate_owner'][env_index])
+                    who_gate = f'A{owner+1}' if owner >= 0 else 'no owner'
+                    lines.append(f'  gate={who_gate} distance={gate_distance:.3f}m '
+                                 f'desired={float(details["coordination_desired_speed"][env_index]):.2f}')
         return lines
 
     def save_diagnostics(self, rollout, path):
         """Log every transition, including final steps and pre-reset contacts."""
         fields = ['env', 'step', 't_sec', 'agent', 'generation', 'profile', 'reason',
                   'blocker', 'ttc', 'all_blocked', 'rear_risk', 'reservation_wait', 'reservation_infeasible',
+                  'gate_owner', 'gate_distance', 'coordination_desired_speed',
                   'rule_contact', 'curvature', 'cruise_limit', 'speed_command', 'target_speed', 'actual_speed_next',
                   'route_error', 'route_error_next', 'road_contact', 'vehicle_contact',
                   'road_events', 'vehicle_contact_events']
@@ -407,6 +417,9 @@ class TestingRulePolicy(nn.Module):
                             rear_risk=int(td['agents', 'rule_rear_risk'][i]),
                             reservation_wait=float(td['agents', 'rule_reservation_wait'][i]),
                             reservation_infeasible=int(td['agents', 'rule_reservation_infeasible'][i]),
+                            gate_owner=int(td['agents', 'rule_gate_owner'][i])+1,
+                            gate_distance=float(td['agents', 'rule_gate_distance'][i]),
+                            coordination_desired_speed=float(td['agents', 'rule_coordination_desired_speed'][i]),
                             rule_contact=int(td.get(('next', 'agents', 'info', 'testing_rule_contact'),
                                                     default=torch.zeros(self.scenario.n_agents, dtype=torch.bool))[i]),
                             curvature=float(td['agents', 'rule_curvature'][i]),

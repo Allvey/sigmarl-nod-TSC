@@ -123,6 +123,90 @@ def test_generation_change_discards_old_grant_and_wait_age():
     assert waiting[0,0]==0
 
 
+def _joint_wait_scene():
+    scene = make_scene([[0., 0.], [.28, 0.]], [0., 0.],
+                       [[[-1., 0.], [2., 0.]], [[-1., 0.], [2., 0.]]])
+    coordinator = RuleCoordinator(scene, {0: 'moderate', 1: 'moderate'})
+    cars = {i: coordinator._vehicle(i, 0) for i in coordinator.indices}
+    initial = {i: (poses(scene)[i], np.zeros(2), 0.) for i in coordinator.indices}
+    trajectories, plans = {}, {}
+    for i in coordinator.indices:
+        trajectories[i], plans[i] = coordinator._predict(initial[i], cars[i])
+    desired = {i: np.array([.6, 0.]) for i in coordinator.indices}
+    return coordinator, cars, initial, desired, trajectories, plans
+
+
+def test_joint_replacement_moves_queue_without_colliding_with_terminal_stops():
+    coordinator, cars, initial, desired, trajectories, plans = _joint_wait_scene()
+    # The rear proposal is blocked by the front car's provisional stop.
+    rear, _ = coordinator._predict(initial[0], cars[0], desired=desired[0],
+                                   drive_steps=coordinator.steps-4)
+    assert swept_conflict(rear, trajectories[1], cars[0]['size'], cars[1]['size'])
+    changed = coordinator._repair_joint_wait(cars, initial, desired, trajectories, plans)
+    assert changed == {0, 1}
+    assert all(plans[i][0, 0] > .5 for i in changed)
+    assert not swept_conflict(trajectories[0], trajectories[1], cars[0]['size'], cars[1]['size'])
+    assert all(np.all(plans[i][-4:] == 0) for i in changed)
+
+
+def test_joint_replacement_cannot_override_closed_crossing_gates():
+    coordinator, cars, initial, desired, trajectories, plans = _joint_wait_scene()
+    before = {i: plan.copy() for i, plan in plans.items()}
+    for i in coordinator.indices:
+        cars[i]['stop_at'] = coordinator._progress(initial[i][0][:2], cars[i])
+    assert not coordinator._repair_joint_wait(cars, initial, desired, trajectories, plans)
+    for i in coordinator.indices:
+        np.testing.assert_array_equal(plans[i], before[i])
+
+
+def test_joint_replacement_does_not_override_local_stop_for_actor():
+    coordinator, cars, initial, desired, trajectories, plans = _joint_wait_scene()
+    desired[1][0] = 0.
+    assert not coordinator._repair_joint_wait(cars, initial, desired, trajectories, plans)
+    assert plans[1][0, 0] == 0
+
+
+def test_joint_replacement_checks_other_reserved_vehicles():
+    coordinator, cars, initial, desired, trajectories, plans = _joint_wait_scene()
+    # A stationary third rule occupies the front car's proposed path.
+    coordinator.indices.append(2)
+    cars[2] = dict(cars[1])
+    initial[2] = (np.array([.65, 0., 0.]), np.zeros(2), 0.)
+    trajectories[2], plans[2] = coordinator._predict(initial[2], cars[2])
+    desired[2] = np.zeros(2)
+    old = plans[2].copy()
+    coordinator._repair_joint_wait(cars, initial, desired, trajectories, plans)
+    np.testing.assert_array_equal(plans[2], old)
+    for i in range(3):
+        for j in range(i+1, 3):
+            assert not swept_conflict(trajectories[i], trajectories[j], cars[i]['size'], cars[j]['size'])
+
+
+@pytest.mark.parametrize('crossing_holder', [False, True])
+def test_merge_token_allows_aligned_leader_to_clear_but_not_crossing_traffic(crossing_holder):
+    follower_path = [[-.28, -1.], [-.28, 2.]] if crossing_holder else [[-1., 0.], [2., 0.]]
+    scene = make_scene([[0., 0.], [-.28, 0.]], [0., np.pi/2 if crossing_holder else 0.],
+                       [[[-1., 0.], [2., 0.]], follower_path])
+    scene.ref_paths_agent_related.path_id = torch.tensor([[0, 1]])
+    coordinator = RuleCoordinator(scene, {0: 'moderate', 1: 'moderate'})
+    # A broad zone on the joining route is already occupied by the rear car,
+    # while its shared-exit leader has not yet crossed that route's entry bound.
+    coordinator.zones = {0: {0: (1.05, 1.5), 1: (.7, 1.4)}}
+    cars = {i: coordinator._vehicle(i, 0) for i in [0, 1]}
+    initial = {i: (poses(scene)[i], np.zeros(2), 0.) for i in [0, 1]}
+    coordinator._assign_crossing(0, cars, initial)
+    assert 1 in coordinator.owners[0, 0]
+    if crossing_holder:
+        assert 0 not in coordinator.owners[0, 0]
+        assert 'stop_at' in cars[0]
+    else:
+        assert 0 in coordinator.owners[0, 0]
+        assert 'stop_at' not in cars[0]
+        commands, _, _, _, infeasible = coordinator.coordinate(torch.tensor([[[.6, 0.], [.6, 0.]]]))
+        assert commands[0, 0, 0] > 0
+        assert not infeasible.any()
+
+
 def test_crossing_grant_is_exclusive_and_both_queues_eventually_clear():
     s=make_scene([[-.45,0.],[0.,-.45]], [0.,np.pi/2],
                  [[[-1.,0.],[2.,0.]],[[0.,-1.],[0.,2.]]])
