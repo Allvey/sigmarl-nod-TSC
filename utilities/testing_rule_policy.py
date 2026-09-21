@@ -7,7 +7,7 @@ from numbers import Real
 import torch
 from torch import nn
 
-from utilities.testing_rule_coordinator import RuleCoordinator
+from utilities.testing_rule_coordinator import RuleCoordinator, DEFAULT_RULE_LATERAL_ACCEL
 
 
 # Physical profiles: same path tracker/cruise speed; only interaction response differs.
@@ -107,7 +107,8 @@ def rule_command(pos, yaw, speed, path, neighbor_pos, neighbor_vel, *, profile,
                  cruise_speed, steering_limit, wheelbase, sensing_range, dt,
                  was_yielding, lengths=None, loops=None, rear_length=None,
                  measured_speed=None, lookahead=0.16, acceleration=1.2, braking=2.0,
-                 neighbor_yaw=None, body_length=0.16, body_width=0.08, return_details=False):
+                 neighbor_yaw=None, body_length=0.16, body_width=0.08, return_details=False,
+                 lateral_accel_limit=DEFAULT_RULE_LATERAL_ACCEL):
     """Centre-consistent path tracking and route-based local speed selection.
 
     No neighbor routes, roles or opinions are read. Candidate speeds are tested
@@ -134,7 +135,7 @@ def rule_command(pos, yaw, speed, path, neighbor_pos, neighbor_vel, *, profile,
     offset = torch.stack([r[4] for r in routes])
     error = offset.norm(dim=-1)
     cruise = torch.minimum(pos.new_full((len(routes),), cruise_speed),
-                           (0.60 / curvature.clamp_min(.01)).sqrt())
+                           (lateral_accel_limit / curvature.clamp_min(.01)).sqrt())
     cruise = cruise / (1 + 8 * error)
     cfg = PROFILES[profile]
     times = torch.linspace(0., cfg['horizon'], 31, device=pos.device, dtype=pos.dtype)
@@ -227,7 +228,7 @@ def rule_command(pos, yaw, speed, path, neighbor_pos, neighbor_vel, *, profile,
     else:
         ttc = pos.new_full((len(routes),), torch.inf)
         neighbor = torch.full((len(routes),), -1, device=pos.device, dtype=torch.long)
-    details = dict(error=error, curvature=curvature, blocker=neighbor, ttc=ttc,
+    details = dict(error=error, curvature=curvature, cruise_limit=cruise, blocker=neighbor, ttc=ttc,
                    reason=reason, all_blocked=all_blocked, rear_risk=rear_risk.any(dim=-1).any(dim=-1).any(dim=-1))
     result = (torch.stack([command_speed, steering], -1), yielding, target_speed)
     return (*result, details) if return_details else result
@@ -240,7 +241,8 @@ class TestingRulePolicy(nn.Module):
     hysteresis. The action tensor stores the actually executed mixed actions.
     Rule-slot Actor log probabilities are invalidated, not presented as PPO data.
     """
-    def __init__(self, policy, scenario, vehicles, *, cruise_speed=0.6):
+    def __init__(self, policy, scenario, vehicles, *, cruise_speed=0.6,
+                 lateral_accel_limit=DEFAULT_RULE_LATERAL_ACCEL):
         super().__init__()
         self.policy = policy
         self.scenario = scenario
@@ -257,10 +259,13 @@ class TestingRulePolicy(nn.Module):
             if profile not in PROFILES:
                 raise ValueError(f'Unknown rule profile {profile}; choose from {tuple(PROFILES)}')
         self.cruise_speed = cruise_speed
+        if not math.isfinite(lateral_accel_limit) or lateral_accel_limit <= 0:
+            raise ValueError('Rule lateral acceleration limit must be positive and finite')
+        self.lateral_accel_limit = lateral_accel_limit
         self.previous = {}
         self.neighbor_history = {}
         self.status = {}
-        self.coordinator = RuleCoordinator(scenario, self.vehicles)
+        self.coordinator = RuleCoordinator(scenario, self.vehicles, lateral_accel_limit=lateral_accel_limit)
         scenario.testing_rule_profiles = self.vehicles
 
     @torch.no_grad()
@@ -304,6 +309,7 @@ class TestingRulePolicy(nn.Module):
                 neighbor_yaw=torch.stack([s.world.agents[j].state.rot.squeeze(-1) for j in other], -1)
                     if other else pos.new_empty((pos.shape[0], 0)),
                 profile=profile, cruise_speed=self.cruise_speed,
+                lateral_accel_limit=self.lateral_accel_limit,
                 steering_limit=float(s.max_steering_angle),
                 wheelbase=agent.dynamics.l_f + agent.dynamics.l_r,
                 sensing_range=s.parameters.nod_sensing_range, dt=s.parameters.dt,
@@ -370,7 +376,7 @@ class TestingRulePolicy(nn.Module):
         """Log every transition, including final steps and pre-reset contacts."""
         fields = ['env', 'step', 't_sec', 'agent', 'generation', 'profile', 'reason',
                   'blocker', 'ttc', 'all_blocked', 'rear_risk', 'reservation_wait', 'reservation_infeasible',
-                  'rule_contact', 'speed_command', 'target_speed', 'actual_speed_next',
+                  'rule_contact', 'curvature', 'cruise_limit', 'speed_command', 'target_speed', 'actual_speed_next',
                   'route_error', 'route_error_next', 'road_contact', 'vehicle_contact',
                   'road_events', 'vehicle_contact_events']
         with open(path, 'w', newline='') as file:
@@ -403,6 +409,8 @@ class TestingRulePolicy(nn.Module):
                             reservation_infeasible=int(td['agents', 'rule_reservation_infeasible'][i]),
                             rule_contact=int(td.get(('next', 'agents', 'info', 'testing_rule_contact'),
                                                     default=torch.zeros(self.scenario.n_agents, dtype=torch.bool))[i]),
+                            curvature=float(td['agents', 'rule_curvature'][i]),
+                            cruise_limit=float(td['agents', 'rule_cruise_limit'][i]),
                             speed_command=float(td['agents', 'action'][i, 0]),
                             target_speed=float(td['agents', 'rule_target_speed'][i]),
                             actual_speed_next=float(td['next', 'agents', 'info', 'nod_world_vel'][i].norm()),

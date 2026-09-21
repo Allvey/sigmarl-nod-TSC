@@ -11,7 +11,7 @@ import torch
 from utilities.helper_training import SaveData
 from utilities.mappo_cavs import mappo_cavs
 from utilities.testing_rule_policy import TestingRulePolicy, assign_rule_vehicles
-from utilities.testing_rule_coordinator import CONTROLLER_VERSION
+from utilities.testing_rule_coordinator import CONTROLLER_VERSION, DEFAULT_RULE_LATERAL_ACCEL
 
 
 def main():
@@ -19,11 +19,15 @@ def main():
     parser.add_argument('--fraction', type=float, default=1.)
     parser.add_argument('--seeds', type=int, nargs='+', default=[123])
     parser.add_argument('--steps', type=int, default=1200)
+    parser.add_argument('--lateral-accel-limit', type=float, default=DEFAULT_RULE_LATERAL_ACCEL)
+    parser.add_argument('--max-stop-seconds', type=float, default=15.,
+                        help='Flag a continuous low-speed interval; this is a stall alarm, not a deadlock proof')
     parser.add_argument('--checkpoint', default='outputs/dgppo_nod_opinion_gain2_finetune')
     parser.add_argument('--output', default='outputs/rule_coordination_checks')
     args = parser.parse_args()
     checkpoint = Path(args.checkpoint)
     source = next(checkpoint.glob('*.json'))
+    failures = []
     for seed in args.seeds:
         p = SaveData.from_dict(json.loads(source.read_text())).parameters
         p.where_to_save = str(checkpoint)+'/'
@@ -47,7 +51,8 @@ def main():
         assignment = assign_rule_vehicles(8, args.fraction,
             {'yielding': .25, 'moderate': .5, 'non_yielding': .25},
             seed=123, actor_index=None if args.fraction == 1 else 0)
-        policy = TestingRulePolicy(actor, env.scenario, assignment, cruise_speed=1.)
+        policy = TestingRulePolicy(actor, env.scenario, assignment, cruise_speed=1.,
+                                   lateral_accel_limit=args.lateral_accel_limit)
         def progress(env, td):
             step=int(env.scenario.timer.step[0])
             if step % 200 == 0:
@@ -57,10 +62,11 @@ def main():
                               break_when_any_done=False, is_save_simulation_video=False)
         if isinstance(rollout, tuple):
             rollout = rollout[0]
-        folder = Path(args.output)/f'{CONTROLLER_VERSION}_fraction{args.fraction:g}_seed{seed}'
+        folder = Path(args.output)/f'{CONTROLLER_VERSION}_fraction{args.fraction:g}_seed{seed}_lat{args.lateral_accel_limit:g}'
         folder.mkdir(parents=True, exist_ok=True)
         policy.save_diagnostics(rollout, folder/'rule_diagnostics.csv')
-        report = dict(seed=seed, fraction=args.fraction, steps=args.steps, vehicles={})
+        report = dict(seed=seed, fraction=args.fraction, steps=args.steps,
+                      lateral_accel_limit=args.lateral_accel_limit, vehicles={})
         for i, profile in assignment.items():
             contacts = rollout['next','agents','info','testing_rule_contact'][0,:,i].bool()
             generation = rollout['agents','info','nod_ego_generation'][0,:,i]
@@ -75,11 +81,18 @@ def main():
                 longest = max(longest, run)
             report['vehicles'][i+1] = dict(profile=profile, rule_contact_events=int(events.sum()),
                 max_stop_seconds=longest*p.dt, mean_speed=float(speed.mean()),
+                max_route_error=float(rollout['next','agents','info','testing_route_error'][0,:,i].max()),
                 infeasible_steps=int(rollout['agents','rule_reservation_infeasible'][0,:,i].sum()),
                 road_contact_steps=int(rollout['next','agents','info','testing_road_contact'][0,:,i].sum()))
         (folder/'summary.json').write_text(json.dumps(report, indent=2)+'\n')
         print(json.dumps(report), flush=True)
+        for i, metrics in report['vehicles'].items():
+            if (metrics['rule_contact_events'] or metrics['infeasible_steps'] or metrics['road_contact_steps']
+                    or metrics['max_stop_seconds'] > args.max_stop_seconds):
+                failures.append(f'seed={seed}, agent={i}: {metrics}')
         env.close()
+    if failures:
+        raise SystemExit('Rule coordination validation failed:\n'+'\n'.join(failures))
 
 
 if __name__ == '__main__':

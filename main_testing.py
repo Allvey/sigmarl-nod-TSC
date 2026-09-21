@@ -27,6 +27,7 @@ rule_assignment_seed = 123  # 仅用于控制类型分配，不改变环境随�
 reserved_actor_index = 0  # 0-based；设为None可选择所有车辆。
 manual_rule_vehicles = {1: "moderate"}  # 仅在rule_fraction=None时使用。
 rule_cruise_speed = 1.0  # m/s，所有类型共用，转弯时适度减速。
+rule_lateral_accel_limit = 1.8  # 弯道限速参数；原值0.6。路径控制和预约预测共用。
 
 try:
     path_to_json_file = next(
@@ -106,7 +107,8 @@ try:
         env, policy, priority_module, parameters = mappo_cavs(parameters=parameters)
         if rule_vehicles:
             policy = TestingRulePolicy(policy, env.scenario, rule_vehicles,
-                                       cruise_speed=rule_cruise_speed)
+                                       cruise_speed=rule_cruise_speed,
+                                       lateral_accel_limit=rule_lateral_accel_limit)
 
         os.makedirs(test_output, exist_ok=True)
         if rule_fraction is not None or rule_vehicles:
@@ -121,7 +123,8 @@ try:
                                assignment_seed=rule_assignment_seed if rule_fraction is not None else None,
                                reserved_actor_index=reserved_actor_index if rule_fraction is not None else None,
                                controller_version=CONTROLLER_VERSION,
-                               cruise_speed=rule_cruise_speed, seed=parameters.seed,
+                               cruise_speed=rule_cruise_speed, lateral_accel_limit=rule_lateral_accel_limit,
+                               seed=parameters.seed,
                                checkpoint="final" if parameters.is_load_final_model else parameters.model_name),
                           setup_file, indent=2)
         speed_log_f = None

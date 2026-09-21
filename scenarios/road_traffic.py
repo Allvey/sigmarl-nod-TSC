@@ -1308,6 +1308,9 @@ class ScenarioRoadTraffic(BaseScenario):
         initial state buffer if it is used. Otherwise, it randomly generates initial states ensuring they
         are feasible and do not collide with other agents.
         """
+        # Single-agent respawns pass a scalar tensor. Dictionary membership uses
+        # object hashing for tensors, so normalize before checking rule roles.
+        i_agent = int(i_agent)
         if is_use_state_buffer:
             path_id = initial_state[i_agent, self.state_buffer.idx_path].int()
             ref_path = ref_paths_scenario[path_id]

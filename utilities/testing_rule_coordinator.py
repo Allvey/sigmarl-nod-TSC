@@ -9,7 +9,8 @@ import numpy as np
 import torch
 
 
-CONTROLLER_VERSION = 'coordinated_rules_v2'
+CONTROLLER_VERSION = 'coordinated_rules_v4'
+DEFAULT_RULE_LATERAL_ACCEL = 1.8
 
 
 def swept_conflict(a, b, size_a, size_b, margin=.012):
@@ -59,8 +60,11 @@ def bicycle_step(state, velocity, angular_velocity, action, *, dt, lf, lr,
 
 
 class RuleCoordinator:
-    def __init__(self, scenario, vehicles, horizon=1.2):
+    def __init__(self, scenario, vehicles, horizon=1.2, *, lateral_accel_limit=DEFAULT_RULE_LATERAL_ACCEL):
+        if not np.isfinite(lateral_accel_limit) or lateral_accel_limit <= 0:
+            raise ValueError('Rule lateral acceleration limit must be positive and finite')
         self.scenario = scenario
+        self.lateral_accel_limit = float(lateral_accel_limit)
         self.indices = sorted(vehicles)
         self.dt = float(scenario.parameters.dt)
         self.steps = max(8, int(np.ceil(horizon/self.dt)))
@@ -140,24 +144,93 @@ class RuleCoordinator:
                     steering_limit=float(s.max_steering_angle))
 
     @staticmethod
-    def _progress(position, car):
+    def _project_to_route(position, car):
+        """Return route progress, lateral error, and local tangent."""
+        position = np.asarray(position)[..., None, :]
         along = np.clip(((position-car['path'][:-1])*car['tangents']).sum(-1), 0, car['lengths'])
-        index = np.argmin(((car['path'][:-1]+along[:, None]*car['tangents']-position)**2).sum(-1))
-        return car['arc'][index]+along[index]
+        projected = car['path'][:-1] + along[..., None]*car['tangents']
+        squared_error = ((projected-position)**2).sum(-1)
+        index = np.argmin(squared_error, axis=-1)
+        selected = np.expand_dims(index, -1)
+        progress = car['arc'][index] + np.take_along_axis(along, selected, axis=-1)[..., 0]
+        error = np.sqrt(np.take_along_axis(squared_error, selected, axis=-1)[..., 0])
+        return progress, error, car['tangents'][index]
+
+    @classmethod
+    def _progress(cls, position, car):
+        return cls._project_to_route(position, car)[0]
+
+    def _leader_relations(self, cars, initial):
+        """Find same-lane leaders that must be planned before their followers.
+
+        Paths through an intersection can differ before merging but share the
+        same exit.  Projecting the follower onto the leader's route recognizes
+        that shared section without treating perpendicular crossing traffic as
+        a queue.  The distance bound keeps unrelated parallel lanes separate.
+        """
+        relations = set()
+        for leader in self.indices:
+            leader_state = initial[leader][0]
+            leader_progress, leader_error, leader_tangent = self._project_to_route(
+                leader_state[:2], cars[leader])
+            leader_heading = np.array([np.cos(leader_state[2]), np.sin(leader_state[2])])
+            if leader_error > .08 or leader_heading @ leader_tangent < .5:
+                continue
+            for follower in self.indices:
+                if follower == leader:
+                    continue
+                follower_state = initial[follower][0]
+                follower_progress, follower_error, follower_tangent = self._project_to_route(
+                    follower_state[:2], cars[leader])
+                follower_heading = np.array([np.cos(follower_state[2]), np.sin(follower_state[2])])
+                gap = float(leader_progress-follower_progress)
+                same_direction = (leader_heading @ follower_heading > .6
+                                  and follower_heading @ follower_tangent > .5)
+                lane_tolerance = .5*(cars[leader]['size'][1]+cars[follower]['size'][1])+.025
+                if same_direction and follower_error <= lane_tolerance and .04 < gap < .9:
+                    relations.add((leader, follower))
+        return relations
+
+    def _priority_order(self, cars, initial, ages, plans):
+        """Fair reservation order with hard leader-before-follower precedence."""
+        base_key = lambda i: (-(ages[i]+(.5 if plans[i][0, 0] > .05 else 0.)), i)
+        predecessors = {i: set() for i in self.indices}
+        for leader, follower in self._leader_relations(cars, initial):
+            predecessors[follower].add(leader)
+        remaining = set(self.indices)
+        order = []
+        while remaining:
+            available = [i for i in remaining if not (predecessors[i] & remaining)]
+            # Numerical projection ambiguity can create a cycle.  In that rare
+            # case fall back to the established fair order for one vehicle.
+            chosen = min(available or list(remaining), key=base_key)
+            order.append(chosen)
+            remaining.remove(chosen)
+        return order
 
     def _assign_crossing(self, env, cars, initial):
         """Independent geometric crossing grants, retained until the rear clears."""
+        # Do not hold a downstream grant while still waiting for an upstream
+        # crossing. This can block the very vehicle needed to clear our queue.
+        next_zone = {}
+        for i in self.indices:
+            path_id = int(self.scenario.ref_paths_agent_related.path_id[env,i]) if self.zones else -1
+            progress = self._progress(initial[i][0][:2], cars[i])
+            ahead = [(bounds[path_id][0], zone_id) for zone_id, bounds in self.zones.items()
+                     if path_id in bounds and progress <= bounds[path_id][1]]
+            next_zone[i] = min(ahead)[1] if ahead else None
         for zone_id, bounds in self.zones.items():
-            self._assign_zone(env, zone_id, bounds, cars, initial)
+            self._assign_zone(env, zone_id, bounds, cars, initial, next_zone)
 
-    def _assign_zone(self, env, zone_id, zone_bounds, cars, initial):
+    def _assign_zone(self, env, zone_id, zone_bounds, cars, initial, next_zone):
         s = self.scenario
         progress = {i: self._progress(initial[i][0][:2], cars[i]) for i in self.indices}
         bounds = {i: zone_bounds.get(int(s.ref_paths_agent_related.path_id[env,i])) for i in self.indices}
         owners = self.owners.setdefault((env,zone_id), {})
         for i in list(owners):
             if (owners[i] != int(s.nod_agent_generation[env,i]) or bounds[i] is None
-                    or progress[i] > bounds[i][1]):
+                    or progress[i] > bounds[i][1]
+                    or (progress[i] < bounds[i][0] and next_zone[i] != zone_id)):
                 del owners[i]
         # Support existing cars already in the junction when wrapping a live
         # scenario; admission remains closed until every occupant has cleared.
@@ -172,7 +245,7 @@ class RuleCoordinator:
                 self.requests.pop(key, None)
                 continue
             entry = bounds[i][0]
-            if progress[i] >= entry-.4:
+            if next_zone[i] == zone_id and progress[i] >= entry-.4:
                 old = self.requests.get(key)
                 if old is None or old[0] != generation:
                     self.requests[key] = (generation, 0.)
@@ -233,7 +306,7 @@ class RuleCoordinator:
                 steering = desired[1] if step == 0 else self._steering(state, car)
                 curvature = abs(np.cos(np.arctan(np.tan(steering)*car['lr']/(car['lf']+car['lr'])))
                                 *np.tan(steering)/(car['lf']+car['lr']))
-                target = min(desired[0]*fraction, np.sqrt(.6/max(curvature, .01)))
+                target = min(desired[0]*fraction, np.sqrt(self.lateral_accel_limit/max(curvature, .01)))
                 # First command already includes the local comfort limiter.
                 speed = target if step == 0 else min(target, speed+1.2*self.dt)
                 if 'stop_at' in car:
@@ -270,7 +343,9 @@ class RuleCoordinator:
                               agent.state.vel[env].detach().cpu().numpy(),
                               float(agent.state.ang_vel[env, 0]) if hasattr(agent.state, 'ang_vel') else 0.)
             self._assign_crossing(env, cars, initial)
+            stop_trajectories, stop_plans = {}, {}
             for i in self.indices:
+                stop_trajectories[i], stop_plans[i] = self._predict(initial[i], cars[i])
                 generation = int(s.nod_agent_generation[env, i])
                 old = self.plans.get((env, i))
                 if old is not None and old[0] == generation:
@@ -278,23 +353,36 @@ class RuleCoordinator:
                     trajectories[i], plans[i] = self._predict(initial[i], cars[i], commands=commands)
                     ages[i] = self.ages.get((env, i), 0.)
                 else:
-                    trajectories[i], plans[i] = self._predict(initial[i], cars[i])
+                    trajectories[i], plans[i] = stop_trajectories[i], stop_plans[i]
                     ages[i] = 0.
 
-            def conflicts(i, trajectory):
-                return [j for j in self.indices if j != i and swept_conflict(
-                    trajectory, trajectories[j], cars[i]['size'], cars[j]['size'])]
+            def conflicts(i, trajectory, pending=()):
+                # A vehicle that has not had its turn exposes its physically
+                # predicted braking path.  Otherwise an old rear-vehicle plan
+                # can reserve the leader's free road and invert queue priority.
+                blocked = [j for j in self.indices if j != i and swept_conflict(
+                    trajectory, stop_trajectories[j] if j in pending else trajectories[j],
+                    cars[i]['size'], cars[j]['size'])]
+                if 'stop_at' in cars[i]:
+                    # Retained plans also obey today's gate. A plan that was
+                    # allowed yesterday cannot bypass a changed crossing grant.
+                    limit = max(cars[i]['stop_at']+.008, self._progress(initial[i][0][:2], cars[i]))
+                    if (self._progress(trajectory[1:,:2], cars[i]) > limit+1e-6).any():
+                        blocked.append(-2)
+                return blocked
 
             # A respawn can invalidate old reservations. Start again with stop
             # trajectories, then admit feasible motion from the actual state.
             if any(conflicts(i, trajectories[i]) for i in self.indices):
                 for i in self.indices:
-                    trajectories[i], plans[i] = self._predict(initial[i], cars[i])
+                    trajectories[i], plans[i] = stop_trajectories[i], stop_plans[i]
 
-            # Existing motion gets a short commitment; waiting age eventually
-            # wins among competing new proposals. Existing plans remain valid.
-            order = sorted(self.indices, key=lambda i: (-(ages[i] + (.5 if plans[i][0, 0]>.05 else 0.)), i))
+            # Existing motion gets a short commitment and waiting age resolves
+            # crossing ties, but a same-lane leader always precedes its rear car.
+            order = self._priority_order(cars, initial, ages, plans)
+            pending = set(order)
             for i in order:
+                pending.remove(i)
                 desired = actions[env, i].detach().cpu().numpy()
                 # Reserve movement plus a terminal stop; short reservations
                 # permit approaching the stop line without entering a conflict.
@@ -304,7 +392,7 @@ class RuleCoordinator:
                                            (1., max(1, self.steps//3)), (.3, self.steps-4), (0.,0)):
                     trajectory, commands = self._predict(initial[i], cars[i], desired=desired,
                                                           fraction=fraction, drive_steps=duration)
-                    blocked_by = conflicts(i, trajectory)
+                    blocked_by = conflicts(i, trajectory, pending)
                     if not blocked_by:
                         trajectories[i], plans[i] = trajectory, commands
                         chosen = True
@@ -313,7 +401,7 @@ class RuleCoordinator:
                         first_blocker = blocked_by[0]
                 # If a new stop would block a granted crossing, continue the
                 # previously reserved, still collision-free action sequence.
-                invalid = bool(conflicts(i, trajectories[i]))
+                invalid = bool(conflicts(i, trajectories[i], pending))
                 infeasible[env, i] = invalid
                 executed = plans[i][0]
                 output[env, i] = torch.as_tensor(executed, device=actions.device, dtype=actions.dtype)
@@ -326,4 +414,8 @@ class RuleCoordinator:
                 waiting[env, i] = ages[i]
                 self.ages[env, i] = ages[i]
                 self.plans[env, i] = (int(s.nod_agent_generation[env, i]), plans[i].copy())
+            # A later vehicle can resolve an earlier temporary stop conflict.
+            # Report feasibility of the final joint plan, not intermediate plans.
+            for i in self.indices:
+                infeasible[env, i] = bool(conflicts(i, trajectories[i]))
         return output, reason, blocker, waiting, infeasible
