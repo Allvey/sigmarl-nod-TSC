@@ -355,6 +355,13 @@ class SafetyValueManager:
                 schedule=parameters.dgppo_schedule, schedule_iters=parameters.n_iters, dt=parameters.dt,
                 recovery="positive_value_contraction", advantage="feasible_task_minus_risk_rate",
                 normalization="per_env_agent_time_including_warmup", partial_successor="known_violation_retained")
+            if (parameters.dgppo_road_alpha_safe != parameters.dgppo_alpha
+                    or parameters.dgppo_road_alpha_recovery != parameters.dgppo_alpha):
+                self.barrier_contract.update(
+                    road_alpha_safe=parameters.dgppo_road_alpha_safe,
+                    road_alpha_recovery=parameters.dgppo_road_alpha_recovery,
+                    road_alpha_rule="safe_strict_recovery_strong",
+                )
             if parameters.dgppo_task_mode == "additive":
                 self.barrier_contract.update(dgppo_task_mode="additive",
                                              advantage="full_task_minus_risk_rate")
@@ -381,6 +388,11 @@ class SafetyValueManager:
                     self.barrier_contract.update(
                         alpha_gain=parameters.dgppo_alpha_gain,
                         opinion_alpha_rule="base_plus_span_clipped_gain_z_when_value_negative_and_g_nonpositive")
+                if parameters.dgppo_opinion_deadzone != 0.0:
+                    self.barrier_contract.update(
+                        opinion_deadzone=parameters.dgppo_opinion_deadzone,
+                        deadzone_fallback="fixed_alpha",
+                    )
         if parameters.safety_training_mode == 'finetune':
             self.barrier_contract.update(safety_training_mode='finetune',
                                          actor_warmup='frozen_until_value_fit_batches',

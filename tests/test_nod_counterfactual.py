@@ -1,6 +1,9 @@
 import torch
 
-from utilities.nod_marl.counterfactual import build_counterfactual_labels
+from utilities.nod_marl.counterfactual import (
+    build_counterfactual_labels,
+    build_responsibility_evidence,
+)
 
 
 def _two_agent_rollout():
@@ -147,3 +150,56 @@ def test_reference_selection_does_not_use_future_motion():
     changed = _interaction_labels(args)
     assert torch.equal(original['reference_active'][:, :2], changed['reference_active'][:, :2])
     assert torch.equal(original['reference_age'][:, :2], changed['reference_age'][:, :2])
+
+
+def _responsibility_labels(args, **overrides):
+    settings = dict(
+        horizon=2,
+        dt=1.0,
+        safe_distance=0.5,
+        label_slope=12.0,
+        label_margin=0.02,
+        mode="responsibility",
+        reference_seconds=3.0,
+    )
+    settings.update(overrides)
+    return build_counterfactual_labels(*args, **settings)
+
+
+def test_responsibility_label_keeps_stopped_neighbor_credit_and_excludes_no_conflict():
+    args = _two_agent_rollout()
+    result = _responsibility_labels(args)
+
+    assert result["reference_active"][0, 1, 0, 0]
+    assert result["valid"][0, 1, 0, 0]
+    assert result["label"][0, 1, 0, 0] > 0.5
+    assert result["online_evidence"][0, 1, 0, 0] > 0.0
+
+    no_conflict = _two_agent_rollout()
+    no_conflict[1].zero_()
+    result = _responsibility_labels(no_conflict)
+    assert not result["reference_active"].any()
+    assert not result["valid"].any()
+
+
+def test_online_responsibility_does_not_credit_an_ego_only_manoeuvre():
+    positions, velocities, generations, neighbor_indices, edge_mask = (
+        _two_agent_rollout()
+    )
+    velocities[0, 1, 0, 0] = 1.0
+    velocities[0, 1, 1, 0] = -1.0
+    result, _ = build_responsibility_evidence(
+        positions,
+        velocities,
+        generations,
+        neighbor_indices,
+        edge_mask,
+        dt=1.0,
+        lookahead=2.0,
+        safe_distance=0.5,
+        max_age=3.0,
+    )
+
+    assert result["active"][0, 1, 0, 0]
+    assert result["responsibility"][0, 1, 0, 0] == 0.0
+    assert result["evidence"][0, 1, 0, 0] == -1.0

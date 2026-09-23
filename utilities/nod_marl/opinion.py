@@ -281,6 +281,7 @@ class NODOpinionModel(nn.Module):
         min_log_sigma: float = -2.5,
         max_log_sigma: float = 0.0,
         max_risk_weight: float = 1.0,
+        fixed_evidence_mapping: bool = False,
     ):
         super().__init__()
         self.pair_feature_dim = int(pair_feature_dim)
@@ -300,6 +301,7 @@ class NODOpinionModel(nn.Module):
         self.min_log_sigma = float(min_log_sigma)
         self.max_log_sigma = float(max_log_sigma)
         self.max_risk_weight = float(max_risk_weight)
+        self.fixed_evidence_mapping = bool(fixed_evidence_mapping)
         if self.max_risk_weight <= 0.75:
             raise ValueError("max_risk_weight must be greater than 0.75")
 
@@ -383,8 +385,14 @@ class NODOpinionModel(nn.Module):
 
     def likelihood_parameters(self, hidden: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         raw = self.likelihood_head(hidden)
-        mean_intercept = torch.tanh(raw[..., 0])
-        slope = 0.05 + 0.95 * torch.sigmoid(raw[..., 1])
+        if self.fixed_evidence_mapping:
+            # Keep the checkpoint tensor shapes, but remove the learned
+            # evidence zero-point and sign/scale ambiguity.
+            mean_intercept = torch.zeros_like(raw[..., 0])
+            slope = torch.ones_like(raw[..., 1])
+        else:
+            mean_intercept = torch.tanh(raw[..., 0])
+            slope = 0.05 + 0.95 * torch.sigmoid(raw[..., 1])
         log_sigma = self.min_log_sigma + (
             self.max_log_sigma - self.min_log_sigma
         ) * torch.sigmoid(raw[..., 2])
@@ -424,6 +432,8 @@ class NODOpinionModel(nn.Module):
         ego_generations: Tensor,
         neighbor_generations: Tensor,
         initial_state: Optional[Dict[str, Tensor]] = None,
+        opinion_mask: Optional[Tensor] = None,
+        evidence_override: Optional[Tensor] = None,
     ) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
         """Unroll edge state with identity-aware reset and short-gap retention."""
 
@@ -435,6 +445,12 @@ class NODOpinionModel(nn.Module):
                 f"got {pair_features.shape[-1]}"
             )
         edge_mask = edge_mask.bool()
+        if opinion_mask is not None:
+            if opinion_mask.shape != edge_mask.shape:
+                raise ValueError("opinion_mask must match edge_mask")
+            opinion_mask = opinion_mask.bool() & edge_mask
+        if evidence_override is not None and evidence_override.shape != edge_mask.shape:
+            raise ValueError("evidence_override must match edge_mask")
         state = (
             self._empty_state(pair_features)
             if initial_state is None
@@ -462,6 +478,7 @@ class NODOpinionModel(nn.Module):
                 "root_residual",
                 "curvature",
                 "boundary",
+                "opinion_active",
             )
         }
         event_counts = {
@@ -473,6 +490,9 @@ class NODOpinionModel(nn.Module):
         for time_index in range(pair_features.shape[1]):
             current = pair_features[:, time_index]
             active = edge_mask[:, time_index]
+            opinion_active = (
+                active if opinion_mask is None else opinion_mask[:, time_index]
+            )
             ego_generation = (
                 ego_generations[:, time_index].unsqueeze(-1).expand_as(active)
             )
@@ -488,13 +508,20 @@ class NODOpinionModel(nn.Module):
             new_edge = active & ~retained
             expired = has_state & ~active & ~retained
 
-            evidence_vector = self.evidence_components(current, previous_pair)
-            evidence_vector = torch.where(
-                temporal.unsqueeze(-1),
-                evidence_vector,
-                torch.zeros_like(evidence_vector),
-            )
-            evidence = evidence_vector.mean(dim=-1)
+            if evidence_override is None:
+                evidence_vector = self.evidence_components(current, previous_pair)
+                evidence_vector = torch.where(
+                    temporal.unsqueeze(-1),
+                    evidence_vector,
+                    torch.zeros_like(evidence_vector),
+                )
+                evidence = evidence_vector.mean(dim=-1)
+            else:
+                evidence = torch.where(
+                    opinion_active,
+                    evidence_override[:, time_index].clamp(-1.0, 1.0),
+                    torch.zeros_like(evidence_override[:, time_index]),
+                )
             history_input = current
             history_previous = (
                 torch.where(
@@ -537,7 +564,7 @@ class NODOpinionModel(nn.Module):
                 tolerance=self.root_tolerance,
             )
             z_state = torch.where(
-                active & retained,
+                opinion_active & retained,
                 solved_z,
                 torch.where(new_edge, torch.zeros_like(z_state), z_state),
             )
@@ -546,7 +573,13 @@ class NODOpinionModel(nn.Module):
                 z_state,
                 torch.where(active, z_state, torch.zeros_like(z_state)),
             )
-            output_z = torch.where(active, z_state, torch.zeros_like(z_state))
+            if opinion_mask is not None:
+                z_state = torch.where(
+                    opinion_active, z_state, torch.zeros_like(z_state)
+                )
+            output_z = torch.where(
+                opinion_active, z_state, torch.zeros_like(z_state)
+            )
 
             residual = _stationarity(
                 output_z,
@@ -570,7 +603,7 @@ class NODOpinionModel(nn.Module):
             )
             boundary = output_z.abs() >= (1.0 - 2.0 * self.z_epsilon)
             residual = torch.where(
-                active & retained, residual, torch.zeros_like(residual)
+                opinion_active & retained, residual, torch.zeros_like(residual)
             )
 
             output_lists["z"].append(output_z)
@@ -580,10 +613,11 @@ class NODOpinionModel(nn.Module):
             output_lists["evidence"].append(evidence)
             output_lists["mean"].append(mean_intercept + slope * output_z)
             output_lists["variance"].append(variance)
-            output_lists["learning_valid"].append(active & retained)
+            output_lists["learning_valid"].append(opinion_active & retained)
             output_lists["root_residual"].append(residual)
             output_lists["curvature"].append(curvature)
-            output_lists["boundary"].append(boundary & active & retained)
+            output_lists["boundary"].append(boundary & opinion_active & retained)
+            output_lists["opinion_active"].append(opinion_active)
 
             event_counts["new_edges"] += new_edge.sum().to(pair_features.dtype)
             event_counts["resumed_edges"] += resumed.sum().to(pair_features.dtype)

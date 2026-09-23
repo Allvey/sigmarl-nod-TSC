@@ -6,7 +6,12 @@ import torch
 from tensordict import TensorDict
 
 from utilities.helper_training import Parameters
-from utilities.nod_marl.dgppo import opinion_alpha, dgppo_advantage, prepare_dgppo_advantage
+from utilities.nod_marl.dgppo import (
+    constraint_alpha,
+    opinion_alpha,
+    dgppo_advantage,
+    prepare_dgppo_advantage,
+)
 from utilities.nod_marl.safety_value import SafetyValueManager
 
 
@@ -54,6 +59,50 @@ def test_config_roundtrip_and_matched_control():
     assert diff == {'dgppo_opinion_alpha', 'where_to_save'}
     assert p.nod_freeze_training and p.training_init_checkpoint.endswith('reward7.33')
     assert not Parameters.from_json('config_dgppo_nod_fixed_finetune.json').dgppo_opinion_alpha
+
+
+def test_candidate_only_and_gain1_control_configs_are_staged():
+    candidate = Parameters.from_json('config_dgppo_nod_candidate_only.json')
+    assert candidate.nod_training_mode == 'candidate_only'
+    assert candidate.nod_freeze_training
+    assert not candidate.dgppo_opinion_alpha
+    assert candidate.nod_update_interval == 1
+    control = Parameters.from_json('config_dgppo_nod_gain1_control_finetune.json')
+    assert control.nod_training_mode == 'joint'
+    assert control.nod_freeze_training
+    assert control.dgppo_opinion_alpha
+    assert control.dgppo_alpha_gain == 1
+    assert control.dgppo_opinion_deadzone == pytest.approx(.1)
+    assert control.nod_actor_opinion_mode == 'online'
+    fixed = Parameters.from_json('config_dgppo_nod_ablation_fixed_alpha.json')
+    neutral = Parameters.from_json('config_dgppo_nod_ablation_neutral_z.json')
+    assert not fixed.dgppo_opinion_alpha
+    assert fixed.nod_actor_opinion_mode == 'online'
+    assert not neutral.dgppo_opinion_alpha
+    assert neutral.nod_actor_opinion_mode == 'neutral'
+    ignored = {'where_to_save', 'dgppo_opinion_alpha', 'nod_actor_opinion_mode'}
+    assert {key for key, value in control.to_dict().items()
+            if fixed.to_dict()[key] != value} <= ignored
+    assert {key for key, value in control.to_dict().items()
+            if neutral.to_dict()[key] != value} <= ignored
+    road = Parameters.from_json('config_dgppo_nod_gain1_road_safe_finetune.json')
+    assert road.n_iters == 30 and road.safety_barrier_warmup_batches == 10
+    assert road.dgppo_road_alpha_safe == pytest.approx(7.5)
+    assert road.dgppo_road_alpha_recovery == pytest.approx(15.)
+    assert road.training_init_checkpoint.endswith('reward7.18')
+
+
+def test_candidate_only_requires_frozen_initialized_behavior_nod():
+    base = params().to_dict()
+    for change in (
+        dict(nod_freeze_training=False),
+        dict(training_init_checkpoint=None),
+        dict(nod_observation_mode='legacy_paths'),
+    ):
+        with pytest.raises(ValueError):
+            Parameters.from_dict(
+                dict(base, nod_training_mode='candidate_only', **change)
+            )
 
 
 @pytest.mark.parametrize('change', [dict(dgppo_alpha_span=-1.), dict(dgppo_alpha_span=float('nan')),
@@ -190,6 +239,96 @@ def test_respawned_pair_cannot_contribute_opinion_penalty():
 def test_invalid_opinion_gain(gain):
     with pytest.raises(ValueError):
         Parameters.from_dict(dict(params().to_dict(), dgppo_alpha_gain=gain))
+
+
+@pytest.mark.parametrize('deadzone', [-.1, 1., float('nan'), float('inf')])
+def test_invalid_opinion_deadzone(deadzone):
+    with pytest.raises(ValueError):
+        Parameters.from_dict(
+            dict(params().to_dict(), dgppo_opinion_deadzone=deadzone)
+        )
+
+
+@pytest.mark.parametrize('mode', ['zero', '', None, 1])
+def test_invalid_actor_opinion_mode(mode):
+    with pytest.raises(ValueError):
+        Parameters.from_dict(dict(params().to_dict(), nod_actor_opinion_mode=mode))
+
+
+@pytest.mark.parametrize('safe,recovery', [
+    (0., 15.), (10.1, 15.), (7.5, 9.9), (7.5, 20.),
+    (float('nan'), 15.), (7.5, float('inf')), (True, 15.),
+])
+def test_invalid_road_alpha(safe, recovery):
+    with pytest.raises(ValueError):
+        Parameters.from_dict(dict(
+            params().to_dict(),
+            dgppo_road_alpha_safe=safe,
+            dgppo_road_alpha_recovery=recovery,
+        ))
+
+
+def test_road_alpha_is_strict_when_safe_and_strong_during_recovery():
+    value = -torch.ones(1, 1, 2, 4)
+    value[..., 1, -2] = .2
+    alpha = constraint_alpha(
+        value, alpha=10., road_safe_alpha=7.5, road_recovery_alpha=15.
+    )
+    assert alpha[..., 0, -2].item() == pytest.approx(7.5)
+    assert alpha[..., 1, -2].item() == pytest.approx(15.)
+    assert (alpha[..., :-2] == 10).all() and (alpha[..., -1] == 10).all()
+
+
+def test_road_alpha_contract_reuses_value_and_restarts_barrier_warmup(tmp_path):
+    old_p = Parameters.from_json('config_dgppo_nod_gain1_control_finetune.json')
+    new_p = Parameters.from_json('config_dgppo_nod_gain1_road_safe_finetune.json')
+    old = SafetyValueManager(old_p, 5, ('agents', 'observation'))
+    new = SafetyValueManager(new_p, 5, ('agents', 'observation'))
+    assert old.contract == new.contract and old.loss_contract == new.loss_contract
+    assert new.barrier_contract['road_alpha_safe'] == pytest.approx(7.5)
+    assert new.barrier_contract['road_alpha_recovery'] == pytest.approx(15.)
+    old.barrier_fit_batches = 70
+    path = tmp_path / 'value.pth'
+    torch.save(old.checkpoint_state(), path)
+    assert new.load_if_available(path, load_optimizer=False)
+    assert new.barrier_fit_batches == 0
+    for a, b in zip(old.model.parameters(), new.model.parameters()):
+        torch.testing.assert_close(a, b)
+
+
+def test_opinion_deadzone_uses_fixed_alpha_without_hiding_available_opinion():
+    td, state = sample()
+    context = td['agents', 'info', 'nod_actor_edge_context']
+    context[..., -1] = 0.0
+    context[..., 0, 0, -1] = 0.08
+    context[..., 0, 1, -1] = 0.12
+    alpha, details = opinion_alpha(
+        td,
+        state,
+        state['g'],
+        alpha=10.0,
+        span=5.0,
+        gain=1.0,
+        deadzone=0.1,
+    )
+    assert details['available'][..., 0, 1]
+    assert not details['applied'][..., 0, 1]
+    assert alpha[..., 0, 1] == 10.0
+    assert details['applied'][..., 0, 2]
+    assert alpha[..., 0, 2] == pytest.approx(10.6)
+
+
+def test_explicit_interaction_mask_prevents_stale_opinion_alpha():
+    td, state = sample()
+    active = torch.ones_like(
+        td['agents', 'info', 'nod_actor_edge_mask'], dtype=torch.bool
+    )
+    active[..., 0, 0] = False
+    td['agents', 'info', 'nod_opinion_active'] = active
+    alpha, details = mapped(td, state)
+    assert not details['available'][..., 0, 1]
+    assert not details['applied'][..., 0, 1]
+    assert alpha[..., 0, 1] == 10.0
 
 
 def test_gain_amplifies_weak_opinions_but_preserves_bounds_and_fallbacks():

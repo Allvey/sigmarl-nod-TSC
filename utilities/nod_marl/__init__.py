@@ -7,6 +7,7 @@ from .policy import (
     NODActorInputModule,
     NODMessageAggregator,
     NOD_ACTOR_OBSERVATION_KEY,
+    NOD_OPINION_ACTIVE_KEY,
 )
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     "NODActorInputModule",
     "NODMessageAggregator",
     "NOD_ACTOR_OBSERVATION_KEY",
+    "NOD_OPINION_ACTIVE_KEY",
     "build_directed_interactions",
     "kl_objective",
     "kl_proximal_update",

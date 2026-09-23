@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 
-CONTROLLER_VERSION = 'coordinated_rules_v6'
+CONTROLLER_VERSION = 'coordinated_rules_v7'
 DEFAULT_RULE_LATERAL_ACCEL = 1.8
 
 

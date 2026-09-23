@@ -13,6 +13,7 @@ from tensordict.nn import TensorDictModuleBase
 NOD_ACTOR_OBSERVATION_KEY = ("agents", "info", "nod_actor_observation")
 NOD_ACTOR_EDGE_CONTEXT_KEY = ("agents", "info", "nod_actor_edge_context")
 NOD_ACTOR_EDGE_MASK_KEY = ("agents", "info", "nod_actor_edge_mask")
+NOD_OPINION_ACTIVE_KEY = ("agents", "info", "nod_opinion_active")
 NOD_ACTOR_CONTEXT_READY_KEY = ("agents", "info", "nod_actor_context_ready")
 NOD_ACTOR_MESSAGE_KEY = ("agents", "info", "nod_actor_message")
 NOD_ACTOR_ATTENTION_KEY = ("agents", "info", "nod_actor_message_attention")
@@ -89,18 +90,23 @@ class NODActorInputModule(TensorDictModuleBase):
         message_dim: int,
         message_hidden_dim: int,
         message_scale: float = 0.1,
+        opinion_mode: str = "online",
     ):
         super().__init__()
         self.observation_key = observation_key
         self.base_observation_dim = int(base_observation_dim)
         self.message_dim = int(message_dim)
         self.action_dim = int(action_dim)
+        if opinion_mode not in {"online", "neutral"}:
+            raise ValueError("opinion_mode must be online or neutral")
+        self.opinion_mode = opinion_mode
         self.context_dim = int(nod_manager.online_context_dim)
         self.in_keys = [observation_key, NOD_ACTOR_EDGE_CONTEXT_KEY]
         self.out_keys = [
             NOD_ACTOR_OBSERVATION_KEY,
             NOD_ACTOR_EDGE_CONTEXT_KEY,
             NOD_ACTOR_EDGE_MASK_KEY,
+            NOD_OPINION_ACTIVE_KEY,
             NOD_ACTOR_CONTEXT_READY_KEY,
             NOD_ACTOR_MESSAGE_KEY,
             NOD_ACTOR_ATTENTION_KEY,
@@ -158,6 +164,12 @@ class NODActorInputModule(TensorDictModuleBase):
                 device=observation.device,
                 dtype=torch.bool,
             ),
+            "opinion_active": torch.zeros(
+                *leading_shape,
+                k_neighbors,
+                device=observation.device,
+                dtype=torch.bool,
+            ),
         }
 
     def forward(self, tensordict):
@@ -173,6 +185,10 @@ class NODActorInputModule(TensorDictModuleBase):
                 NOD_ACTOR_EDGE_CONTEXT_KEY, online["edge_context"].detach()
             )
             tensordict.set(NOD_ACTOR_EDGE_MASK_KEY, online["edge_mask"].detach())
+            tensordict.set(
+                NOD_OPINION_ACTIVE_KEY,
+                online.get("opinion_active", online["edge_mask"]).detach(),
+            )
             ready = torch.ones(
                 *observation.shape[:-1],
                 1,
@@ -182,6 +198,12 @@ class NODActorInputModule(TensorDictModuleBase):
             tensordict.set(NOD_ACTOR_CONTEXT_READY_KEY, ready)
 
         edge_context = tensordict.get(NOD_ACTOR_EDGE_CONTEXT_KEY).detach()
+        if self.opinion_mode == "neutral":
+            # Preserve hidden state, physical risk features and attention while
+            # removing only z, the final context coordinate. Keep the cached
+            # online context intact for diagnostics and controlled ablations.
+            edge_context = edge_context.clone()
+            edge_context[..., -1] = 0.0
         edge_mask = tensordict.get(NOD_ACTOR_EDGE_MASK_KEY).detach().bool()
         message, attention = self.aggregator(edge_context, edge_mask)
         previous_action = self._previous_action(tensordict, observation)

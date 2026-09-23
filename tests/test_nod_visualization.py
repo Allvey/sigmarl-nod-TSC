@@ -66,3 +66,11 @@ def test_display_uses_saved_gain_without_amplifying_displayed_raw_opinion():
     assert 'A1 -> A2  z=-0.072  alpha=9.28  [opinion]' in lines
     manager.parameters.dgppo_alpha_gain = 1.
     assert 'A1 -> A2  z=-0.072  alpha=9.64  [opinion]' in opinion_alpha_lines(td, manager)
+
+
+def test_display_marks_deadzone_fallback():
+    td, state, manager = fixture()
+    td['agents', 'info', 'nod_actor_edge_context'][..., 0, 0, -1] = 0.08
+    manager.parameters.dgppo_opinion_deadzone = 0.1
+    lines = opinion_alpha_lines(td, manager)
+    assert 'A1 -> A2  z=+0.080  alpha=10.00  [deadzone: fixed]' in lines

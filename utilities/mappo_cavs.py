@@ -335,6 +335,7 @@ def mappo_cavs(parameters: Parameters):
                 getattr(parameters, "nod_message_hidden_dim", 64)
             ),
             message_scale=float(getattr(parameters, "nod_message_scale", 0.1)),
+            opinion_mode=str(getattr(parameters, "nod_actor_opinion_mode", "online")),
         ).to(parameters.device)
         actor_observation_key = NOD_ACTOR_OBSERVATION_KEY
         actor_observation_dim = actor_input_module.actor_input_dim
@@ -616,9 +617,30 @@ def mappo_cavs(parameters: Parameters):
             if priority_module:
                 priority_module.critic.load_state_dict(torch.load(PATH_PRIORITY_CRITIC))
 
+    candidate_only = getattr(parameters, "nod_training_mode", "joint") == "candidate_only"
     if parameters.nod_freeze_training:
         _bind_frozen_nod(nod_manager, safety_value_manager, parameters)
         print('[INFO] NOD weights frozen; online opinions continue evolving')
+
+    learner_nod_manager = None
+    if candidate_only:
+        # The environment and Actor keep using the frozen behavior NOD above.
+        # A disjoint learner consumes completed rollouts and never feeds back
+        # into action selection during this experiment.
+        learner_nod_manager = NODOpinionManager(parameters=parameters)
+        if not learner_nod_manager.load_checkpoint(
+            nod_manager.checkpoint_state(), load_optimizer=False
+        ):
+            raise ValueError(
+                "Unable to initialize candidate NOD from the behavior NOD"
+            )
+        learner_nod_manager.model.requires_grad_(True)
+        behavior_ids = {id(p) for p in nod_manager.model.parameters()}
+        learner_ids = {id(p) for p in learner_nod_manager.model.parameters()}
+        if not behavior_ids.isdisjoint(learner_ids):
+            raise RuntimeError("Behavior and learner NOD parameters must be disjoint")
+        print('[INFO] Candidate-only NOD training: Policy, Safety and behavior NOD fixed')
+    checkpoint_nod_manager = learner_nod_manager or nod_manager
 
     # Loading probes and NOD parameter updates invalidate recurrent online
     # state. The next real rollout always starts from a coherent fresh state.
@@ -745,7 +767,7 @@ def mappo_cavs(parameters: Parameters):
     deadlock_metrics_list = []
     safety_value_metrics_list = []
     shadow_sampler = (DeterministicSafetySampler(parameters, policy, nod_manager, safety_value_manager)
-                      if safety_value_manager.enabled else None)
+                      if safety_value_manager.enabled and not candidate_only else None)
 
     t_start = time.time()
     finetune_actor_batches = 0
@@ -785,7 +807,10 @@ def mappo_cavs(parameters: Parameters):
             barrier_metrics = prepare_barrier_advantage(
                 safety_value_manager, tensordict_data, loss_module.tensor_keys.advantage)
             barrier_actor_updates = 0
-            freeze_actor = actor_warmup_frozen(parameters, safety_value_manager)
+            freeze_actor = (
+                candidate_only
+                or actor_warmup_frozen(parameters, safety_value_manager)
+            )
             finetune = parameters.safety_training_mode == 'finetune'
             kl_stopped = False
             ppo_updates = 0
@@ -933,22 +958,41 @@ def mappo_cavs(parameters: Parameters):
                         change = (after_log_prob - before_log_prob).reshape_as(unsafe)[unsafe]
                         barrier_metrics['actor_unsafe_probe_count'] = float(unsafe.sum())
                         barrier_metrics['actor_unsafe_log_prob_delta_mean'] = float(change.mean()) if change.numel() else 0.
-            constraint_metrics = safety_manager.finish_actor_update()
+            constraint_metrics = (
+                {"candidate_only_frozen": 1.0}
+                if candidate_only
+                else safety_manager.finish_actor_update()
+            )
             # NOD learns directly from ordered physical pair features. PPO trains
             # only the stateless message aggregator from cached online context.
             nod_update_interval = max(
                 1, int(getattr(parameters, "nod_update_interval", 10))
             )
-            should_update_nod = (pbar.n % nod_update_interval) == 0 and not parameters.nod_freeze_training
+            training_nod_manager = (
+                learner_nod_manager if candidate_only else nod_manager
+            )
+            should_update_nod = (pbar.n % nod_update_interval) == 0 and (
+                candidate_only or not parameters.nod_freeze_training
+            )
             if should_update_nod:
-                last_nod_metrics = nod_manager.train_on_rollout(tensordict_data)
+                last_nod_metrics = training_nod_manager.train_on_rollout(
+                    tensordict_data
+                )
                 last_nod_metrics["update_skipped"] = 0.0
             else:
                 last_nod_metrics = dict(last_nod_metrics)
                 last_nod_metrics["optimizer_updates"] = 0.0
                 last_nod_metrics["update_skipped"] = 1.0
-            last_nod_metrics['training_frozen'] = float(parameters.nod_freeze_training)
+            last_nod_metrics['training_frozen'] = float(
+                parameters.nod_freeze_training and not candidate_only
+            )
+            last_nod_metrics['behavior_nod_frozen'] = float(
+                parameters.nod_freeze_training
+            )
+            last_nod_metrics['candidate_only'] = float(candidate_only)
             nod_manager.reset_online_state()
+            if learner_nod_manager is not None:
+                learner_nod_manager.reset_online_state()
             if use_nod_actor:
                 actor_message = tensordict_data.get(
                     ("agents", "info", "nod_actor_message"), default=None
@@ -991,12 +1035,26 @@ def mappo_cavs(parameters: Parameters):
 
             # Fit Safety only after the Actor update; its weights were frozen for
             # the optional action penalty. Deadlock remains an independent learner.
-            safety_metrics = safety_manager.train_on_rollout(tensordict_data)
+            safety_metrics = (
+                {"enabled": float(safety_manager.enabled), "training_frozen": 1.0}
+                if candidate_only
+                else safety_manager.train_on_rollout(tensordict_data)
+            )
             safety_metrics.update(constraint_metrics)
             safety_metrics_list.append(safety_metrics)
-            deadlock_metrics = deadlock_manager.train_on_rollout(tensordict_data)
+            deadlock_metrics = (
+                {"enabled": float(deadlock_manager.enabled), "training_frozen": 1.0}
+                if candidate_only
+                else deadlock_manager.train_on_rollout(tensordict_data)
+            )
             deadlock_metrics_list.append(deadlock_metrics)
-            safety_value_metrics = safety_value_manager.train_on_rollout(shadow_data) if shadow_sampler else {}
+            safety_value_metrics = (
+                {"enabled": float(safety_value_manager.enabled), "training_frozen": 1.0}
+                if candidate_only
+                else safety_value_manager.train_on_rollout(shadow_data)
+                if shadow_sampler
+                else {}
+            )
             if shadow_sampler:
                 safety_value_metrics.update(shadow_sampler.last_metrics)
                 safety_value_metrics["sampling_seconds"] = shadow_seconds
@@ -1092,7 +1150,7 @@ def mappo_cavs(parameters: Parameters):
                             critic=critic,
                             priority_policy=priority_module.policy,
                             priority_critic=priority_module.critic,
-                            nod_checkpoint=nod_manager.checkpoint_state()
+                            nod_checkpoint=checkpoint_nod_manager.checkpoint_state()
                             if nod_manager.enabled
                             else None,
                             safety_value_checkpoint=safety_value_manager.checkpoint_state(),
@@ -1107,7 +1165,7 @@ def mappo_cavs(parameters: Parameters):
                             save_data=save_data,
                             policy=policy,
                             critic=critic,
-                            nod_checkpoint=nod_manager.checkpoint_state()
+                            nod_checkpoint=checkpoint_nod_manager.checkpoint_state()
                             if nod_manager.enabled
                             else None,
                             safety_value_checkpoint=safety_value_manager.checkpoint_state(),
@@ -1192,6 +1250,21 @@ def mappo_cavs(parameters: Parameters):
         if shadow_sampler:
             shadow_sampler.close()
 
+    if candidate_only:
+        # Candidate quality is independent of the frozen behavior reward, so
+        # keep the complete diagnostics without selecting NOD by that reward.
+        save_data.episode_reward_mean_list = episode_reward_mean_list
+        save_data.collision_agents_rate_list = collision_agents_rate_list
+        save_data.collision_lanelets_rate_list = collision_lanelets_rate_list
+        save_data.collision_total_rate_list = collision_total_rate_list
+        save_data.nod_metrics_list = nod_metrics_list
+        save_data.safety_metrics_list = safety_metrics_list
+        save_data.deadlock_metrics_list = deadlock_metrics_list
+        save_data.safety_value_metrics_list = safety_value_metrics_list
+        if episode_reward_mean_list:
+            parameters.episode_reward_mean_current = episode_reward_mean_list[-1]
+        save(parameters=parameters, save_data=save_data)
+
     # Save the final model
     torch.save(policy.state_dict(), parameters.where_to_save + "final_policy.pth")
     torch.save(critic.state_dict(), parameters.where_to_save + "final_critic.pth")
@@ -1206,7 +1279,7 @@ def mappo_cavs(parameters: Parameters):
                    parameters.where_to_save + "final_deadlock_critic.pth")
     if nod_manager.enabled:
         torch.save(
-            nod_manager.checkpoint_state(),
+            checkpoint_nod_manager.checkpoint_state(),
             parameters.where_to_save + "final_nod.pth",
         )
     if (

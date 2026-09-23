@@ -13,4 +13,10 @@ print(f"[INFO] PPO profile: {parameters.ppo_training_profile}; epochs={parameter
 print(f"[INFO] Safety training: {parameters.safety_training_mode}; "
       f"task mode={parameters.dgppo_task_mode}; warmup fits={parameters.safety_barrier_warmup_batches}; "
       f"KL limit={parameters.safety_finetune_target_kl}")
+if parameters.safety_control_mode == "dgppo":
+    print(f"[INFO] DGPPO alpha: base={parameters.dgppo_alpha}; "
+          f"road safe/recovery={parameters.dgppo_road_alpha_safe}/"
+          f"{parameters.dgppo_road_alpha_recovery}; opinion gain={parameters.dgppo_alpha_gain}; "
+          f"deadzone={parameters.dgppo_opinion_deadzone}")
+print(f"[INFO] Actor opinion input: {parameters.nod_actor_opinion_mode}")
 mappo_cavs(parameters=parameters)

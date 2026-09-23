@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 import math
 
 import torch
@@ -18,6 +18,205 @@ def _gather_agent(values: Tensor, indices: Tensor) -> Tensor:
     gather_index = indices.view(batch, n_agents, k_neighbors, *([1] * len(extra)))
     gather_index = gather_index.expand(batch, n_agents, k_neighbors, *extra)
     return torch.gather(expanded_values, dim=2, index=gather_index)
+
+
+def _closest_approach_risk(
+    relative_position: Tensor,
+    relative_velocity: Tensor,
+    *,
+    lookahead: float,
+    safe_distance: float,
+) -> tuple[Tensor, Tensor]:
+    """Return constant-velocity proximity risk and whether agents approach."""
+
+    speed_squared = relative_velocity.square().sum(dim=-1)
+    closing = -(relative_position * relative_velocity).sum(dim=-1)
+    closest_time = (closing / speed_squared.clamp_min(1e-8)).clamp(
+        0.0, float(lookahead)
+    )
+    closest = relative_position + closest_time.unsqueeze(-1) * relative_velocity
+    distance = torch.linalg.vector_norm(closest, dim=-1)
+    risk = torch.exp(-distance / max(float(safe_distance), 1e-6))
+    return risk, closing > 1e-6
+
+
+@torch.no_grad()
+def build_responsibility_evidence(
+    positions: Tensor,
+    velocities: Tensor,
+    ego_generations: Tensor,
+    neighbor_indices: Tensor,
+    edge_mask: Tensor,
+    *,
+    dt: float,
+    lookahead: float,
+    safe_distance: float,
+    max_age: float,
+    neighbor_generations: Optional[Tensor] = None,
+    initial_state: Optional[Dict[str, Tensor]] = None,
+) -> tuple[Dict[str, Tensor], Dict[str, Tensor]]:
+    """Build causal evidence from the neighbor's share of required avoidance.
+
+    At the beginning of a predicted conflict, the current ego and neighbor
+    velocities are frozen as counterfactual anchors. The ego anchor is used in
+    both alternatives, so an ego manoeuvre cannot be credited to the neighbor.
+    With anchored risk R0, safety-boundary risk Rs and neighbor-observed risk
+    Rj, responsibility is q=clip((R0-Rj)/(R0-Rs), 0, 1). Online evidence is
+    2*q-1, so zero means half of the required avoidance.
+    """
+
+    if positions.ndim != 4 or velocities.shape != positions.shape:
+        raise ValueError("positions and velocities must have shape [B,T,N,2]")
+    if neighbor_indices.ndim != 4 or edge_mask.shape != neighbor_indices.shape:
+        raise ValueError("neighbor tensors must have shape [B,T,N,K]")
+    if not math.isfinite(dt) or dt <= 0:
+        raise ValueError("dt must be positive and finite")
+    if not math.isfinite(lookahead) or lookahead <= 0:
+        raise ValueError("lookahead must be positive and finite")
+    if not math.isfinite(max_age) or max_age <= 0:
+        raise ValueError("max_age must be positive and finite")
+
+    batch, time_steps, n_agents, _ = positions.shape
+    k_neighbors = neighbor_indices.shape[-1]
+    pair_shape = (batch, n_agents, k_neighbors)
+    vector_shape = (*pair_shape, 2)
+    device = positions.device
+
+    if initial_state is None:
+        held = torch.zeros(pair_shape, dtype=torch.bool, device=device)
+        locked = torch.zeros_like(held)
+        anchor_ego = positions.new_zeros(vector_shape)
+        anchor_neighbor = positions.new_zeros(vector_shape)
+        age = positions.new_zeros(pair_shape)
+        previous_ids = torch.zeros(pair_shape, dtype=torch.long, device=device)
+        previous_ego_generation = torch.zeros_like(previous_ids)
+        previous_neighbor_generation = torch.zeros_like(previous_ids)
+        has_identity = torch.zeros_like(held)
+    else:
+        held = initial_state["held"]
+        locked = initial_state["locked"]
+        anchor_ego = initial_state["anchor_ego_velocity"]
+        anchor_neighbor = initial_state["anchor_neighbor_velocity"]
+        age = initial_state["age"]
+        previous_ids = initial_state["neighbor_indices"]
+        previous_ego_generation = initial_state["ego_generation"]
+        previous_neighbor_generation = initial_state["neighbor_generation"]
+        has_identity = initial_state["has_identity"]
+
+    evidence_out = positions.new_zeros(batch, time_steps, n_agents, k_neighbors)
+    responsibility_out = torch.zeros_like(evidence_out)
+    active_out = torch.zeros_like(edge_mask, dtype=torch.bool)
+    age_out = torch.zeros_like(evidence_out)
+    anchor_ego_out = positions.new_zeros(batch, time_steps, n_agents, k_neighbors, 2)
+    anchor_neighbor_out = torch.zeros_like(anchor_ego_out)
+    safe_risk = math.exp(-1.0)
+
+    for time_index in range(time_steps):
+        ids = neighbor_indices[:, time_index].long()
+        visible = edge_mask[:, time_index].bool()
+        ego_generation = ego_generations[:, time_index].unsqueeze(-1).expand_as(ids)
+        if neighbor_generations is None:
+            neighbor_generation = _gather_agent(
+                ego_generations[:, time_index].unsqueeze(-1), ids
+            ).squeeze(-1)
+        else:
+            neighbor_generation = neighbor_generations[:, time_index].long()
+        same_identity = (
+            has_identity
+            & (ids == previous_ids)
+            & (ego_generation == previous_ego_generation)
+            & (neighbor_generation == previous_neighbor_generation)
+        )
+        held = held & same_identity & visible
+        locked = locked & same_identity & visible
+
+        ego_position = positions[:, time_index].unsqueeze(2)
+        ego_velocity = velocities[:, time_index].unsqueeze(2)
+        neighbor_position = _gather_agent(positions[:, time_index], ids)
+        neighbor_velocity = _gather_agent(velocities[:, time_index], ids)
+        relative_position = neighbor_position - ego_position
+
+        current_risk, current_approaching = _closest_approach_risk(
+            relative_position,
+            neighbor_velocity - ego_velocity,
+            lookahead=lookahead,
+            safe_distance=safe_distance,
+        )
+        current_conflict = current_approaching & (current_risk > safe_risk)
+        anchored_risk, anchored_approaching = _closest_approach_risk(
+            relative_position,
+            anchor_neighbor - anchor_ego,
+            lookahead=lookahead,
+            safe_distance=safe_distance,
+        )
+        anchored_conflict = anchored_approaching & (anchored_risk > safe_risk)
+
+        age = torch.where(held, age + float(dt), torch.zeros_like(age))
+        ended = held & (~anchored_conflict | (age >= float(max_age)))
+        held = held & anchored_conflict & (age < float(max_age))
+        locked = (locked | ended) & current_conflict
+        start = visible & ~held & ~locked & current_conflict
+        anchor_ego = torch.where(start.unsqueeze(-1), ego_velocity, anchor_ego)
+        anchor_neighbor = torch.where(
+            start.unsqueeze(-1), neighbor_velocity, anchor_neighbor
+        )
+        age = torch.where(start, torch.zeros_like(age), age)
+        held = held | start
+
+        baseline_risk, _ = _closest_approach_risk(
+            relative_position,
+            anchor_neighbor - anchor_ego,
+            lookahead=lookahead,
+            safe_distance=safe_distance,
+        )
+        neighbor_observed_risk, _ = _closest_approach_risk(
+            relative_position,
+            neighbor_velocity - anchor_ego,
+            lookahead=lookahead,
+            safe_distance=safe_distance,
+        )
+        required_reduction = (baseline_risk - safe_risk).clamp_min(1e-6)
+        responsibility = (
+            (baseline_risk - neighbor_observed_risk) / required_reduction
+        ).clamp(0.0, 1.0)
+        responsibility = torch.where(
+            held, responsibility, torch.zeros_like(responsibility)
+        )
+
+        evidence_out[:, time_index] = torch.where(
+            held, 2.0 * responsibility - 1.0, torch.zeros_like(responsibility)
+        )
+        responsibility_out[:, time_index] = responsibility
+        active_out[:, time_index] = held
+        age_out[:, time_index] = torch.where(held, age, torch.zeros_like(age))
+        anchor_ego_out[:, time_index] = anchor_ego
+        anchor_neighbor_out[:, time_index] = anchor_neighbor
+
+        previous_ids = ids
+        previous_ego_generation = ego_generation
+        previous_neighbor_generation = neighbor_generation
+        has_identity = visible
+
+    state = {
+        "held": held,
+        "locked": locked,
+        "anchor_ego_velocity": anchor_ego,
+        "anchor_neighbor_velocity": anchor_neighbor,
+        "age": age,
+        "neighbor_indices": previous_ids,
+        "ego_generation": previous_ego_generation,
+        "neighbor_generation": previous_neighbor_generation,
+        "has_identity": has_identity,
+    }
+    outputs = {
+        "evidence": evidence_out,
+        "responsibility": responsibility_out,
+        "active": active_out,
+        "age": age_out,
+        "anchor_ego_velocity": anchor_ego_out,
+        "anchor_neighbor_velocity": anchor_neighbor_out,
+    }
+    return outputs, state
 
 
 @torch.no_grad()
@@ -112,9 +311,14 @@ def build_counterfactual_labels(
     pre-yield velocity references and a symmetric neutral band. Outside an
     anchored interaction the attributed gap is zero (raw risks are still
     returned for diagnostics). Reference state is local to this rollout.
+
+    ``responsibility`` supervises the fraction of required avoidance carried
+    by the neighbor. It uses the same causal anchors as online NOD evidence,
+    holds the ego counterfactual fixed, and excludes non-interactions instead
+    of treating them as neutral cooperation samples.
     """
 
-    if mode not in {"instantaneous", "interaction"}:
+    if mode not in {"instantaneous", "interaction", "responsibility"}:
         raise ValueError("Unknown NOD label mode")
     if (not math.isfinite(reference_seconds) or reference_seconds <= 0
             or not math.isfinite(dt) or dt <= 0):
@@ -130,12 +334,26 @@ def build_counterfactual_labels(
     risk_counterfactual_out = torch.zeros_like(label)
     horizon = max(1, int(horizon))
     safe_distance = max(float(safe_distance), 1e-6)
-    references = active = reference_age = None
+    references = active = reference_age = responsibility_data = None
     if mode == "interaction":
         references, active, reference_age = _interaction_references(
             positions, velocities, generations, neighbor_indices, edge_mask,
             dt=dt, lookahead=horizon*dt, conflict_distance=1.5*safe_distance,
             max_age=reference_seconds)
+    elif mode == "responsibility":
+        responsibility_data, _ = build_responsibility_evidence(
+            positions,
+            velocities,
+            generations,
+            neighbor_indices,
+            edge_mask,
+            dt=dt,
+            lookahead=horizon * dt,
+            safe_distance=safe_distance,
+            max_age=reference_seconds,
+        )
+        active = responsibility_data["active"]
+        reference_age = responsibility_data["age"]
 
     for t in range(time_steps):
         if t + horizon >= time_steps:
@@ -147,6 +365,8 @@ def build_counterfactual_labels(
         neighbor_vel_t = _gather_agent(vel_t, indices_t)
         if references is not None:
             neighbor_vel_t = references[:, t]
+        elif responsibility_data is not None:
+            neighbor_vel_t = responsibility_data["anchor_neighbor_velocity"][:, t]
         ego_generation_t = generations[:, t].unsqueeze(-1).expand(-1, -1, k_neighbors)
         neighbor_generation_t = _gather_agent(
             generations[:, t].unsqueeze(-1), indices_t
@@ -157,7 +377,14 @@ def build_counterfactual_labels(
         identity_valid = edge_mask[:, t].bool().clone()
         for step in range(1, horizon + 1):
             future_pos = positions[:, t + step]
-            ego_future = future_pos.unsqueeze(2).expand(-1, -1, k_neighbors, -1)
+            if responsibility_data is None:
+                ego_future = future_pos.unsqueeze(2).expand(
+                    -1, -1, k_neighbors, -1
+                )
+            else:
+                ego_future = pos_t.unsqueeze(2) + responsibility_data[
+                    "anchor_ego_velocity"
+                ][:, t] * (float(step) * float(dt))
             neighbor_future = _gather_agent(future_pos, indices_t)
             neighbor_counterfactual = neighbor_pos_t + neighbor_vel_t * (
                 float(step) * float(dt)
@@ -184,16 +411,29 @@ def build_counterfactual_labels(
         risk_actual = torch.stack(actual_risks, dim=0).amax(dim=0)
         risk_counterfactual = torch.stack(counterfactual_risks, dim=0).amax(dim=0)
         mitigation_gap = risk_counterfactual - risk_actual
-        if mode == "interaction":
+        if mode == "responsibility":
+            required_reduction = (
+                risk_counterfactual - math.exp(-1.0)
+            ).clamp_min(1e-6)
+            responsibility = (mitigation_gap / required_reduction).clamp(0.0, 1.0)
+            responsibility = torch.where(
+                active[:, t], responsibility, torch.zeros_like(responsibility)
+            )
+            soft_label = responsibility
+            mitigation_gap = responsibility
+        elif mode == "interaction":
             # No active interaction means no attributed cooperation evidence.
             mitigation_gap = torch.where(active[:, t], mitigation_gap, 0.)
             centered_gap = mitigation_gap.sign() * (mitigation_gap.abs()-float(label_margin)).clamp_min(0.)
+            soft_label = torch.sigmoid(float(label_slope)*centered_gap)
         else:
             centered_gap = mitigation_gap-float(label_margin)
-        soft_label = torch.sigmoid(float(label_slope)*centered_gap)
+            soft_label = torch.sigmoid(float(label_slope)*centered_gap)
         gap[:, t] = mitigation_gap
         label[:, t] = soft_label
-        valid[:, t] = identity_valid
+        valid[:, t] = identity_valid & (
+            active[:, t] if mode == "responsibility" else True
+        )
         risk_actual_out[:, t] = risk_actual
         risk_counterfactual_out[:, t] = risk_counterfactual
 
@@ -206,4 +446,9 @@ def build_counterfactual_labels(
     }
     if active is not None:
         result.update(reference_active=active, reference_age=reference_age)
+    if responsibility_data is not None:
+        result.update(
+            online_evidence=responsibility_data["evidence"],
+            online_responsibility=responsibility_data["responsibility"],
+        )
     return result

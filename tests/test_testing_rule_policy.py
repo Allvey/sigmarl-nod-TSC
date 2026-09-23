@@ -42,23 +42,35 @@ def test_rule_fraction_rejects_invalid_setup(n_agents,fraction,weights,seed,acto
         assign_rule_vehicles(n_agents,fraction,weights,seed=seed,actor_index=actor_index)
 
 
-def command(profile, distance=.5, neighbor_speed=-.6, was_yielding=False):
+def command(profile, distance=.5, neighbor_speed=-.6, was_yielding=False,
+            emergency_ttc=.45, return_details=False):
     return rule_command(torch.zeros(1,2), torch.zeros(1), torch.tensor([.6]),
         torch.tensor([[[0.,0.],[.5,0.],[1.5,0.]]]),
         torch.tensor([[[distance,0.]]]), torch.tensor([[[neighbor_speed,0.]]]),
         profile=profile,cruise_speed=.6,steering_limit=.6,wheelbase=.16,
-        sensing_range=.8,dt=.05,was_yielding=torch.tensor([was_yielding]))
+        sensing_range=.8,dt=.05,was_yielding=torch.tensor([was_yielding]),
+        non_yielding_emergency_ttc=emergency_ttc,return_details=return_details)
 
 
 def test_profiles_react_to_conflict_but_not_outside_sensing():
     for profile in ['yielding','moderate']:
         action,yielding,_=command(profile)
         assert yielding.all() and action[0,0] < .6
-    action,yielding,_=command('non_yielding')
+    action,yielding,_=command('non_yielding',emergency_ttc=.05)
     assert not yielding.any() and action[0,0] == pytest.approx(.6)
     for profile in ['yielding','moderate','non_yielding']:
         action,yielding,_=command(profile,distance=2.)
         assert not yielding.any() and action[0,0] == pytest.approx(.6)
+
+
+def test_non_yielding_keeps_priority_until_imminent_then_emergency_brakes():
+    action,yielding,_,details=command('non_yielding',return_details=True)
+    assert yielding.all() and action[0,0] < .6
+    assert details['emergency_brake'].all() and details['reason'][0] == 11
+    action,yielding,_,details=command(
+        'non_yielding',distance=.78,neighbor_speed=-.3,return_details=True)
+    assert not yielding.any() and action[0,0] == pytest.approx(.6)
+    assert not details['emergency_brake'].any() and details['reason'][0] == 3
 
 
 def test_earlier_yielding_and_release_hysteresis():

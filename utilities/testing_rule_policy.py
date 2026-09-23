@@ -19,7 +19,7 @@ PROFILES = {
 REASONS = {0: 'clear', 1: 'slow-conflict', 2: 'stop-conflict',
            3: 'ignore-traffic', 4: 'least-risk', 5: 'rear-aware',
            7: 'reserved-go', 8: 'reservation-wait', 9: 'keep-reservation',
-           10: 'joint-reserved-go'}
+           10: 'joint-reserved-go', 11: 'emergency-brake'}
 
 
 def assign_rule_vehicles(n_agents, fraction, profile_weights, *, seed, actor_index=0):
@@ -109,7 +109,8 @@ def rule_command(pos, yaw, speed, path, neighbor_pos, neighbor_vel, *, profile,
                  was_yielding, lengths=None, loops=None, rear_length=None,
                  measured_speed=None, lookahead=0.16, acceleration=1.2, braking=2.0,
                  neighbor_yaw=None, body_length=0.16, body_width=0.08, return_details=False,
-                 lateral_accel_limit=DEFAULT_RULE_LATERAL_ACCEL):
+                 lateral_accel_limit=DEFAULT_RULE_LATERAL_ACCEL,
+                 non_yielding_emergency_ttc=0.45):
     """Centre-consistent path tracking and route-based local speed selection.
 
     No neighbor routes, roles or opinions are read. Candidate speeds are tested
@@ -139,6 +140,10 @@ def rule_command(pos, yaw, speed, path, neighbor_pos, neighbor_vel, *, profile,
                            (lateral_accel_limit / curvature.clamp_min(.01)).sqrt())
     cruise = cruise / (1 + 8 * error)
     cfg = PROFILES[profile]
+    if (isinstance(non_yielding_emergency_ttc, bool)
+            or not math.isfinite(non_yielding_emergency_ttc)
+            or non_yielding_emergency_ttc <= 0):
+        raise ValueError('Non-yielding emergency TTC must be positive and finite')
     times = torch.linspace(0., cfg['horizon'], 31, device=pos.device, dtype=pos.dtype)
     fractions = pos.new_tensor([1., .65, .3, 0.])
     candidates = cruise[:, None] * fractions
@@ -209,8 +214,19 @@ def rule_command(pos, yaw, speed, path, neighbor_pos, neighbor_vel, *, profile,
     safe_preference = (rear_severity - .04 * fractions[None]).masked_fill(~safe_candidate, torch.inf)
     all_blocked = ~safe_candidate.any(-1)
     choice = torch.where(all_blocked, preference.argmin(-1), safe_preference.argmin(-1))
+    if neighbor_pos.shape[1]:
+        first_full_risk = torch.where(risk[:, 0], times[None, :, None], torch.inf)
+        full_speed_ttc = first_full_risk.flatten(1).amin(-1)
+    else:
+        full_speed_ttc = pos.new_full((len(routes),), torch.inf)
+    emergency_brake = pos.new_zeros((len(routes),), dtype=torch.bool)
     if profile == 'non_yielding':
-        choice.zero_()
+        emergency_brake = full_speed_ttc <= non_yielding_emergency_ttc
+        first_safe = safe_candidate.to(torch.long).argmax(-1)
+        emergency_choice = torch.where(
+            all_blocked, severity.argmin(-1), first_safe
+        ).clamp_min(1)
+        choice = torch.where(emergency_brake, emergency_choice, torch.zeros_like(choice))
     target_speed = candidates.gather(1, choice[:, None]).squeeze(1)
     yielding = choice > 0
     command_speed = torch.maximum(torch.minimum(target_speed, speed + acceleration * dt),
@@ -220,7 +236,8 @@ def rule_command(pos, yaw, speed, path, neighbor_pos, neighbor_vel, *, profile,
     reason = torch.where((choice > 0) & (choice < 3) & ~all_blocked & ~blocked.gather(1, choice[:, None]).squeeze(1)
                          & (rear_severity.gather(1, choice[:, None]).squeeze(1) > 0), 5, reason)
     if profile == 'non_yielding':
-        reason.fill_(3)
+        reason = torch.where(emergency_brake, reason.new_full(reason.shape, 11),
+                             reason.new_full(reason.shape, 3))
     if neighbor_pos.shape[1]:
         first_risk = torch.where(risk[:, 0], times[None, :, None], torch.inf)
         ttc, neighbor = first_risk.flatten(1).min(-1)
@@ -230,7 +247,9 @@ def rule_command(pos, yaw, speed, path, neighbor_pos, neighbor_vel, *, profile,
         ttc = pos.new_full((len(routes),), torch.inf)
         neighbor = torch.full((len(routes),), -1, device=pos.device, dtype=torch.long)
     details = dict(error=error, curvature=curvature, cruise_limit=cruise, blocker=neighbor, ttc=ttc,
-                   reason=reason, all_blocked=all_blocked, rear_risk=rear_risk.any(dim=-1).any(dim=-1).any(dim=-1))
+                   reason=reason, all_blocked=all_blocked,
+                   emergency_brake=emergency_brake,
+                   rear_risk=rear_risk.any(dim=-1).any(dim=-1).any(dim=-1))
     result = (torch.stack([command_speed, steering], -1), yielding, target_speed)
     return (*result, details) if return_details else result
 
@@ -243,7 +262,8 @@ class TestingRulePolicy(nn.Module):
     Rule-slot Actor log probabilities are invalidated, not presented as PPO data.
     """
     def __init__(self, policy, scenario, vehicles, *, cruise_speed=0.6,
-                 lateral_accel_limit=DEFAULT_RULE_LATERAL_ACCEL):
+                 lateral_accel_limit=DEFAULT_RULE_LATERAL_ACCEL,
+                 non_yielding_emergency_ttc=0.45):
         super().__init__()
         self.policy = policy
         self.scenario = scenario
@@ -263,6 +283,11 @@ class TestingRulePolicy(nn.Module):
         if not math.isfinite(lateral_accel_limit) or lateral_accel_limit <= 0:
             raise ValueError('Rule lateral acceleration limit must be positive and finite')
         self.lateral_accel_limit = lateral_accel_limit
+        if (isinstance(non_yielding_emergency_ttc, bool)
+                or not math.isfinite(non_yielding_emergency_ttc)
+                or non_yielding_emergency_ttc <= 0):
+            raise ValueError('Non-yielding emergency TTC must be positive and finite')
+        self.non_yielding_emergency_ttc = non_yielding_emergency_ttc
         self.previous = {}
         self.neighbor_history = {}
         self.status = {}
@@ -311,6 +336,7 @@ class TestingRulePolicy(nn.Module):
                     if other else pos.new_empty((pos.shape[0], 0)),
                 profile=profile, cruise_speed=self.cruise_speed,
                 lateral_accel_limit=self.lateral_accel_limit,
+                non_yielding_emergency_ttc=self.non_yielding_emergency_ttc,
                 steering_limit=float(s.max_steering_angle),
                 wheelbase=agent.dynamics.l_f + agent.dynamics.l_r,
                 sensing_range=s.parameters.nod_sensing_range, dt=s.parameters.dt,
@@ -329,10 +355,18 @@ class TestingRulePolicy(nn.Module):
                 if key not in diagnostics:
                     diagnostics[key] = torch.zeros_like(actions[..., :1], dtype=value.dtype)
                 diagnostics[key][:, i, 0] = value
+        # An imminent Actor conflict invalidates an old rule-to-rule motion
+        # commitment. The coordinator will rebuild a mutually safe plan from
+        # the emergency-limited command instead of replaying reserved speed.
+        for i in self.vehicles:
+            emergency = self.status[i][2]['emergency_brake']
+            for env_i in emergency.nonzero().flatten().tolist():
+                self.coordinator.plans.pop((env_i, i), None)
         actions, coordination, blocking, wait_time, infeasible = self.coordinator.coordinate(actions)
         for i in self.vehicles:
             yielding, _, details = self.status[i]
-            active = coordination[:, i] != 0
+            emergency = details['emergency_brake']
+            active = (coordination[:, i] != 0) & ~emergency
             details['reason'] = torch.where(active, coordination[:, i], details['reason'])
             details['blocker'] = torch.where(active & (blocking[:, i] >= 0), blocking[:, i], details['blocker'])
             details['reservation_wait'] = wait_time[:, i]
@@ -384,7 +418,8 @@ class TestingRulePolicy(nn.Module):
     def save_diagnostics(self, rollout, path):
         """Log every transition, including final steps and pre-reset contacts."""
         fields = ['env', 'step', 't_sec', 'agent', 'generation', 'profile', 'reason',
-                  'blocker', 'ttc', 'all_blocked', 'rear_risk', 'reservation_wait', 'reservation_infeasible',
+                  'blocker', 'ttc', 'all_blocked', 'emergency_brake', 'rear_risk',
+                  'reservation_wait', 'reservation_infeasible',
                   'gate_owner', 'gate_distance', 'coordination_desired_speed',
                   'rule_contact', 'curvature', 'cruise_limit', 'speed_command', 'target_speed', 'actual_speed_next',
                   'route_error', 'route_error_next', 'road_contact', 'vehicle_contact',
@@ -414,6 +449,7 @@ class TestingRulePolicy(nn.Module):
                             blocker=blocker+1 if blocker >= 0 else '',
                             ttc=float(td['agents', 'rule_ttc'][i]),
                             all_blocked=int(td['agents', 'rule_all_blocked'][i]),
+                            emergency_brake=int(td['agents', 'rule_emergency_brake'][i]),
                             rear_risk=int(td['agents', 'rule_rear_risk'][i]),
                             reservation_wait=float(td['agents', 'rule_reservation_wait'][i]),
                             reservation_infeasible=int(td['agents', 'rule_reservation_infeasible'][i]),

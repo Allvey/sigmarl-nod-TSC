@@ -779,6 +779,7 @@ class Parameters:
         nod_risk_threshold: float = 1.25,
         nod_min_log_sigma: float = -2.5,
         nod_max_log_sigma: float = 0.0,
+        nod_fixed_evidence_mapping: bool = False,
         nod_sensing_range: float = 0.8,
         nod_interaction_distance: float = 0.48,
         nod_conflict_radius: float = 0.08,
@@ -842,6 +843,10 @@ class Parameters:
         dgppo_opinion_alpha: bool = False,
         dgppo_alpha_span: float = 5.0,
         dgppo_alpha_gain: float = 1.0,
+        dgppo_opinion_deadzone: float = 0.0,
+        nod_actor_opinion_mode: str = "online",
+        dgppo_road_alpha_safe: float = None,
+        dgppo_road_alpha_recovery: float = None,
         dgppo_eps: float = 0.01,
         dgppo_weight: float = 1.0,
         dgppo_schedule: bool = True,
@@ -853,6 +858,7 @@ class Parameters:
         safety_barrier_kappa_min: float = 0.04,
         safety_barrier_kappa_max: float = 0.06,
         nod_freeze_training: bool = False,
+        nod_training_mode: str = "joint",
         training_init_checkpoint: str = None,
         # Stage 6: independent temporal deadlock prediction.
         is_using_deadlock_critic: bool = True,
@@ -1060,6 +1066,20 @@ class Parameters:
         self.dgppo_opinion_alpha = dgppo_opinion_alpha
         self.dgppo_alpha_span = dgppo_alpha_span
         self.dgppo_alpha_gain = dgppo_alpha_gain
+        self.dgppo_opinion_deadzone = dgppo_opinion_deadzone
+        if nod_actor_opinion_mode not in {"online", "neutral"}:
+            raise ValueError("nod_actor_opinion_mode must be online or neutral")
+        if nod_actor_opinion_mode == "neutral" and not dgppo_nod:
+            raise ValueError("Neutral Actor opinion requires local DGPPO NOD inputs")
+        self.nod_actor_opinion_mode = nod_actor_opinion_mode
+        self.dgppo_road_alpha_safe = (
+            dgppo_alpha if dgppo_road_alpha_safe is None else dgppo_road_alpha_safe
+        )
+        self.dgppo_road_alpha_recovery = (
+            dgppo_alpha
+            if dgppo_road_alpha_recovery is None
+            else dgppo_road_alpha_recovery
+        )
         self.dgppo_eps = dgppo_eps
         self.dgppo_weight = dgppo_weight
         self.dgppo_schedule = dgppo_schedule
@@ -1077,8 +1097,20 @@ class Parameters:
         if (not isinstance(dgppo_opinion_alpha, bool)
                 or not math.isfinite(dgppo_alpha_span) or dgppo_alpha_span < 0
                 or isinstance(dgppo_alpha_gain, bool)
-                or not math.isfinite(dgppo_alpha_gain) or dgppo_alpha_gain <= 0):
+                or not math.isfinite(dgppo_alpha_gain) or dgppo_alpha_gain <= 0
+                or not math.isfinite(dgppo_opinion_deadzone)
+                or not 0 <= dgppo_opinion_deadzone < 1):
             raise ValueError("Invalid DGPPO opinion alpha parameters")
+        if (isinstance(self.dgppo_road_alpha_safe, bool)
+                or isinstance(self.dgppo_road_alpha_recovery, bool)
+                or not math.isfinite(self.dgppo_road_alpha_safe)
+                or not math.isfinite(self.dgppo_road_alpha_recovery)
+                or not 0 < self.dgppo_road_alpha_safe <= dgppo_alpha
+                or not dgppo_alpha <= self.dgppo_road_alpha_recovery
+                or self.dgppo_road_alpha_recovery * dt >= 1):
+            raise ValueError(
+                "DGPPO road alpha requires 0 < safe <= base <= recovery and recovery*dt < 1"
+            )
         if dgppo_opinion_alpha and (
                 safety_control_mode != 'dgppo' or not dgppo_nod
                 or not is_using_safety_constraint or not is_using_safety_value_shadow
@@ -1095,6 +1127,18 @@ class Parameters:
         self.safety_barrier_kappa_min = safety_barrier_kappa_min
         self.safety_barrier_kappa_max = safety_barrier_kappa_max
         self.nod_freeze_training = nod_freeze_training
+        if nod_training_mode not in {"joint", "candidate_only"}:
+            raise ValueError("nod_training_mode must be joint or candidate_only")
+        if nod_training_mode == "candidate_only" and (
+            not nod_freeze_training
+            or not is_using_nod_opinion
+            or nod_observation_mode != "local_kinematics"
+            or not training_init_checkpoint
+        ):
+            raise ValueError(
+                "candidate_only requires a frozen local behavior NOD and a training checkpoint"
+            )
+        self.nod_training_mode = nod_training_mode
         self.training_init_checkpoint = training_init_checkpoint
         if safety_control_mode == 'barrier_opinion' and (
                 not 0 < safety_barrier_kappa_min <= safety_barrier_kappa_max < 1
@@ -1185,6 +1229,7 @@ class Parameters:
         self.nod_risk_threshold = nod_risk_threshold
         self.nod_min_log_sigma = nod_min_log_sigma
         self.nod_max_log_sigma = nod_max_log_sigma
+        self.nod_fixed_evidence_mapping = nod_fixed_evidence_mapping
         self.nod_sensing_range = nod_sensing_range
         self.nod_interaction_distance = nod_interaction_distance
         self.nod_conflict_radius = nod_conflict_radius
@@ -1193,8 +1238,10 @@ class Parameters:
         self.nod_safe_distance = nod_safe_distance
         self.nod_label_slope = nod_label_slope
         self.nod_label_margin = nod_label_margin
-        if nod_label_mode not in {"instantaneous", "interaction"}:
-            raise ValueError("nod_label_mode must be instantaneous or interaction")
+        if nod_label_mode not in {"instantaneous", "interaction", "responsibility"}:
+            raise ValueError(
+                "nod_label_mode must be instantaneous, interaction or responsibility"
+            )
         if not 0 < nod_reference_seconds < float("inf"):
             raise ValueError("nod_reference_seconds must be positive and finite")
         self.nod_label_mode = nod_label_mode

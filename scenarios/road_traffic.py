@@ -3059,6 +3059,11 @@ class ScenarioRoadTraffic(BaseScenario):
             # Preserve per-vehicle terminal contacts before auto-respawn. The
             # older is_collision_with_lanelets field is an environment aggregate.
             info['testing_road_contact'] = self.collisions.with_lanelets[:, agent_index].clone()
+            # These cumulative counters are captured in the transition before
+            # a terminal auto-reset clears scenario state. Evaluation must read
+            # the maximum stored value instead of the post-rollout counter.
+            info['testing_vehicle_collision_events'] = self.collision_counter.vehicle.clone()
+            info['testing_road_collision_events'] = self.collision_counter.road.clone()
             info['testing_route_error'] = self.distances.ref_paths[:, agent_index].clone()
             rule_indices = list(getattr(self, 'testing_rule_profiles', {}))
             info['testing_rule_contact'] = (

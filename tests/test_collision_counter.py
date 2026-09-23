@@ -52,8 +52,10 @@ def test_physical_collision_is_counted_before_testing_respawn(monkeypatch):
         generations = scenario.nod_agent_generation.clone()
         td = env.rand_action(td)
         td['agents', 'action'].zero_()
-        env.step(td)
+        transition = env.step(td)
         assert scenario.collision_counter.vehicle[0] >= 1
+        assert transition['next', 'agents', 'info',
+                          'testing_vehicle_collision_events'].max() >= 1
         assert (scenario.nod_agent_generation != generations).any()
         # done() has cleared collision flags, but totals survive single-car resets.
         assert not scenario.collisions.with_agents.any()

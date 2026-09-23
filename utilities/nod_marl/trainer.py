@@ -9,7 +9,10 @@ import torch
 from torch import Tensor
 import torch.nn.functional as F
 
-from .counterfactual import build_counterfactual_labels
+from .counterfactual import (
+    build_counterfactual_labels,
+    build_responsibility_evidence,
+)
 from .interaction import NOD_PAIR_FEATURE_DIM, nod_observation_inputs
 from .opinion import NODOpinionModel
 
@@ -68,6 +71,7 @@ class NODOpinionManager:
     ):
         self.parameters = parameters
         self.observation_mode = getattr(parameters, "nod_observation_mode", "legacy_paths")
+        self.label_mode = getattr(parameters, "nod_label_mode", "instantaneous")
         self.enabled = bool(getattr(parameters, "is_using_nod_opinion", True))
         self.n_neighbors = max(1, int(getattr(parameters, "n_agents", 2)) - 1)
         dt = float(parameters.dt)
@@ -119,6 +123,10 @@ class NODOpinionManager:
                 max_risk_weight=float(
                     getattr(parameters, "nod_max_risk_weight", 1.0)
                 ),
+                fixed_evidence_mapping=(
+                    bool(getattr(parameters, "nod_fixed_evidence_mapping", False))
+                    or self.label_mode == "responsibility"
+                ),
             ).to(parameters.device)
         finally:
             torch.random.set_rng_state(cpu_rng_state)
@@ -135,6 +143,7 @@ class NODOpinionManager:
         # Collection advances this causal state one frame at a time. Offline
         # sequence training still rebuilds its own state from rollout start.
         self.online_state: Optional[Dict[str, Tensor]] = None
+        self.responsibility_state: Optional[Dict[str, Tensor]] = None
         self.last_metrics: Dict[str, float] = {}
         self.last_load_info = ""
 
@@ -144,6 +153,7 @@ class NODOpinionManager:
 
     def reset_online_state(self) -> None:
         self.online_state = None
+        self.responsibility_state = None
 
     @property
     def online_context_dim(self) -> int:
@@ -186,13 +196,17 @@ class NODOpinionManager:
         neighbor_generations = self._get_rollout_tensor(
             tensordict, "nod_neighbor_generation"
         )
-        required = (
+        positions = self._get_rollout_tensor(tensordict, "nod_world_pos")
+        velocities = self._get_rollout_tensor(tensordict, "nod_world_vel")
+        required = [
             pair_features,
             edge_mask,
             neighbor_indices,
             ego_generations,
             neighbor_generations,
-        )
+        ]
+        if self.label_mode == "responsibility":
+            required.extend((positions, velocities))
         if any(value is None for value in required):
             return None
         if pair_features.ndim != 4:
@@ -210,6 +224,43 @@ class NODOpinionManager:
         if not self._online_state_matches(self.online_state, pair_features):
             self.reset_online_state()
 
+        opinion_mask = evidence_override = None
+        if self.label_mode == "responsibility":
+            responsibility_shape = pair_features.shape[:-1]
+            if (
+                self.responsibility_state is not None
+                and (
+                    tuple(self.responsibility_state["held"].shape)
+                    != tuple(responsibility_shape)
+                    or self.responsibility_state["held"].device
+                    != pair_features.device
+                )
+            ):
+                self.responsibility_state = None
+            responsibility, responsibility_state = build_responsibility_evidence(
+                positions.detach().unsqueeze(1),
+                velocities.detach().unsqueeze(1),
+                ego_generations.unsqueeze(1),
+                neighbor_indices.unsqueeze(1),
+                edge_mask.unsqueeze(1),
+                dt=float(self.parameters.dt),
+                lookahead=(
+                    int(getattr(self.parameters, "nod_counterfactual_horizon", 8))
+                    * float(self.parameters.dt)
+                ),
+                safe_distance=float(
+                    getattr(self.parameters, "nod_safe_distance", 0.25)
+                ),
+                max_age=float(
+                    getattr(self.parameters, "nod_reference_seconds", 2.0)
+                ),
+                neighbor_generations=neighbor_generations.unsqueeze(1),
+                initial_state=self.responsibility_state,
+            )
+            self.responsibility_state = _detach_state(responsibility_state)
+            opinion_mask = responsibility["active"]
+            evidence_override = responsibility["evidence"]
+
         self.model.eval()
         outputs, state = self.model.forward_sequence(
             pair_features.unsqueeze(1),
@@ -217,6 +268,8 @@ class NODOpinionManager:
             ego_generations.unsqueeze(1),
             neighbor_generations.unsqueeze(1),
             initial_state=self.online_state,
+            opinion_mask=opinion_mask,
+            evidence_override=evidence_override,
         )
         self.online_state = _detach_state(state)
         edge_context = torch.cat(
@@ -230,7 +283,15 @@ class NODOpinionManager:
         )
         return {
             "edge_context": edge_context.detach(),
+            # Keep the Actor's physical neighbor graph unchanged. Outside an
+            # active conflict z is neutral, but the Actor still sees the
+            # neighbor's physical context.
             "edge_mask": edge_mask.detach(),
+            "opinion_active": (
+                opinion_mask[:, 0].detach()
+                if opinion_mask is not None
+                else edge_mask.detach()
+            ),
             "opinion": outputs["z"][:, 0].detach(),
             "risk_attention": outputs["attention"][:, 0].detach(),
         }
@@ -326,9 +387,20 @@ class NODOpinionManager:
             safe_distance=float(getattr(self.parameters, "nod_safe_distance", 0.25)),
             label_slope=float(getattr(self.parameters, "nod_label_slope", 12.0)),
             label_margin=float(getattr(self.parameters, "nod_label_margin", 0.02)),
-            mode=getattr(self.parameters, "nod_label_mode", "instantaneous"),
+            mode=self.label_mode,
             reference_seconds=float(getattr(self.parameters, "nod_reference_seconds", 2.0)),
         )
+        opinion_mask = (
+            labels.get("reference_active")
+            if self.label_mode == "responsibility"
+            else None
+        )
+        evidence_override = (
+            labels.get("online_evidence")
+            if self.label_mode == "responsibility"
+            else None
+        )
+        dynamics_mask = opinion_mask if opinion_mask is not None else edge_mask
 
         batch_size, time_steps = pair_features.shape[:2]
         sequence_length = max(
@@ -376,15 +448,29 @@ class NODOpinionManager:
                         key: value.index_select(0, env_ids)[:, time_slice]
                         for key, value in labels.items()
                     }
+                    opinion_chunk = (
+                        opinion_mask.index_select(0, env_ids)[:, time_slice]
+                        if opinion_mask is not None
+                        else None
+                    )
+                    evidence_chunk = (
+                        evidence_override.index_select(0, env_ids)[:, time_slice]
+                        if evidence_override is not None
+                        else None
+                    )
                     outputs, state = self.model.forward_sequence(
                         pair_chunk,
                         mask_chunk,
                         ego_generation_chunk,
                         neighbor_generation_chunk,
                         initial_state=state,
+                        opinion_mask=opinion_chunk,
+                        evidence_override=evidence_chunk,
                     )
                     loss, _, _, _, dynamics_valid, calibration_valid = self._losses(
-                        outputs, label_chunk, mask_chunk
+                        outputs,
+                        label_chunk,
+                        opinion_chunk if opinion_chunk is not None else mask_chunk,
                     )
                     state = _detach_state(state)
                     if not bool(dynamics_valid.any() | calibration_valid.any()):
@@ -409,14 +495,16 @@ class NODOpinionManager:
                 ego_generations,
                 neighbor_generations,
                 initial_state=None,
+                opinion_mask=opinion_mask,
+                evidence_override=evidence_override,
             )
             loss, nll, calibration, brier, dynamics_valid, calibration_valid = (
-                self._losses(outputs, labels, edge_mask)
+                self._losses(outputs, labels, dynamics_mask)
             )
 
-        edge_count = edge_mask.sum().clamp_min(1)
-        active_z = outputs["z"][edge_mask]
-        active_attention = outputs["attention"][edge_mask]
+        edge_count = dynamics_mask.sum().clamp_min(1)
+        active_z = outputs["z"][dynamics_mask]
+        active_attention = outputs["attention"][dynamics_mask]
         valid_residual = outputs["root_residual"][dynamics_valid]
         valid_curvature = outputs["curvature"][dynamics_valid]
         risk_score = outputs["risk_score"]
@@ -465,7 +553,7 @@ class NODOpinionManager:
         valid_rho = outputs["rho"][calibration_valid]
         valid_label = labels["label"][calibration_valid]
         valid_gap = labels["gap"][calibration_valid]
-        new_edge_mask = edge_mask & ~outputs["learning_valid"]
+        new_edge_mask = dynamics_mask & ~outputs["learning_valid"]
         metrics = {
             "enabled": 1.0,
             "loss": float(loss),
@@ -480,8 +568,8 @@ class NODOpinionManager:
             "z_counterfactual_gap_correlation": _correlation(
                 outputs["z"][calibration_valid], valid_gap
             ),
-            "edge_count": float(edge_mask.sum()),
-            "edge_density": float(edge_mask.float().mean()),
+            "edge_count": float(dynamics_mask.sum()),
+            "edge_density": float(dynamics_mask.float().mean()),
             "counterfactual_valid_ratio": float(
                 calibration_valid.sum().float() / edge_count
             ),
@@ -527,6 +615,21 @@ class NODOpinionManager:
         if 'reference_active' in labels:
             metrics['label_reference_active_ratio'] = float(
                 labels['reference_active'][edge_mask].float().mean()) if bool(edge_mask.any()) else 0.
+        if 'online_responsibility' in labels:
+            active_responsibility = labels['online_responsibility'][dynamics_mask]
+            metrics['online_responsibility_mean'] = (
+                float(active_responsibility.mean())
+                if active_responsibility.numel()
+                else 0.0
+            )
+            metrics['online_evidence_positive_ratio'] = (
+                float((labels['online_evidence'][dynamics_mask] > 0.0).float().mean())
+                if bool(dynamics_mask.any())
+                else 0.0
+            )
+            metrics['fixed_evidence_mapping'] = float(
+                self.model.fixed_evidence_mapping
+            )
         return metrics
 
     def checkpoint_state(self) -> Dict:
@@ -535,6 +638,8 @@ class NODOpinionManager:
             "observation_mode": self.observation_mode,
             "pair_feature_dim": self.model.pair_feature_dim,
             "history_mode": self.model.history_mode,
+            "label_mode": self.label_mode,
+            "fixed_evidence_mapping": self.model.fixed_evidence_mapping,
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "sequence_generator_state": self._sequence_generator.get_state(),

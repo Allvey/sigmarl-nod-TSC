@@ -92,6 +92,49 @@ def test_actor_input_reuses_detached_cache_and_trains_only_message_aggregator():
     assert any(parameter.grad is not None for parameter in module.parameters())
 
 
+def test_neutral_actor_mode_removes_only_opinion_coordinate():
+    class DummyNODManager:
+        online_context_dim = 7
+        n_neighbors = 2
+
+        def online_step(self, tensordict):
+            raise AssertionError("cached input must not advance NOD")
+
+    torch.manual_seed(7)
+    online = NODActorInputModule(
+        observation_key=("agents", "observation"), base_observation_dim=5,
+        nod_manager=DummyNODManager(), action_dim=2, message_dim=4,
+        message_hidden_dim=8, opinion_mode="online",
+    )
+    neutral = NODActorInputModule(
+        observation_key=("agents", "observation"), base_observation_dim=5,
+        nod_manager=DummyNODManager(), action_dim=2, message_dim=4,
+        message_hidden_dim=8, opinion_mode="neutral",
+    )
+    neutral.load_state_dict(online.state_dict())
+    context = torch.randn(1, 2, 2, 7)
+    data = TensorDict({
+        ("agents", "observation"): torch.randn(1, 2, 5),
+        NOD_ACTOR_EDGE_CONTEXT_KEY: context.clone(),
+        NOD_ACTOR_EDGE_MASK_KEY: torch.ones(1, 2, 2, dtype=torch.bool),
+        NOD_ACTOR_CONTEXT_READY_KEY: torch.ones(1, 2, 1, dtype=torch.bool),
+    }, batch_size=[1])
+    neutral_data = data.clone()
+    explicit_zero = data.clone()
+    explicit_context = explicit_zero.get(NOD_ACTOR_EDGE_CONTEXT_KEY).clone()
+    explicit_context[..., -1] = 0.0
+    explicit_zero.set(NOD_ACTOR_EDGE_CONTEXT_KEY, explicit_context)
+
+    online(explicit_zero)
+    neutral(neutral_data)
+
+    assert torch.equal(neutral_data.get(NOD_ACTOR_EDGE_CONTEXT_KEY), context)
+    assert torch.allclose(
+        neutral_data.get(NOD_ACTOR_MESSAGE_KEY),
+        explicit_zero.get(NOD_ACTOR_MESSAGE_KEY),
+    )
+
+
 def test_online_opinion_state_resets_when_neighbor_generation_changes():
     parameters = SimpleNamespace(
         device="cpu",

@@ -185,3 +185,47 @@ def test_history_can_be_disabled_without_removing_opinion_dynamics():
 
     assert outputs["z"].shape == (1, 2, 2, 1)
     assert torch.isfinite(outputs["z"]).all()
+
+
+def test_fixed_evidence_mapping_has_zero_intercept_and_unit_slope():
+    model = NODOpinionModel(
+        pair_feature_dim=20,
+        hidden_dim=8,
+        fixed_evidence_mapping=True,
+    )
+    hidden = torch.randn(2, 3, 4, 8)
+    intercept, slope, variance = model.likelihood_parameters(hidden)
+
+    assert torch.equal(intercept, torch.zeros_like(intercept))
+    assert torch.equal(slope, torch.ones_like(slope))
+    assert torch.isfinite(variance).all()
+    assert (variance > 0.0).all()
+
+
+def test_explicit_responsibility_mask_limits_where_opinion_evolves():
+    model = NODOpinionModel(
+        pair_feature_dim=20,
+        hidden_dim=8,
+        fixed_evidence_mapping=True,
+    )
+    pair = torch.zeros(1, 3, 2, 1, 20)
+    edge_mask = torch.ones(1, 3, 2, 1, dtype=torch.bool)
+    opinion_mask = torch.zeros_like(edge_mask)
+    opinion_mask[:, 1:, 0, 0] = True
+    evidence = torch.zeros_like(pair[..., 0])
+    evidence[:, 1:, 0, 0] = 1.0
+    generations = torch.ones(1, 3, 2, dtype=torch.long)
+    neighbor_generations = torch.ones(1, 3, 2, 1, dtype=torch.long)
+
+    outputs, _ = model.forward_sequence(
+        pair,
+        edge_mask,
+        generations,
+        neighbor_generations,
+        opinion_mask=opinion_mask,
+        evidence_override=evidence,
+    )
+
+    assert outputs["z"][0, 1, 0, 0] > 0.0
+    assert (outputs["z"][~opinion_mask] == 0.0).all()
+    assert torch.equal(outputs["opinion_active"], opinion_mask)

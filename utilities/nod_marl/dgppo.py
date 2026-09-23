@@ -12,18 +12,36 @@ from .barrier import aligned_opinions
 
 
 @torch.no_grad()
-def opinion_alpha(td, current, value, *, alpha, span, gain=1.0):
+def opinion_alpha(td, current, value, *, alpha, span, gain=1.0, deadzone=0.0):
     """Adjust only safe, identity-aligned pair heads using pre-action opinions."""
     available, opinions = aligned_opinions(td, current)
     n = opinions.shape[-1]
     g, v = current['g'][..., :n], value[..., :n]
     safe = current['valid'][..., :n] & torch.isfinite(g) & torch.isfinite(v) & (g <= 0) & (v < 0)
-    applied = available & safe
+    applied = available & safe & (opinions.abs() > float(deadzone))
     mapped_opinions = (gain * opinions).clamp(-1., 1.)
-    coefficients = torch.full_like(value, alpha)
-    coefficients[..., :n] = torch.where(applied, alpha + span * mapped_opinions, alpha)
+    coefficients = alpha.clone() if isinstance(alpha, torch.Tensor) else torch.full_like(value, alpha)
+    pair_base = coefficients[..., :n].clone()
+    coefficients[..., :n] = torch.where(
+        applied, pair_base + span * mapped_opinions, pair_base
+    )
     return coefficients, dict(available=available, opinions=opinions, safe=safe, applied=applied,
                              mapped_opinions=mapped_opinions)
+
+
+@torch.no_grad()
+def constraint_alpha(value, *, alpha, road_safe_alpha, road_recovery_alpha):
+    """Use a stricter safe-side road rate and a stronger unsafe recovery rate."""
+    if road_safe_alpha == alpha and road_recovery_alpha == alpha:
+        return alpha
+    coefficients = torch.full_like(value, alpha)
+    road_value = value[..., -2]
+    coefficients[..., -2] = torch.where(
+        road_value > 0,
+        road_value.new_tensor(road_recovery_alpha),
+        road_value.new_tensor(road_safe_alpha),
+    )
+    return coefficients
 
 
 @torch.no_grad()
@@ -103,10 +121,13 @@ def prepare_dgppo_advantage(manager, td, advantage_key):
     weight = p.dgppo_weight * (2 ** (int(progress >= .5) + int(progress >= .75)) if p.dgppo_schedule else 1)
     metrics = dict(barrier_enabled=float(enabled), barrier_ready=float(ready), barrier_active=0.,
                    barrier_dgppo=1., barrier_weight=weight, barrier_fit_batches=manager.barrier_fit_batches,
-                   barrier_task_additive=float(p.dgppo_task_mode == "additive"))
+                   barrier_task_additive=float(p.dgppo_task_mode == "additive"),
+                   road_alpha_safe=p.dgppo_road_alpha_safe,
+                   road_alpha_recovery=p.dgppo_road_alpha_recovery)
     opinion_mode = getattr(p, 'dgppo_opinion_alpha', False)
     if opinion_mode:
-        metrics.update(opinion_alpha_enabled=1., opinion_alpha_gain=p.dgppo_alpha_gain, **dict.fromkeys([
+        metrics.update(opinion_alpha_enabled=1., opinion_alpha_gain=p.dgppo_alpha_gain,
+                       opinion_alpha_deadzone=p.dgppo_opinion_deadzone, **dict.fromkeys([
             'opinion_pair_count', 'opinion_valid_count', 'opinion_missing_count',
             'opinion_z_mean', 'opinion_alpha_mean', 'opinion_alpha_min', 'opinion_alpha_max',
             'opinion_c_delta_abs', 'opinion_pair_flip_rate', 'opinion_agent_flip_rate',
@@ -126,10 +147,17 @@ def prepare_dgppo_advantage(manager, td, advantage_key):
     value, nxt = manager.model(current), manager.model(following)
     terminal = td.get(('next', 'done')).bool().reshape(*td.batch_size, 1, 1)
     nxt = torch.where(terminal, following['g'], nxt)
-    alpha = p.dgppo_alpha
+    fixed_alpha = constraint_alpha(
+        value,
+        alpha=p.dgppo_alpha,
+        road_safe_alpha=p.dgppo_road_alpha_safe,
+        road_recovery_alpha=p.dgppo_road_alpha_recovery,
+    )
+    alpha = fixed_alpha
     if opinion_mode:
         alpha, opinion_info = opinion_alpha(td, current, value, alpha=alpha,
-                                            span=p.dgppo_alpha_span, gain=p.dgppo_alpha_gain)
+                                            span=p.dgppo_alpha_span, gain=p.dgppo_alpha_gain,
+                                            deadzone=p.dgppo_opinion_deadzone)
     # Scaling has already been applied above; do not normalize the mixed result.
     adjusted, info = dgppo_advantage(task, current, following, value, nxt,
                                     dt=p.dt, alpha=alpha, eps=p.dgppo_eps, weight=weight,
@@ -142,7 +170,7 @@ def prepare_dgppo_advantage(manager, td, advantage_key):
         # Same physical predictions and task advantages: isolates the effect
         # of opinions, including suppression by a dominant road/collision head.
         fixed, fixed_info = dgppo_advantage(
-            task, current, following, value, nxt, dt=p.dt, alpha=p.dgppo_alpha,
+            task, current, following, value, nxt, dt=p.dt, alpha=fixed_alpha,
             eps=p.dgppo_eps, weight=weight, task_mode=p.dgppo_task_mode)
         n = opinion_info['opinions'].shape[-1]
         pair = info['valid'][..., :n] & info['eligible'].unsqueeze(-1) & opinion_info['safe']

@@ -37,7 +37,7 @@ def opinion_alpha_lines(td, manager, *, agent_index=0, env_index=0, decision_tim
         value = manager.model(state)
         coefficients, details = opinion_alpha(
             snapshot, state, value, alpha=p.dgppo_alpha, span=p.dgppo_alpha_span,
-            gain=p.dgppo_alpha_gain)
+            gain=p.dgppo_alpha_gain, deadzone=p.dgppo_opinion_deadzone)
     for j in neighbors:
         known = bool(available[0, agent_index, j])
         z = f"{float(opinions[0, agent_index, j]):+.3f}" if known else "N/A"
@@ -53,6 +53,9 @@ def opinion_alpha_lines(td, manager, *, agent_index=0, env_index=0, decision_tim
                 reason = "missing: fixed"
             elif bool(details['applied'][0, agent_index, j]):
                 reason = "opinion"
+            elif (known and bool(details['safe'][0, agent_index, j])
+                  and abs(float(opinions[0, agent_index, j])) <= p.dgppo_opinion_deadzone):
+                reason = "deadzone: fixed"
             else:
                 reason = "non-safe: fixed"
         lines.append(f"A{agent_index + 1} -> A{j + 1}  z={z}  alpha={alpha}  [{reason}]")

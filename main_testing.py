@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from utilities.helper_training import Parameters, SaveData
+import argparse
 import torch
 import os
 
@@ -16,18 +17,39 @@ from utilities.constants import SCENARIOS
 from utilities.nod_marl.visualization import opinion_alpha_lines
 from utilities.testing_rule_policy import TestingRulePolicy, assign_rule_vehicles
 from utilities.testing_rule_coordinator import CONTROLLER_VERSION
+from utilities.testing_evaluation import rule_run_name, summarize_rule_run
 
-path = "outputs/dgppo_nod_interaction_finetune/"  # Match the current from-scratch training output.
+parser = argparse.ArgumentParser(description="Visualize one reproducible mixed-controller rollout.")
+parser.add_argument("--model-path", default="outputs/dgppo_nod_gain1_road_safe_finetune/")
+parser.add_argument("--env-seed", type=int, default=None,
+                    help="Rollout/environment seed; defaults to the checkpoint seed.")
+parser.add_argument("--rule-assignment-seed", type=int, default=123,
+                    help="Changes rule-profile assignment only, not environment randomness.")
+parser.add_argument("--scenario", choices=sorted(SCENARIOS), default="intersection_2")
+parser.add_argument("--max-steps", type=int, default=1200)
+parser.add_argument("--no-video", action="store_true")
+parser.add_argument("--no-speed-print", action="store_true")
+parser.add_argument("--no-realtime", action="store_true")
+args = parser.parse_args()
+if args.max_steps < 2:
+    parser.error("--max-steps must be at least 2")
+if args.env_seed is not None and args.env_seed < 0:
+    parser.error("--env-seed must be non-negative")
+if args.rule_assignment_seed < 0:
+    parser.error("--rule-assignment-seed must be non-negative")
+
+path = os.path.join(args.model_path, "")
 
 # 比例模式：8辆车、比例0.5时分配4辆规则车；车辆1留给Actor观察NOD。
 # 设为None则使用下方的手动映射；0表示全部Actor，1需要把保留索引设为None。
 rule_fraction = 0.5
 rule_profile_weights = {"yielding": 0.25, "moderate": 0.5, "non_yielding": 0.25}
-rule_assignment_seed = 123  # 仅用于控制类型分配，不改变环境随机种子。
+rule_assignment_seed = args.rule_assignment_seed  # 仅用于控制类型分配，不改变环境随机种子。
 reserved_actor_index = 0  # 0-based；设为None可选择所有车辆。
 manual_rule_vehicles = {1: "moderate"}  # 仅在rule_fraction=None时使用。
 rule_cruise_speed = 1.0  # m/s，所有类型共用，转弯时适度减速。
 rule_lateral_accel_limit = 1.8  # 弯道限速参数；原值0.6。路径控制和预约预测共用。
+rule_non_yielding_emergency_ttc = 0.45  # s；非避让车辆仅在碰撞迫近时紧急制动。
 
 try:
     path_to_json_file = next(
@@ -45,25 +67,20 @@ try:
         # Safety-only rollout, including when loading older training JSON files.
         parameters.is_using_deadlock_critic = False
         parameters.is_testing_mode = True
-        parameters.is_real_time_rendering = True
+        parameters.is_real_time_rendering = not args.no_realtime
         parameters.is_save_eval_results = False
         parameters.is_load_model = True
         parameters.is_load_final_model = False
         parameters.is_load_out_td = False
-        parameters.max_steps = 1200  # 1200 -> 1 min
+        if args.env_seed is not None:
+            parameters.seed = args.env_seed
+        parameters.max_steps = args.max_steps  # 1200 -> 1 min
         if parameters.is_load_out_td:
             parameters.num_vmas_envs = 32
         else:
             parameters.num_vmas_envs = 1
 
-        parameters.scenario_type = (
-            "intersection_2"
-            # "roundabout_1"
-            # "CPM_entire"
-            # "CPM_mixed"
-            # "on_ramp_1"
-            # roundabout_1, intersection_1/2/3, CPM_mixed
-        )
+        parameters.scenario_type = args.scenario
         parameters.n_agents = SCENARIOS[parameters.scenario_type]["n_agents"]
         rule_vehicles = (assign_rule_vehicles(
             parameters.n_agents, rule_fraction, rule_profile_weights,
@@ -72,9 +89,15 @@ try:
         if rule_fraction is None:
             test_output = os.path.join(path, "rule_vehicle_visualization", CONTROLLER_VERSION) if rule_vehicles else path
         else:
-            mix = "_".join(f"{name}_{rule_profile_weights[name]:g}" for name in rule_profile_weights)
-            run_name = (f"{parameters.scenario_type}_fraction_{rule_fraction:g}_{mix}"
-                        f"_seed{rule_assignment_seed}_actor{reserved_actor_index}_{CONTROLLER_VERSION}").replace(".", "p")
+            run_name = rule_run_name(
+                parameters.scenario_type,
+                rule_fraction,
+                rule_profile_weights,
+                assignment_seed=rule_assignment_seed,
+                environment_seed=parameters.seed,
+                actor_index=reserved_actor_index,
+                controller_version=CONTROLLER_VERSION,
+            )
             test_output = os.path.join(path, "rule_vehicle_visualization", run_name)
         displayed_roles = {i + 1: profile for i, profile in rule_vehicles.items()}
         print(f"[Rule vehicles] {len(rule_vehicles)}/{parameters.n_agents} "
@@ -82,7 +105,7 @@ try:
               f"{displayed_roles}")
         print(f"[Test output] {os.path.abspath(test_output)}")
 
-        parameters.is_save_simulation_video = True
+        parameters.is_save_simulation_video = not args.no_video
         parameters.is_visualize_short_term_path = False
         parameters.is_visualize_lane_boundary = False
         parameters.is_visualize_extra_info = True
@@ -98,17 +121,17 @@ try:
         parameters.agent_trajectory_len = 25
         # 放慢测试渲染速度，便于观察（倍数：>1 越慢）。
         parameters.render_pause_scale = 1.0
-        parameters.is_print_agent_speed = True
+        parameters.is_print_agent_speed = not args.no_speed_print
         parameters.print_speed_interval = 1
         parameters.is_save_agent_speed = True
         parameters.agent_speed_log_path = os.path.join(test_output, "agent_speeds.csv")
         parameters.agent_speed_log_interval = 1
-        parameters.dgppo_alpha_gain = 2.0
         env, policy, priority_module, parameters = mappo_cavs(parameters=parameters)
         if rule_vehicles:
             policy = TestingRulePolicy(policy, env.scenario, rule_vehicles,
                                        cruise_speed=rule_cruise_speed,
-                                       lateral_accel_limit=rule_lateral_accel_limit)
+                                       lateral_accel_limit=rule_lateral_accel_limit,
+                                       non_yielding_emergency_ttc=rule_non_yielding_emergency_ttc)
 
         os.makedirs(test_output, exist_ok=True)
         if rule_fraction is not None or rule_vehicles:
@@ -124,6 +147,7 @@ try:
                                reserved_actor_index=reserved_actor_index if rule_fraction is not None else None,
                                controller_version=CONTROLLER_VERSION,
                                cruise_speed=rule_cruise_speed, lateral_accel_limit=rule_lateral_accel_limit,
+                               non_yielding_emergency_ttc=rule_non_yielding_emergency_ttc,
                                seed=parameters.seed,
                                checkpoint="final" if parameters.is_load_final_model else parameters.model_name),
                           setup_file, indent=2)
@@ -219,6 +243,11 @@ try:
             except Exception as e:
                 print(f"[SpeedLog] Skipped speed logging due to error: {e}")
 
+            # Statistics-only multi-seed runs still use this callback for CSV
+            # logging, but do not need the expensive RGB render path.
+            if not parameters.is_save_simulation_video:
+                return None
+
             if parameters.is_visualize_nod_alpha:
                 # Nonstop rollout supplies the transition root (pre-action
                 # context); the rendered world has already advanced one step.
@@ -256,6 +285,28 @@ try:
             frame_list = []
         if rule_vehicles:
             policy.save_diagnostics(out_td, os.path.join(test_output, 'rule_diagnostics.csv'))
+
+            def rollout_collision_count(name, fallback):
+                values = out_td.get(
+                    ('next', 'agents', 'info', name), default=None
+                )
+                return int(values.max().item()) if isinstance(values, torch.Tensor) else fallback
+
+            vehicle_collisions = rollout_collision_count(
+                'testing_vehicle_collision_events',
+                int(env.scenario.collision_counter.vehicle[0].item()),
+            )
+            road_collisions = rollout_collision_count(
+                'testing_road_collision_events',
+                int(env.scenario.collision_counter.road[0].item()),
+            )
+            summary = summarize_rule_run(
+                test_output,
+                vehicle_collisions=vehicle_collisions,
+                road_collisions=road_collisions,
+                dt=float(parameters.dt),
+            )
+            print("[Evaluation summary] " + json.dumps(summary, sort_keys=True))
         if len(frame_list) > 0:
             save_video(os.path.join(test_output, "video"), frame_list, fps=1 / parameters.dt)
 except StopIteration:

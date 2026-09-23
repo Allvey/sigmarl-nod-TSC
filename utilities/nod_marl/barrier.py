@@ -38,7 +38,14 @@ def aligned_opinions(td, current):
     counts.scatter_add_(-1, safe_ids, valid_id.long())
     unique = counts.gather(-1, safe_ids) == 1
     expected = current['other_gen'][..., :n].gather(-1, safe_ids)
-    valid = (valid_id & unique & mask.bool() & physical_mask.bool() & ready.bool()
+    opinion_active = info.get("nod_opinion_active", default=None)
+    if opinion_active is None:
+        # Backward-compatible caches predate the explicit interaction mask.
+        opinion_active = mask
+    if opinion_active.shape != ids.shape:
+        raise ValueError('Opinion activity mask and neighbor identities have incompatible shapes')
+    valid = (valid_id & unique & mask.bool() & opinion_active.bool()
+             & physical_mask.bool() & ready.bool()
              & torch.isfinite(z) & (z >= -1) & (z <= 1) & (generations.long() == expected))
     # scatter_add avoids an invalid clamped index overwriting a valid opinion.
     opinions.scatter_add_(-1, safe_ids, torch.where(valid, z, 0.))
