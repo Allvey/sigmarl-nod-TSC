@@ -15,7 +15,7 @@ def test_short_training_isolation_and_checkpoint_loads(tmp_path, monkeypatch, br
     torch.set_num_threads(1)
     try:
         for enabled in [False, True]:
-            p = Parameters.from_json("config.json")
+            p = Parameters.from_json("configs/archive/staged_history/config.json")
             p.nod_freeze_training = False; p.training_init_checkpoint = None
             p.safety_control_mode = 'legacy_q'
             p.is_using_safety_constraint = False

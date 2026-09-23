@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seeds", type=int, nargs="+", default=[101, 202, 303, 404, 505])
-    parser.add_argument("--model-path", default="outputs/dgppo_nod_gain1_road_safe_finetune/")
+    parser.add_argument("--model-path", default="outputs/current/dgppo_nod_gain1_control_finetune/")
     parser.add_argument("--scenario", choices=sorted(SCENARIOS), default="intersection_2")
     parser.add_argument("--rule-assignment-seed", type=int, default=123)
     parser.add_argument("--max-steps", type=int, default=1200)

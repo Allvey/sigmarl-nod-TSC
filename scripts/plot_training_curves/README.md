@@ -49,7 +49,7 @@ To choose methods explicitly:
 ```bash
 MPLCONFIGDIR=/private/tmp/mplconfig /usr/bin/python3 \
   scripts/plot_training_curves/plot_training_curves.py \
-  --methods outputs/TSC:TSC:#8172b2 outputs/xpmarl:XP-MARL:#d62728 outputs/sigmarl:SigmaRL:#2ca02c outputs/MFPO:MFPO:#1f77b4
+  --methods outputs/archive/TSC:TSC:#8172b2 outputs/xpmarl:XP-MARL:#d62728 outputs/sigmarl:SigmaRL:#2ca02c outputs/MFPO:MFPO:#1f77b4
 ```
 
 ## Utilities

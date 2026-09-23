@@ -7,6 +7,7 @@
   - [How to Use](#how-to-use)
     - [Training](#training)
     - [Testing](#testing)
+  - [Project organization](#project-organization)
   - [Customize Your Own Maps](#customize-your-own-maps)
   - [News](#news)
   - [Publications](#publications)
@@ -67,12 +68,64 @@ We have tested that this repository works well in Windows and macOS.
 
 ## How to Use
 ### Training
-Run `/main_training.py`. During training, all the intermediate models that have higher performance than the saved one will be automatically saved. You are also allowed to retrain or refine a trained model by setting the parameter `is_continue_train` in the `config.json` from the root directory file to `true`. The saved model will be loaded for a new training process.
+Run `/main_training.py`; it now defaults to the current NOD-DGPPO configuration in
+`configs/current/`. Pass `--config` explicitly for an ablation or archived
+experiment. During training, all intermediate models that improve the saved
+performance are retained.
 
 `/scenarios/road_traffic.py` defines the RL environment, such as observation function and reward function. Besides, it provides an interactive interface, which also visualizes the environment. To open the interface, simply run this file. You can use `arrow keys` to control agents and use the `tab key` to switch between agents. Adjust the parameter `scenario_type` to choose a scenario. All available scenarios are listed in the variable `SCENARIOS` in `utilities/constants.py`. It is recommended to use the virtual visualization to check if the environment is as expected before training.
 ### Testing
-After training, run `/main_testing.py` to test your model. You may need to adjust the parameter `path` therein to tell which folder the target model was saved.
-*Note*: If the path to a saved model changes, you need to update the value of `where_to_save` in the corresponding JSON file as well.
+After training, run `/main_testing.py` to test the current model, or pass
+`--model-path` to select another checkpoint directory. See
+[EXPERIMENTS.md](EXPERIMENTS.md) for active experiments and
+[docs/README.md](docs/README.md) for the documentation index.
+
+## Project organization
+
+The repository separates active work from historical experiments. Keep new
+files in the corresponding directories instead of placing experiment configs,
+outputs, or technical notes in the repository root.
+
+```text
+configs/
+  current/       selected NOD-DGPPO training configurations
+  ablations/     matched ablation configurations
+  benchmarks/    matched SigmaRL, XP-MARL, and NOD-DGPPO comparisons
+  archive/       earlier DGPPO, NOD, and staged configurations
+
+outputs/
+  current/       selected model and current ablation results
+  dependencies/  checkpoints required to reproduce the selected model
+  benchmarks/    future cross-method benchmark results
+  archive/       earlier training runs, diagnostics, videos, and comparisons
+
+docs/
+  current/       current method and rule-vehicle testing documentation
+  reference/     reusable network, observation, and environment references
+  archive/       historical implementation plans and experiment notes
+  papers/        local reference papers
+  data/          supporting spreadsheets
+```
+
+The repository root should normally contain only the main entry points,
+`README.md`, `EXPERIMENTS.md`, and project metadata. Use the following rules
+when adding work:
+
+- Put the selected method configuration in `configs/current/`.
+- Put controlled variants in `configs/ablations/` and SOTA comparison configs
+  in `configs/benchmarks/`.
+- Save benchmark results under `outputs/benchmarks/`; do not mix them with
+  development runs.
+- Move superseded configurations and results to their respective `archive/`
+  directories without deleting checkpoints needed for reproducibility.
+- Update [EXPERIMENTS.md](EXPERIMENTS.md) whenever the selected checkpoint,
+  output path, or standard command changes.
+- Update [docs/README.md](docs/README.md) whenever a document is added, moved,
+  or changes status between current, reference, and archive.
+
+Detailed configuration roles are listed in
+[configs/README.md](configs/README.md). The current benchmark candidate and
+common commands are listed in [EXPERIMENTS.md](EXPERIMENTS.md).
 
 ## Customize Your Own Maps
 We support maps customized in <a href="https://josm.openstreetmap.de/" target="_blank">JOSM</a>, an open-source editor for ​OpenStreetMap. Follow these steps:

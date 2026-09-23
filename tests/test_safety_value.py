@@ -363,7 +363,7 @@ def test_training_shadow_is_bitwise_isolated_and_loadable(tmp_path, monkeypatch)
     torch.set_num_threads(1)
     try:
         for enabled in (False, True):
-            p = Parameters.from_json("config.json")
+            p = Parameters.from_json("configs/archive/staged_history/config.json")
             p.nod_freeze_training = False; p.training_init_checkpoint = None
             p.safety_control_mode = 'legacy_q'
             p.seed = 571; p.n_iters = 2; p.num_epochs = 1

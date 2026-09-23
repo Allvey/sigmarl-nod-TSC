@@ -1312,6 +1312,6 @@ def mappo_cavs(parameters: Parameters):
 
 
 if __name__ == "__main__":
-    config_file = "config.json"
+    config_file = "configs/current/config_dgppo_nod_gain1_control_finetune.json"
     parameters = Parameters.from_json(config_file)
     env, policy, priority_module, parameters = mappo_cavs(parameters=parameters)

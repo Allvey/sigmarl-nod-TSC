@@ -10,14 +10,14 @@ from utilities.nod_marl.safety_value import SafetyValueManager
 
 
 def test_finetune_profile_and_phase_switch():
-    p = Parameters.from_json('config_ppo_original_dgppo_finetune.json')
+    p = Parameters.from_json('configs/archive/dgppo_history/config_ppo_original_dgppo_finetune.json')
     assert p.lr == p.safety_finetune_lr == 5e-5
     assert p.num_epochs == 60 and p.ppo_training_profile == 'original'
     assert p.n_iters == 70 and p.safety_barrier_warmup_batches == 20
     assert actor_warmup_frozen(p, SimpleNamespace(barrier_fit_batches=19))
     assert not actor_warmup_frozen(p, SimpleNamespace(barrier_fit_batches=20))
     assert Parameters.from_dict(p.to_dict()).to_dict() == p.to_dict()
-    old = Parameters.from_json('config_ppo_original_dgppo.json')
+    old = Parameters.from_json('configs/archive/dgppo_history/config_ppo_original_dgppo.json')
     assert old.safety_training_mode == 'scratch' and old.lr == .0002
     assert not actor_warmup_frozen(old, SimpleNamespace(barrier_fit_batches=0))
 
@@ -26,7 +26,7 @@ def test_finetune_profile_and_phase_switch():
                                   dict(safety_barrier_warmup_batches=0), dict(is_prb=True),
                                   dict(safety_finetune_target_kl=0), dict(safety_finetune_lr=float('nan'))])
 def test_invalid_finetuning_configuration(change):
-    p = Parameters.from_json('config_ppo_original_dgppo_finetune.json')
+    p = Parameters.from_json('configs/archive/dgppo_history/config_ppo_original_dgppo_finetune.json')
     with pytest.raises(ValueError):
         Parameters.from_dict(dict(p.to_dict(), **change))
 
@@ -46,8 +46,8 @@ def test_sampled_kl_matches_categorical_expectation_and_detaches():
 
 
 def test_value_target_unchanged_but_finetune_warmup_contract_distinct():
-    p = Parameters.from_json('config_ppo_original_dgppo_finetune.json')
-    old = SafetyValueManager(Parameters.from_json('config_ppo_original_task_only.json'), 10, ('agents','observation'))
+    p = Parameters.from_json('configs/archive/dgppo_history/config_ppo_original_dgppo_finetune.json')
+    old = SafetyValueManager(Parameters.from_json('configs/archive/dgppo_history/config_ppo_original_task_only.json'), 10, ('agents','observation'))
     new = SafetyValueManager(p, 10, ('agents','observation'))
     assert old.contract == new.contract and old.loss_contract == new.loss_contract
     assert new.barrier_contract['actor_warmup'] == 'frozen_until_value_fit_batches'

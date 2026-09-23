@@ -395,7 +395,7 @@ def main():
             "collision_lanelets_rate_list",
             "collision_total_rate_list",
         ],
-        help="Collision series to plot. Default matches outputs/TSC/TSC.xlsx.",
+        help="Collision series to plot. Default matches outputs/archive/TSC/TSC.xlsx.",
     )
     parser.add_argument(
         "--collision-scale",

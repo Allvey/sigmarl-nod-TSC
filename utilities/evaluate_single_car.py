@@ -189,8 +189,8 @@ def evaluate(data_file, args, cases, output):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--data', nargs=2, default=['outputs/dgppo_task_only/reward4.57_data.json',
-                                                 'outputs/dgppo_minimal_v2/reward6.38_data.json'])
+    parser.add_argument('--data', nargs=2, default=['outputs/archive/dgppo_task_only/reward4.57_data.json',
+                                                 'outputs/archive/dgppo_minimal_v2/reward6.38_data.json'])
     parser.add_argument('--scenario', choices=['intersection_2','roundabout_1','on_ramp_1'], default='intersection_2')
     parser.add_argument('--routes', nargs='+', type=int, default=[1,5])
     parser.add_argument('--fractions', nargs='+', type=float, default=[0., .15, .35])
@@ -202,7 +202,7 @@ if __name__ == '__main__':
     if args.steps < 1:
         parser.error('steps must be positive')
     cases = make_cases(args.routes, args.fractions, args.speeds)
-    out = Path(args.output) if args.output else Path('outputs/single_car_comparison')/datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    out = Path(args.output) if args.output else Path('outputs/archive/single_car_comparison')/datetime.now().strftime('%Y%m%d_%H%M%S_%f')
     out.mkdir(parents=True, exist_ok=False)
     torch.set_num_threads(1)
     starts, summaries = [], []

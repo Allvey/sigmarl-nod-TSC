@@ -22,8 +22,8 @@ def main():
     parser.add_argument('--lateral-accel-limit', type=float, default=DEFAULT_RULE_LATERAL_ACCEL)
     parser.add_argument('--max-stop-seconds', type=float, default=15.,
                         help='Flag a continuous low-speed interval; this is a stall alarm, not a deadlock proof')
-    parser.add_argument('--checkpoint', default='outputs/dgppo_nod_opinion_gain2_finetune')
-    parser.add_argument('--output', default='outputs/rule_coordination_checks')
+    parser.add_argument('--checkpoint', default='outputs/archive/dgppo_nod_opinion_gain2_finetune')
+    parser.add_argument('--output', default='outputs/archive/rule_coordination_checks')
     args = parser.parse_args()
     checkpoint = Path(args.checkpoint)
     source = next(checkpoint.glob('*.json'))

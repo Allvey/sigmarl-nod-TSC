@@ -18,7 +18,9 @@ from utilities.nod_marl.dgppo import prepare_dgppo_advantage
 
 def parameters(finetune=False):
     suffix = '_finetune' if finetune else ''
-    return Parameters.from_json(f'config_dgppo_nod_fixed{suffix}.json')
+    return Parameters.from_json(
+        f'configs/archive/nod_history/config_dgppo_nod_fixed{suffix}.json'
+    )
 
 
 @pytest.mark.parametrize('finetune', [False, True])
@@ -30,7 +32,7 @@ def test_configuration_roundtrip_and_fixed_alpha(finetune):
     assert restored.is_using_nod_actor and restored.is_using_nod_opinion
     assert restored.dgppo_alpha == 10 and restored.dgppo_task_mode == 'gated'
     assert restored.safety_control_mode == 'dgppo'
-    old = Parameters.from_json('config_ppo_original_dgppo.json')
+    old = Parameters.from_json('configs/archive/dgppo_history/config_ppo_original_dgppo.json')
     assert not old.is_using_nod_actor and old.nod_observation_mode == 'legacy_paths'
 
 
@@ -134,7 +136,7 @@ def test_base_actor_migration_preserves_distribution_and_new_inputs_learn(tmp_pa
 
 def test_nod_contract_and_explicit_fresh_initialization(tmp_path):
     p = parameters(); local = NODOpinionManager(p)
-    legacy_p = Parameters.from_json('config.json'); legacy = NODOpinionManager(legacy_p)
+    legacy_p = Parameters.from_json('configs/archive/staged_history/config.json'); legacy = NODOpinionManager(legacy_p)
     old = legacy.checkpoint_state(); old.pop('observation_mode')
     assert legacy.load_checkpoint(old)  # Existing path-based snapshots still work.
     assert not local.load_checkpoint(old)
@@ -153,7 +155,7 @@ def test_nod_contract_and_explicit_fresh_initialization(tmp_path):
 
 
 def test_value_weights_reused_but_policy_change_restarts_warmup(tmp_path):
-    old = SafetyValueManager(Parameters.from_json('config_ppo_original_dgppo.json'), 5, ('agents', 'observation'))
+    old = SafetyValueManager(Parameters.from_json('configs/archive/dgppo_history/config_ppo_original_dgppo.json'), 5, ('agents', 'observation'))
     new = SafetyValueManager(parameters(), 5, ('agents', 'observation'))
     assert old.contract == new.contract and old.loss_contract == new.loss_contract
     old.barrier_fit_batches = 99

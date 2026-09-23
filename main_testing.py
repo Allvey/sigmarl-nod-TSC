@@ -20,7 +20,7 @@ from utilities.testing_rule_coordinator import CONTROLLER_VERSION
 from utilities.testing_evaluation import rule_run_name, summarize_rule_run
 
 parser = argparse.ArgumentParser(description="Visualize one reproducible mixed-controller rollout.")
-parser.add_argument("--model-path", default="outputs/dgppo_nod_gain1_road_safe_finetune/")
+parser.add_argument("--model-path", default="outputs/current/dgppo_nod_gain1_control_finetune/")
 parser.add_argument("--env-seed", type=int, default=None,
                     help="Rollout/environment seed; defaults to the checkpoint seed.")
 parser.add_argument("--rule-assignment-seed", type=int, default=123,

@@ -21,19 +21,19 @@ Default training outputs are derived from `where_to_save` in:
 scripts/run_multi_seeds/inputs/config.json
 ```
 
-If `where_to_save` ends with a seed folder such as `outputs/TSC/seed8/`, the
+If `where_to_save` ends with a seed folder such as `outputs/archive/TSC/seed8/`, the
 script replaces the seed suffix for each run, for example:
 
 ```text
-outputs/TSC/seed0/
-outputs/TSC/seed1/
-outputs/TSC/seed2/
+outputs/archive/TSC/seed0/
+outputs/archive/TSC/seed1/
+outputs/archive/TSC/seed2/
 ```
 
-If `where_to_save` is a method root such as `outputs/TSC/`, the script appends
+If `where_to_save` is a method root such as `outputs/archive/TSC/`, the script appends
 `seed_0/`, `seed_1/`, etc.
 
-Use `--save-root outputs/TSC/` to override the config path explicitly.
+Use `--save-root outputs/archive/TSC/` to override the config path explicitly.
 
 ## Usage
 

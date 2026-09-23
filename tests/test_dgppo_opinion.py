@@ -16,7 +16,7 @@ from utilities.nod_marl.safety_value import SafetyValueManager
 
 
 def params():
-    return Parameters.from_json('config_dgppo_nod_opinion_finetune.json')
+    return Parameters.from_json('configs/archive/nod_history/config_dgppo_nod_opinion_finetune.json')
 
 
 def sample():
@@ -54,28 +54,28 @@ def advantage(td, state, nxt, alpha):
 def test_config_roundtrip_and_matched_control():
     p = params()
     assert Parameters.from_dict(p.to_dict()).to_dict() == p.to_dict()
-    control = Parameters.from_json('config_dgppo_nod_fixed_control_finetune.json')
+    control = Parameters.from_json('configs/archive/nod_history/config_dgppo_nod_fixed_control_finetune.json')
     diff = {k for k, v in p.to_dict().items() if control.to_dict()[k] != v}
     assert diff == {'dgppo_opinion_alpha', 'where_to_save'}
     assert p.nod_freeze_training and p.training_init_checkpoint.endswith('reward7.33')
-    assert not Parameters.from_json('config_dgppo_nod_fixed_finetune.json').dgppo_opinion_alpha
+    assert not Parameters.from_json('configs/archive/nod_history/config_dgppo_nod_fixed_finetune.json').dgppo_opinion_alpha
 
 
 def test_candidate_only_and_gain1_control_configs_are_staged():
-    candidate = Parameters.from_json('config_dgppo_nod_candidate_only.json')
+    candidate = Parameters.from_json('configs/current/config_dgppo_nod_candidate_only.json')
     assert candidate.nod_training_mode == 'candidate_only'
     assert candidate.nod_freeze_training
     assert not candidate.dgppo_opinion_alpha
     assert candidate.nod_update_interval == 1
-    control = Parameters.from_json('config_dgppo_nod_gain1_control_finetune.json')
+    control = Parameters.from_json('configs/current/config_dgppo_nod_gain1_control_finetune.json')
     assert control.nod_training_mode == 'joint'
     assert control.nod_freeze_training
     assert control.dgppo_opinion_alpha
     assert control.dgppo_alpha_gain == 1
     assert control.dgppo_opinion_deadzone == pytest.approx(.1)
     assert control.nod_actor_opinion_mode == 'online'
-    fixed = Parameters.from_json('config_dgppo_nod_ablation_fixed_alpha.json')
-    neutral = Parameters.from_json('config_dgppo_nod_ablation_neutral_z.json')
+    fixed = Parameters.from_json('configs/ablations/config_dgppo_nod_ablation_fixed_alpha.json')
+    neutral = Parameters.from_json('configs/ablations/config_dgppo_nod_ablation_neutral_z.json')
     assert not fixed.dgppo_opinion_alpha
     assert fixed.nod_actor_opinion_mode == 'online'
     assert not neutral.dgppo_opinion_alpha
@@ -85,7 +85,7 @@ def test_candidate_only_and_gain1_control_configs_are_staged():
             if fixed.to_dict()[key] != value} <= ignored
     assert {key for key, value in control.to_dict().items()
             if neutral.to_dict()[key] != value} <= ignored
-    road = Parameters.from_json('config_dgppo_nod_gain1_road_safe_finetune.json')
+    road = Parameters.from_json('configs/archive/nod_history/config_dgppo_nod_gain1_road_safe_finetune.json')
     assert road.n_iters == 30 and road.safety_barrier_warmup_batches == 10
     assert road.dgppo_road_alpha_safe == pytest.approx(7.5)
     assert road.dgppo_road_alpha_recovery == pytest.approx(15.)
@@ -203,7 +203,7 @@ def test_prepare_reports_final_advantage_effect_and_dominant_road_suppression():
 
 
 def test_new_contract_reuses_value_weights_and_restarts_warmup(tmp_path):
-    old = SafetyValueManager(Parameters.from_json('config_dgppo_nod_fixed_finetune.json'),5,('agents','observation'))
+    old = SafetyValueManager(Parameters.from_json('configs/archive/nod_history/config_dgppo_nod_fixed_finetune.json'),5,('agents','observation'))
     new = SafetyValueManager(params(),5,('agents','observation'))
     assert old.contract == new.contract and old.loss_contract == new.loss_contract
     old.barrier_fit_batches = 70
@@ -280,8 +280,8 @@ def test_road_alpha_is_strict_when_safe_and_strong_during_recovery():
 
 
 def test_road_alpha_contract_reuses_value_and_restarts_barrier_warmup(tmp_path):
-    old_p = Parameters.from_json('config_dgppo_nod_gain1_control_finetune.json')
-    new_p = Parameters.from_json('config_dgppo_nod_gain1_road_safe_finetune.json')
+    old_p = Parameters.from_json('configs/current/config_dgppo_nod_gain1_control_finetune.json')
+    new_p = Parameters.from_json('configs/archive/nod_history/config_dgppo_nod_gain1_road_safe_finetune.json')
     old = SafetyValueManager(old_p, 5, ('agents', 'observation'))
     new = SafetyValueManager(new_p, 5, ('agents', 'observation'))
     assert old.contract == new.contract and old.loss_contract == new.loss_contract
@@ -373,7 +373,7 @@ def test_gain_reaches_prepared_advantage_and_diagnostics():
 
 
 def test_gain_config_and_checkpoint_contract(tmp_path):
-    p = Parameters.from_json('config_dgppo_nod_opinion_gain2_finetune.json')
+    p = Parameters.from_json('configs/archive/nod_history/config_dgppo_nod_opinion_gain2_finetune.json')
     assert p.dgppo_alpha_gain == 2 and p.nod_freeze_training
     assert p.training_init_checkpoint.endswith('reward6.98')
     assert Parameters.from_dict(p.to_dict()).to_dict() == p.to_dict()

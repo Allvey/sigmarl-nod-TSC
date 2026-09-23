@@ -13,7 +13,7 @@ checkpoints.
 Generated logs and evaluation artifacts are written under:
 
 ```text
-scripts/collect_safety_tscnet/outputs/TSC-Net/
+scripts/collect_safety_tscnet/outputs/archive/TSC-Net/
 ```
 
 ## Usage

@@ -28,9 +28,9 @@ def test_base_to_local_nod_finetune_and_inference(tmp_path, monkeypatch):
     env = None
     try:
         # Make an ordinary non-NOD checkpoint without relying on user's models.
-        base = small_job(Parameters.from_json('config_ppo_original_dgppo.json'), tmp_path / 'base')
+        base = small_job(Parameters.from_json('configs/archive/dgppo_history/config_ppo_original_dgppo.json'), tmp_path / 'base')
         env, *_ = mappo_cavs(base); env.close(); env = None
-        p = Parameters.from_json('config_dgppo_nod_fixed_finetune.json')
+        p = Parameters.from_json('configs/archive/nod_history/config_dgppo_nod_fixed_finetune.json')
         p.training_init_checkpoint = str(tmp_path / 'base' / 'final')
         p = small_job(p, tmp_path / 'nod')
         env, *_ = mappo_cavs(p)

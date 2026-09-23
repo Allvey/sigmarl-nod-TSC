@@ -4,7 +4,7 @@ Run from the repository root:
 
     python -m scripts.validate_nod_responsibility
     python -m scripts.validate_nod_responsibility --checkpoint \
-        outputs/dgppo_nod_candidate_only/final_nod.pth
+        outputs/dependencies/dgppo_nod_candidate_only/final_nod.pth
 """
 
 from __future__ import annotations

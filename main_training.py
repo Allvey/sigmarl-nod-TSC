@@ -2,7 +2,7 @@ from utilities.mappo_cavs import mappo_cavs
 from utilities.helper_training import Parameters
 import argparse
 
-config_file = "config.json"  # Alternatives: config_stage7.json, config_stage8a.json, config_stage8b.json.
+config_file = "configs/current/config_dgppo_nod_gain1_control_finetune.json"
 parser = argparse.ArgumentParser(description="Train with a selected method configuration.")
 parser.add_argument("--config", default=config_file, help="Training configuration JSON file")
 config_file = parser.parse_args().config

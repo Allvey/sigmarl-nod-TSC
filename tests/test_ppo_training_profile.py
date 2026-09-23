@@ -11,7 +11,7 @@ from utilities.nod_marl.safety_value import SafetyValueManager
 
 
 def test_profiles_resolve_and_round_trip():
-    old = Parameters.from_json('config_dgppo_minimal.json')
+    old = Parameters.from_json('configs/archive/dgppo_history/config_dgppo_minimal.json')
     assert old.ppo_training_profile == 'current'
     assert (old.num_epochs, old.lr, old.lmbda, old.clip_epsilon) == (15, .0003, .95, .25)
     original = Parameters.from_dict(dict(old.to_dict(), ppo_training_profile='original'))
@@ -23,12 +23,12 @@ def test_profiles_resolve_and_round_trip():
 
 
 def test_matched_configs_and_checkpoint_metadata():
-    task = Parameters.from_json('config_ppo_original_task_only.json')
-    safe = Parameters.from_json('config_ppo_original_dgppo.json')
+    task = Parameters.from_json('configs/archive/dgppo_history/config_ppo_original_task_only.json')
+    safe = Parameters.from_json('configs/archive/dgppo_history/config_ppo_original_dgppo.json')
     assert {k for k in task.to_dict() if task.to_dict()[k] != safe.to_dict()[k]} == {'dgppo_weight', 'where_to_save'}
     assert task.dgppo_weight == 0 and safe.dgppo_weight == 1
     assert not task.is_load_model and not safe.is_load_model
-    old = SafetyValueManager(Parameters.from_json('config_dgppo_minimal.json'), 10, ('agents', 'observation'))
+    old = SafetyValueManager(Parameters.from_json('configs/archive/dgppo_history/config_dgppo_minimal.json'), 10, ('agents', 'observation'))
     new = SafetyValueManager(safe, 10, ('agents', 'observation'))
     assert old.contract == new.contract and old.loss_contract == new.loss_contract
     assert 'ppo_training_profile' not in old.barrier_contract
@@ -40,7 +40,7 @@ def test_matched_configs_and_checkpoint_metadata():
 @pytest.mark.parametrize('task_mode', ['gated', 'additive'])
 @pytest.mark.parametrize('phase', ['warmup', 'weight_zero', 'disabled', 'active_safe', 'active_unsafe'])
 def test_advantage_scaling_is_consistent_across_phases(profile, task_mode, phase):
-    p = Parameters.from_dict(dict(Parameters.from_json('config_dgppo_minimal.json').to_dict(),
+    p = Parameters.from_dict(dict(Parameters.from_json('configs/archive/dgppo_history/config_dgppo_minimal.json').to_dict(),
                                   ppo_training_profile=profile, dgppo_task_mode=task_mode))
     p.dgppo_weight = 0. if phase == 'weight_zero' else 1.
     p.is_using_safety_constraint = phase != 'disabled'
@@ -68,8 +68,8 @@ def test_advantage_scaling_is_consistent_across_phases(profile, task_mode, phase
 
 
 def test_additive_config_and_contract():
-    old = Parameters.from_json('config_ppo_original_dgppo_finetune.json')
-    new = Parameters.from_json('config_ppo_original_dgppo_additive.json')
+    old = Parameters.from_json('configs/archive/dgppo_history/config_ppo_original_dgppo_finetune.json')
+    new = Parameters.from_json('configs/archive/dgppo_history/config_ppo_original_dgppo_additive.json')
     assert old.dgppo_task_mode == 'gated' and new.dgppo_task_mode == 'additive'
     assert {k for k in old.to_dict() if old.to_dict()[k] != new.to_dict()[k]} == {
         'dgppo_task_mode', 'where_to_save'}

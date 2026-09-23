@@ -158,7 +158,7 @@ def test_fixed_barrier_changes_actor_preserves_targets_and_loads(tmp_path, monke
     monkeypatch.setattr(training, 'prepare_barrier_advantage', checked_prepare)
     try:
         for mode in ['off', 'zero', 'fixed']:
-            p = Parameters.from_json('config.json')
+            p = Parameters.from_json('configs/archive/staged_history/config.json')
             p.nod_freeze_training = False; p.training_init_checkpoint = None
             p.seed = 571; p.n_iters = 2; p.num_epochs = 1
             p.frames_per_batch = 32; p.total_frames = 64; p.minibatch_size = 16

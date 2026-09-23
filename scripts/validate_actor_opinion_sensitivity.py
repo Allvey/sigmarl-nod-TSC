@@ -239,7 +239,7 @@ def _summary(rows):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-path", default="outputs/dgppo_nod_gain1_control_finetune/")
+    parser.add_argument("--model-path", default="outputs/current/dgppo_nod_gain1_control_finetune/")
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--ego", type=int, default=1,
                         help="One-based agent number whose directed opinion is swept.")

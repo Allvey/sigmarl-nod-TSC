@@ -18,7 +18,9 @@ def test_frozen_nod_fixed_and_opinion_finetune(tmp_path, monkeypatch):
     env = None
     try:
         for mode in ['fixed_control', 'opinion']:
-            p = Parameters.from_json(f'config_dgppo_nod_{mode}_finetune.json')
+            p = Parameters.from_json(
+                f'configs/archive/nod_history/config_dgppo_nod_{mode}_finetune.json'
+            )
             source = Path(p.training_init_checkpoint + '_nod.pth')
             if not source.is_file(): pytest.skip('Requires the completed step-1 reward7.33 checkpoint')
             initial = torch.load(source, map_location='cpu')['model']

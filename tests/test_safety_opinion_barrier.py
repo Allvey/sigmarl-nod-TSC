@@ -122,7 +122,7 @@ def test_from_scratch_trains_nod_and_opinion_barrier_without_loading(tmp_path, m
     monkeypatch.setattr(NODOpinionManager, 'train_on_rollout', track_nod)
     threads = torch.get_num_threads(); torch.set_num_threads(1)
     try:
-        p = Parameters.from_json('config.json')
+        p = Parameters.from_json('configs/archive/staged_history/config.json')
         assert p.safety_control_mode == 'barrier_opinion' and not p.nod_freeze_training
         assert p.training_init_checkpoint is None and not p.is_load_model and not p.is_continue_train
         p.seed = 571; p.n_iters = 2; p.num_epochs = 1
@@ -154,7 +154,7 @@ def test_frozen_opinion_training_from_same_snapshot(tmp_path, monkeypatch):
     monkeypatch.setenv('WANDB_MODE', 'disabled')
     threads = torch.get_num_threads(); torch.set_num_threads(1)
     try:
-        p = Parameters.from_json('config.json')
+        p = Parameters.from_json('configs/archive/staged_history/config.json')
         p.seed = 571; p.n_iters = 2; p.num_epochs = 1
         p.frames_per_batch = 64; p.total_frames = 128; p.minibatch_size = 32
         p.num_vmas_envs = 4; p.max_steps = 16; p.nod_sequence_length = 8

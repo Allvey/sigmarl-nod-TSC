@@ -17,7 +17,7 @@ from utilities.evaluation_base import Evaluation
 fig_for = "paper"  # One of {"paper", "presentation"}
 
 model_paths = [
-    "outputs/testing_random/",
+    "outputs/archive/testing_random/",
     # "checkpoints/itsc24/M1 (do not use an ego view)/",
     # "checkpoints/itsc24/M2 (do not observe vertices of surrounding agents)/",
     # "checkpoints/itsc24/M3 (do not observe distances to surrounding agents)/",
@@ -101,8 +101,8 @@ for i_scenario in scenario_types:
         simulation_steps=1200,  # Number of time steps of each simulation. 1200 -> 1 min if sample time is 50 ms
         is_show_different_collisions=is_show_different_collisions,
         x_ticks=x_ticks,
-        where_to_save_eva_results=f"outputs/testing_random/eva_{i_scenario}",
-        where_to_save_logging=f"outputs/testing_random/log.txt",
+        where_to_save_eva_results=f"outputs/archive/testing_random/eva_{i_scenario}",
+        where_to_save_logging=f"outputs/archive/testing_random/log.txt",
         models_selected=[],  # Leave empty if all the models should be evaluated
         legends=legends,
         render_titles=render_titles,

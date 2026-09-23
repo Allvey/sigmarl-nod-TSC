@@ -97,7 +97,7 @@ def test_barrier_recovery_margin_unknown_and_actor_gradient():
 
 
 def test_task_scaling_is_identical_in_control_warmup_and_safe_updates():
-    p = Parameters.from_json('config_dgppo_minimal.json')
+    p = Parameters.from_json('configs/archive/dgppo_history/config_dgppo_minimal.json')
     p.dgppo_schedule = False
     current, _ = states(-torch.ones(1, 3, 1, 3))
     manager = SimpleNamespace(parameters=p, enabled=True, barrier_fit_batches=0,
@@ -126,7 +126,7 @@ def make_info():
 
 
 def test_no_neighbor_path_or_hidden_world_input_and_checkpoint(tmp_path):
-    p = Parameters.from_json('config_dgppo_minimal.json')
+    p = Parameters.from_json('configs/archive/dgppo_history/config_dgppo_minimal.json')
     manager = SafetyValueManager(p, 4, ('agents', 'observation'))
     td = make_info(); first = manager.state(td)
     td['agents', 'info', 'nod_pair_features'][..., 9:16] = 900
@@ -147,25 +147,25 @@ def test_no_neighbor_path_or_hidden_world_input_and_checkpoint(tmp_path):
     dict(dgppo_weight=-1), dict(is_using_nod_opinion=True), dict(safety_value_loss_mode='balanced'),
     dict(is_observe_ref_path_other_agents=True)])
 def test_configuration_rejects_invalid_combinations(changes):
-    opts = json.loads(Path('config_dgppo_minimal.json').read_text()); opts.update(changes)
+    opts = json.loads(Path('configs/archive/dgppo_history/config_dgppo_minimal.json').read_text()); opts.update(changes)
     with pytest.raises(ValueError): Parameters(**opts)
 
 
 def test_task_only_configuration_is_a_matched_control():
-    revised = json.loads(Path('config_dgppo_minimal.json').read_text())
-    control = json.loads(Path('config_dgppo_task_only.json').read_text())
+    revised = json.loads(Path('configs/archive/dgppo_history/config_dgppo_minimal.json').read_text())
+    control = json.loads(Path('configs/archive/dgppo_history/config_dgppo_task_only.json').read_text())
     assert {k for k in revised if revised[k] != control[k]} == {'dgppo_weight', 'where_to_save'}
-    p = Parameters.from_json('config_dgppo_minimal.json')
+    p = Parameters.from_json('configs/archive/dgppo_history/config_dgppo_minimal.json')
     assert p.num_epochs == 15 and p.safety_barrier_warmup_batches == 20
     assert not p.dgppo_schedule
-    assert p.where_to_save == 'outputs/dgppo_minimal_v2/'
-    assert Parameters.from_json('config_dgppo_task_only.json').dgppo_weight == 0
+    assert p.where_to_save == 'outputs/archive/dgppo_minimal_v2/'
+    assert Parameters.from_json('configs/archive/dgppo_history/config_dgppo_task_only.json').dgppo_weight == 0
 
 
 def test_physical_terminal_collision_survives_and_trains(monkeypatch):
     from torchrl.envs.libs.vmas import VmasEnv
     from scenarios.road_traffic import ScenarioRoadTraffic
-    p = Parameters.from_json('config_dgppo_minimal.json')
+    p = Parameters.from_json('configs/archive/dgppo_history/config_dgppo_minimal.json')
     p.scenario_type = 'on_ramp_1'; p.n_agents = 4; p.max_steps = 16
     scenario = ScenarioRoadTraffic(); scenario.parameters = p
     env = VmasEnv(scenario=scenario, num_envs=1, continuous_actions=True,
@@ -210,7 +210,7 @@ def test_real_short_training_save_load_and_gradient_isolation(tmp_path, monkeypa
             assert not td.get(key).requires_grad
         return metrics
     monkeypatch.setattr(training, 'prepare_barrier_advantage', checked)
-    p = Parameters.from_json('config_dgppo_minimal.json')
+    p = Parameters.from_json('configs/archive/dgppo_history/config_dgppo_minimal.json')
     p.safety_barrier_warmup_batches = warmup
     p.num_epochs = 1
     p.n_iters = 3; p.frames_per_batch = 64; p.total_frames = 192
