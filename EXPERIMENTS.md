@@ -64,6 +64,51 @@ python -m scripts.validate_actor_opinion_sensitivity \
   --seed 123 --ego 1
 ```
 
+## SigmaRL and XP-MARL benchmark
+
+The first cross-method benchmark is an all-Actor comparison. This preserves
+XP-MARL's learned priority action propagation and avoids coupling it to the
+mixed rule-vehicle controller. Every method uses the same scenario, paired
+environment seeds, deterministic actions, and no observation noise.
+
+Download and validate the official checkpoints:
+
+```bash
+python -m scripts.prepare_sota_checkpoints
+```
+
+Run the paper-metric evaluator smoke test first:
+
+```bash
+python utilities/evaluation_tase26.py \
+  --scenarios intersection_2 --num-simulations 2 --steps 200
+```
+
+Run the formal comparison using the same metrics as the ITSC24 and ICRA25
+evaluation scripts:
+
+```bash
+python utilities/evaluation_tase26.py
+```
+
+Run a one-seed supplementary event-statistics check:
+
+```bash
+python -m scripts.run_sota_benchmark \
+  --seeds 101 --max-steps 200
+```
+
+Run the supplementary five-seed event-statistics evaluation:
+
+```bash
+python -m scripts.run_sota_benchmark
+```
+
+Formal paper metrics are written below `outputs/benchmarks/paper_metrics/`.
+The supplementary protocol is stored in
+`configs/benchmarks/sota_all_actor.json`, with results below
+`outputs/benchmarks/sota_all_actor/`.
+
 Archived configurations and results should only be used when reproducing an
 earlier development stage. New benchmark outputs should be placed under a new
 `outputs/benchmarks/` directory rather than at the top level of `outputs/`.

@@ -16,6 +16,12 @@ The root directory no longer stores experiment JSON files.
 - `ablations/config_dgppo_nod_ablation_neutral_z.json`: the Actor opinion input
   is neutral and the safety barrier uses fixed alpha.
 
+## Benchmarks
+
+- `benchmarks/sota_all_actor.json`: paired-seed all-Actor comparison among the
+  current NOD-DGPPO checkpoint, official SigmaRL, and official XP-MARL.
+- `benchmarks/README.md`: checkpoint preparation, commands, and output layout.
+
 ## Archive
 
 `archive/` contains earlier DGPPO experiments, NOD development stages, and the

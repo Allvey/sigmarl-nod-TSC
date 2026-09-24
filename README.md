@@ -80,6 +80,13 @@ After training, run `/main_testing.py` to test the current model, or pass
 [EXPERIMENTS.md](EXPERIMENTS.md) for active experiments and
 [docs/README.md](docs/README.md) for the documentation index.
 
+For the matched all-Actor comparison with the official SigmaRL and XP-MARL
+checkpoints, first run `python -m scripts.prepare_sota_checkpoints`, then run
+`python utilities/evaluation_tase26.py`. This formal entry point shares the
+paper metrics used by the ITSC24 and ICRA25 evaluation scripts. The complete
+protocol and output paths are documented in
+[configs/benchmarks/README.md](configs/benchmarks/README.md).
+
 ## Project organization
 
 The repository separates active work from historical experiments. Keep new

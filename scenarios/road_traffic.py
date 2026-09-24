@@ -2851,9 +2851,26 @@ class ScenarioRoadTraffic(BaseScenario):
         )  # [batch_dim]
         is_collision_with_lanelets = self.collisions.with_lanelets.any(dim=-1)
 
-        base_obs = self.stored_observations[agent_index].clone()
+        stored_obs = self.stored_observations[agent_index].clone()
+        # XP-MARL's Actor was trained with one propagated 2-D action slot per
+        # observed neighbor.  The priority network still consumes the original
+        # observation, while prioritized_ap_policy fills these trailing slots
+        # sequentially before each vehicle acts.  Keep the padding local to the
+        # prioritized path so SigmaRL and NOD-DGPPO retain their own schemas.
+        base_obs = (
+            F.pad(
+                stored_obs,
+                (
+                    0,
+                    self.parameters.n_nearing_agents_observed
+                    * AGENTS["n_actions"],
+                ),
+            )
+            if self.parameters.is_using_prioritized_marl
+            else stored_obs
+        )
 
-        prio_obs = self.stored_observations[agent_index].clone()
+        prio_obs = stored_obs
 
         B = self.world.batch_dim
         neighbor_idx_local = self.observations.nearing_agents_indices[

@@ -5,6 +5,10 @@ method, reusable repository details, or an earlier experiment.
 
 ## Current method
 
+- [`RESPONSIBILITY_OPINION_TECHNICAL_REPORT.md`](current/RESPONSIBILITY_OPINION_TECHNICAL_REPORT.md):
+  Chinese technical report covering the problem definition, counterfactual
+  responsibility, network architecture, loss functions, training sequence,
+  safety learning, and theoretical limits; intentionally excludes experiments.
 - [`DGPPO_NOD_RESPONSIBILITY.md`](current/DGPPO_NOD_RESPONSIBILITY.md): current
   responsibility-opinion definition, Candidate NOD workflow, gain-1 Safety
   integration, diagnostics, and matched ablations.
@@ -12,6 +16,8 @@ method, reusable repository details, or an earlier experiment.
   rule-vehicle visualization setup and output files.
 - [`RULE_VEHICLE_COORDINATION.md`](current/RULE_VEHICLE_COORDINATION.md): current
   centralized coordination used only by rule vehicles during testing.
+- [`SOTA_BENCHMARK.md`](current/SOTA_BENCHMARK.md): matched all-Actor protocol,
+  official SigmaRL and XP-MARL checkpoints, commands, metrics, and outputs.
 
 The selected checkpoint, output locations, and common commands are maintained
 in [`EXPERIMENTS.md`](../EXPERIMENTS.md).

@@ -42,6 +42,10 @@ plt.style.use(
 
 import time
 import json
+import csv
+from pathlib import Path
+
+from torchrl.envs.utils import ExplorationType, set_exploration_type
 
 from utilities.mappo_cavs import mappo_cavs
 from utilities.helper_training import (
@@ -53,6 +57,7 @@ from utilities.helper_training import (
 from utilities.constants import SCENARIOS, AGENTS
 
 from utilities.colors import Color, colors
+from utilities.sota_evaluation import select_best_checkpoint
 
 
 class TimedPolicy:
@@ -173,6 +178,12 @@ class Evaluation:
         self.is_measure_policy_inference_time = kwargs.pop(
             "is_measure_policy_inference_time", False
         )
+        self.evaluation_seed = kwargs.pop("evaluation_seed", None)
+        self.deterministic_actions = kwargs.pop("deterministic_actions", False)
+        self.observation_noise = kwargs.pop("observation_noise", None)
+        self.reuse_cached_rollouts = kwargs.pop("reuse_cached_rollouts", True)
+        self.save_rollout_cache = kwargs.pop("save_rollout_cache", True)
+        self.export_machine_readable = kwargs.pop("export_machine_readable", False)
 
         self.is_render = kwargs.pop("is_render", True)
         self.is_save_simulation_video = kwargs.pop("is_save_simulation_video", False)
@@ -198,24 +209,34 @@ class Evaluation:
         )
 
         self.labels = [m.split("/")[-2] for m in self.model_paths]
+        self.selected_checkpoint_prefixes = []
 
     def _load_parameters(self):
         """
-        Loads parameters from a JSON file located in the model path.
+        Load the metadata belonging to the highest-reward policy checkpoint.
+
+        Official SigmaRL/XP-MARL metadata predates NOD and the safety modules.
+        Parameters.from_dict fills new defaults, so those additions must be
+        disabled explicitly to preserve the published Actor architecture.
         """
-        try:
-            path_to_json_file = next(
-                os.path.join(self.model_i_path, file)
-                for file in os.listdir(self.model_i_path)
-                if file.endswith(".json")
-            )  # Find the first json file in the folder
-            # Load parameters from the saved json file
-            with open(path_to_json_file, "r") as file:
-                data = json.load(file)
-                self.saved_data = SaveData.from_dict(data)
-                self.parameters = self.saved_data.parameters
-        except StopIteration:
-            raise FileNotFoundError("No json file found.")
+        _, path_to_json_file, checkpoint_prefix = select_best_checkpoint(
+            Path(self.model_i_path)
+        )
+        with path_to_json_file.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+        self.saved_data = SaveData.from_dict(data)
+        self.parameters = self.saved_data.parameters
+        raw_parameters = data.get("parameters", data)
+        if "is_using_nod_opinion" not in raw_parameters:
+            self.parameters.is_using_nod_opinion = False
+            self.parameters.is_using_nod_actor = False
+            self.parameters.is_using_safety_critic = False
+            self.parameters.is_using_safety_value_shadow = False
+            self.parameters.is_using_safety_constraint = False
+            self.parameters.is_using_deadlock_critic = False
+            self.parameters.nod_freeze_training = False
+            self.parameters.safety_control_mode = "legacy_q"
+        self.selected_checkpoint_prefix = checkpoint_prefix
 
     def _adjust_parameters(self):
         # Adjust parameters
@@ -223,6 +244,10 @@ class Evaluation:
         # even when its training JSON still points to the original output path.
         self.parameters.where_to_save = os.path.join(self.model_i_path, "")
         self.parameters.scenario_type = self.scenario_type
+        if self.evaluation_seed is not None:
+            self.parameters.seed = int(self.evaluation_seed)
+        if self.observation_noise is not None:
+            self.parameters.is_add_noise = bool(self.observation_noise)
         self.parameters.is_testing_mode = True
         self.parameters.is_real_time_rendering = False
         self.parameters.is_save_eval_results = True
@@ -335,7 +360,8 @@ class Evaluation:
         # Measuring inference time requires a fresh rollout, because cached
         # TensorDicts do not execute the policy.
         should_load_cached_out_td = (
-            os.path.exists(path_eval_out_td)
+            self.reuse_cached_rollouts
+            and os.path.exists(path_eval_out_td)
             and (not self.is_render)
             and (not self.is_measure_policy_inference_time)
         )
@@ -352,9 +378,14 @@ class Evaluation:
 
             cprint("[INFO] Run simulation...", "grey")
             sim_begin = time.time()
+            exploration_type = (
+                ExplorationType.MODE
+                if self.deterministic_actions
+                else ExplorationType.RANDOM
+            )
 
             if self.parameters.is_save_simulation_video:
-                with torch.no_grad():
+                with torch.no_grad(), set_exploration_type(exploration_type):
                     out_td, frame_list = env.rollout(
                         max_steps=self.parameters.max_steps - 1,
                         policy=rollout_policy,
@@ -378,7 +409,7 @@ class Evaluation:
                     colored(f"{self.model_i_path}.", "blue"),
                 )
             else:
-                with torch.no_grad():
+                with torch.no_grad(), set_exploration_type(exploration_type):
                     out_td = env.rollout(
                         max_steps=self.parameters.max_steps - 1,
                         policy=rollout_policy,
@@ -395,9 +426,9 @@ class Evaluation:
             if self.is_measure_policy_inference_time:
                 self._record_policy_inference_time(rollout_policy)
 
-            # Save simulation outputs
-            torch.save(out_td, path_eval_out_td)
-            print(colored("[INFO] Simulation outputs saved.", "grey"))
+            if self.save_rollout_cache:
+                torch.save(out_td, path_eval_out_td)
+                print(colored("[INFO] Simulation outputs saved.", "grey"))
 
             # print(
             #     colored(
@@ -838,6 +869,9 @@ class Evaluation:
 
             self._load_parameters()
             self._adjust_parameters()
+            self.selected_checkpoint_prefixes.append(
+                self.selected_checkpoint_prefix
+            )
 
             if self.model_idx == 0:
                 self._init_eva_matrices()  # Only need to be done once
@@ -853,6 +887,86 @@ class Evaluation:
         if not self.parameters.is_save_simulation_video:
             self.compute_performance_metrics()
             self.plot()
+            if self.export_machine_readable:
+                self._export_metrics()
+
+    def _export_metrics(self):
+        """Write the paper metrics as per-run CSV and aggregate JSON files."""
+        output_dir = Path(self.where_to_save_eva_results)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        metric_tensors = {
+            "agent_agent_collision_rate_percent": self.collision_rate_with_agents,
+            "agent_lanelet_collision_rate_percent": self.collision_rate_with_lanelets,
+            "total_collision_rate_percent": self.collision_rate_sum,
+            "centerline_deviation_percent": self.distance_ref_average,
+            "average_speed_percent": self.average_speed,
+            "average_speed_penalized_percent": self.average_speed_penalized,
+            "action_change_percent": self.smoothness,
+            "action_change_penalized_percent": self.smoothness_penalized,
+            "longitudinal_action_change_percent": self.smoothness_lon,
+            "lateral_action_change_percent": self.smoothness_lat,
+        }
+        rows = []
+        for model_index, label in enumerate(self.legends):
+            for simulation_index in range(self.parameters.num_vmas_envs):
+                row = {
+                    "model_index": model_index,
+                    "label": label,
+                    "model_path": os.path.abspath(self.model_paths[model_index]),
+                    "checkpoint": self.selected_checkpoint_prefixes[model_index],
+                    "simulation_index": simulation_index,
+                }
+                row.update(
+                    {
+                        name: float(values[model_index, simulation_index].item())
+                        for name, values in metric_tensors.items()
+                    }
+                )
+                rows.append(row)
+
+        csv_path = output_dir / "metrics_runs.csv"
+        with csv_path.open("w", newline="", encoding="utf-8") as file:
+            writer = csv.DictWriter(file, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+
+        aggregate = []
+        for model_index, label in enumerate(self.legends):
+            metrics = {}
+            for name, values in metric_tensors.items():
+                samples = values[model_index].detach().cpu().float()
+                metrics[name] = {
+                    "mean": float(samples.mean().item()),
+                    "std": float(samples.std(unbiased=False).item()),
+                    "min": float(samples.min().item()),
+                    "max": float(samples.max().item()),
+                }
+            aggregate.append(
+                {
+                    "model_index": model_index,
+                    "label": label,
+                    "model_path": os.path.abspath(self.model_paths[model_index]),
+                    "checkpoint": self.selected_checkpoint_prefixes[model_index],
+                    "metrics": metrics,
+                }
+            )
+        result = {
+            "metric_source": "utilities.evaluation_base.Evaluation",
+            "protocol": {
+                "scenario": self.scenario_type,
+                "simulation_steps": self.simulation_steps,
+                "num_simulations_per_model": self.parameters.num_vmas_envs,
+                "evaluation_seed": self.evaluation_seed,
+                "deterministic_actions": self.deterministic_actions,
+                "observation_noise_override": self.observation_noise,
+                "reuse_cached_rollouts": self.reuse_cached_rollouts,
+            },
+            "models": aggregate,
+        }
+        json_path = output_dir / "metrics_summary.json"
+        with json_path.open("w", encoding="utf-8") as file:
+            json.dump(result, file, indent=2)
+        print(colored(f"[INFO] Metrics saved: {json_path}", "blue"))
 
     def compute_performance_metrics(
         self, is_remove_max_min: bool = False, is_relative_values: bool = True
@@ -927,9 +1041,12 @@ class Evaluation:
         self.SM_penalized_avg = self.smoothness_penalized.mean(dim=-1)
 
         # Compute composite score
-        w1 = 1 / self.CR_total_avg.mean()
-        w2 = 1 / self.CD_avg.mean()
-        w3 = 1 / self.AS_penalized_avg.mean()
+        def reciprocal_or_zero(value):
+            return torch.where(value.abs() > 1e-8, value.reciprocal(), 0.0)
+
+        w1 = reciprocal_or_zero(self.CR_total_avg.mean())
+        w2 = reciprocal_or_zero(self.CD_avg.mean())
+        w3 = reciprocal_or_zero(self.AS_penalized_avg.mean())
         # composite score = - w1 * CR_total_avg - w2 * CD_avg + w3 * AS_avg
         self.composite_score = (
             -w1 * self.CR_total_avg - w2 * self.CD_avg + w3 * self.AS_penalized_avg

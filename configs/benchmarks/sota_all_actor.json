@@ -1,0 +1,29 @@
+{
+  "benchmark_name": "sota_all_actor",
+  "reference_method": "nod_dgppo",
+  "scenario": "intersection_2",
+  "max_steps": 1200,
+  "seeds": [101, 202, 303, 404, 505],
+  "deterministic_actions": true,
+  "observation_noise": false,
+  "methods": [
+    {
+      "name": "nod_dgppo",
+      "label": "NOD-DGPPO",
+      "model_path": "outputs/current/dgppo_nod_gain1_control_finetune",
+      "expected_prioritized_marl": false
+    },
+    {
+      "name": "sigmarl",
+      "label": "SigmaRL",
+      "model_path": "checkpoints/itsc24/M0 (our)",
+      "expected_prioritized_marl": false
+    },
+    {
+      "name": "xp_marl",
+      "label": "XP-MARL",
+      "model_path": "checkpoints/icra25/M1 (XP-MARL)",
+      "expected_prioritized_marl": true
+    }
+  ]
+}
