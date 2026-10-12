@@ -29,6 +29,17 @@ NOD-DGPPO, SigmaRL, and XP-MARL. It uses:
 - the highest-reward intermediate checkpoint in each model directory;
 - learned policies for every vehicle (no rule vehicles).
 
+`future_lower_control.json` uses the same evaluator and protocol for the two
+matched future-NOD control branches, the previous NOD-DGPPO checkpoint, and
+the two official baselines. Train both branches listed in `EXPERIMENTS.md`
+before running it. Keep the comparison under a separate
+`--output-root outputs/benchmarks/future_lower_control` so the established
+SOTA results remain intact.
+
+It also includes final-checkpoint evaluations for both control branches and
+the follow-up gain-0.4 lower-bound branch. Existing run summaries can be
+retained with `--skip-existing` when adding the follow-up branch.
+
 The official comparison checkpoints are:
 
 ```text

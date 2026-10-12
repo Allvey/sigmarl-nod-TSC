@@ -792,6 +792,14 @@ class Parameters:
         nod_reference_seconds: float = 2.0,
         nod_nll_weight: float = 1.0,
         nod_calibration_weight: float = 1.0,
+        nod_predict_future_quantile: bool = False,
+        nod_quantile_level: float = 0.1,
+        nod_quantile_weight: float = 1.0,
+        nod_candidate_init_checkpoint: str = "",
+        nod_control_checkpoint: str = "",
+        nod_future_calibration_file: str = "",
+        nod_future_lower_correction: float = 0.0,
+        nod_future_relax_threshold: float = 0.5,
         nod_max_grad_norm: float = 1.0,
         nod_num_epochs: int = 4,
         nod_sequence_length: int = 32,
@@ -841,6 +849,7 @@ class Parameters:
         dgppo_lambda: float = 0.95,
         dgppo_alpha: float = 10.0,
         dgppo_opinion_alpha: bool = False,
+        dgppo_alpha_source: str = "opinion",
         dgppo_alpha_span: float = 5.0,
         dgppo_alpha_gain: float = 1.0,
         dgppo_opinion_deadzone: float = 0.0,
@@ -1064,6 +1073,9 @@ class Parameters:
         self.dgppo_lambda = dgppo_lambda
         self.dgppo_alpha = dgppo_alpha
         self.dgppo_opinion_alpha = dgppo_opinion_alpha
+        if dgppo_alpha_source not in {"opinion", "future_lower"}:
+            raise ValueError("dgppo_alpha_source must be opinion or future_lower")
+        self.dgppo_alpha_source = dgppo_alpha_source
         self.dgppo_alpha_span = dgppo_alpha_span
         self.dgppo_alpha_gain = dgppo_alpha_gain
         self.dgppo_opinion_deadzone = dgppo_opinion_deadzone
@@ -1117,6 +1129,11 @@ class Parameters:
                 or dgppo_alpha_span >= dgppo_alpha
                 or (dgppo_alpha + dgppo_alpha_span) * dt >= 1):
             raise ValueError("DGPPO opinion alpha requires local NOD, Safety Value, and 0 < alpha(z)*dt < 1")
+        if dgppo_alpha_source == "future_lower" and (
+            not nod_predict_future_quantile or not nod_freeze_training
+            or nod_label_mode != "future_mitigation"
+        ):
+            raise ValueError("Future-lower control requires a frozen future-mitigation quantile NOD")
         if safety_value_loss_mode == "mse" and safety_control_mode != "dgppo":
             raise ValueError("MSE Safety Value loss belongs to the DGPPO minimal mode")
         self.safety_barrier_kappa = safety_barrier_kappa
@@ -1238,9 +1255,9 @@ class Parameters:
         self.nod_safe_distance = nod_safe_distance
         self.nod_label_slope = nod_label_slope
         self.nod_label_margin = nod_label_margin
-        if nod_label_mode not in {"instantaneous", "interaction", "responsibility"}:
+        if nod_label_mode not in {"instantaneous", "interaction", "responsibility", "future_mitigation"}:
             raise ValueError(
-                "nod_label_mode must be instantaneous, interaction or responsibility"
+                "nod_label_mode must be instantaneous, interaction, responsibility or future_mitigation"
             )
         if not 0 < nod_reference_seconds < float("inf"):
             raise ValueError("nod_reference_seconds must be positive and finite")
@@ -1248,6 +1265,25 @@ class Parameters:
         self.nod_reference_seconds = nod_reference_seconds
         self.nod_nll_weight = nod_nll_weight
         self.nod_calibration_weight = nod_calibration_weight
+        if nod_predict_future_quantile and nod_label_mode != "future_mitigation":
+            raise ValueError("Future quantile requires future_mitigation label mode")
+        if not 0.0 < nod_quantile_level < 0.5:
+            raise ValueError("nod_quantile_level must be in (0, 0.5)")
+        if nod_quantile_weight < 0.0 or not math.isfinite(nod_quantile_weight):
+            raise ValueError("nod_quantile_weight must be nonnegative and finite")
+        self.nod_predict_future_quantile = nod_predict_future_quantile
+        self.nod_quantile_level = nod_quantile_level
+        self.nod_quantile_weight = nod_quantile_weight
+        self.nod_candidate_init_checkpoint = nod_candidate_init_checkpoint
+        if (not math.isfinite(nod_future_lower_correction)
+                or not 0.0 <= nod_future_lower_correction <= 1.0
+                or not math.isfinite(nod_future_relax_threshold)
+                or not 0.5 <= nod_future_relax_threshold < 1.0):
+            raise ValueError("Invalid calibrated future-lower parameters")
+        self.nod_control_checkpoint = nod_control_checkpoint
+        self.nod_future_calibration_file = nod_future_calibration_file
+        self.nod_future_lower_correction = nod_future_lower_correction
+        self.nod_future_relax_threshold = nod_future_relax_threshold
         self.nod_max_grad_norm = nod_max_grad_norm
         self.nod_num_epochs = nod_num_epochs
         self.nod_sequence_length = nod_sequence_length

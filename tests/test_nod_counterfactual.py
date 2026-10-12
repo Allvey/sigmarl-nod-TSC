@@ -40,6 +40,21 @@ def test_counterfactual_label_rewards_observed_risk_mitigation():
     assert labels["label"][0, 0, 0, 0] > 0.5
 
 
+def test_future_mitigation_uses_same_future_label_as_responsibility_mode():
+    args = _two_agent_rollout()
+    kwargs = dict(
+        horizon=2,
+        dt=1.0,
+        safe_distance=0.5,
+        label_slope=12.0,
+        label_margin=0.02,
+    )
+    old = build_counterfactual_labels(*args, mode="responsibility", **kwargs)
+    future = build_counterfactual_labels(*args, mode="future_mitigation", **kwargs)
+    for key in ("label", "valid", "reference_active", "online_evidence"):
+        torch.testing.assert_close(future[key], old[key])
+
+
 def test_counterfactual_label_is_invalid_across_identity_reset():
     positions, velocities, generations, neighbor_indices, edge_mask = (
         _two_agent_rollout()

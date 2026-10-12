@@ -8,7 +8,7 @@ Identity masks and observed terminal boundaries adapt it to respawning VMAS cars
 import torch
 
 from .safety_value import same_entities, discounted_max_targets
-from .barrier import aligned_opinions
+from .barrier import aligned_opinions, aligned_future_lower_bounds
 
 
 @torch.no_grad()
@@ -27,6 +27,24 @@ def opinion_alpha(td, current, value, *, alpha, span, gain=1.0, deadzone=0.0):
     )
     return coefficients, dict(available=available, opinions=opinions, safe=safe, applied=applied,
                              mapped_opinions=mapped_opinions)
+
+
+@torch.no_grad()
+def future_lower_alpha(td, current, value, *, alpha, span, gain=1.0, threshold=0.5):
+    """Spend extra safe-side pair margin only on aligned calibrated lower bounds."""
+    available, lower = aligned_future_lower_bounds(td, current)
+    n = lower.shape[-1]
+    g, v = current['g'][..., :n], value[..., :n]
+    safe = current['valid'][..., :n] & torch.isfinite(g) & torch.isfinite(v) & (g <= 0) & (v < 0)
+    applied = available & safe & (lower > threshold)
+    mapped = (gain * (lower - threshold) / (1.0 - threshold)).clamp(0.0, 1.0)
+    coefficients = alpha.clone() if isinstance(alpha, torch.Tensor) else torch.full_like(value, alpha)
+    pair_base = coefficients[..., :n].clone()
+    coefficients[..., :n] = torch.where(applied, pair_base + span * mapped, pair_base)
+    return coefficients, dict(
+        available=available, opinions=2.0 * lower - 1.0, lower_bounds=lower,
+        safe=safe, applied=applied, mapped_opinions=mapped,
+    )
 
 
 @torch.no_grad()
@@ -125,6 +143,7 @@ def prepare_dgppo_advantage(manager, td, advantage_key):
                    road_alpha_safe=p.dgppo_road_alpha_safe,
                    road_alpha_recovery=p.dgppo_road_alpha_recovery)
     opinion_mode = getattr(p, 'dgppo_opinion_alpha', False)
+    future_lower_mode = opinion_mode and getattr(p, 'dgppo_alpha_source', 'opinion') == 'future_lower'
     if opinion_mode:
         metrics.update(opinion_alpha_enabled=1., opinion_alpha_gain=p.dgppo_alpha_gain,
                        opinion_alpha_deadzone=p.dgppo_opinion_deadzone, **dict.fromkeys([
@@ -155,9 +174,16 @@ def prepare_dgppo_advantage(manager, td, advantage_key):
     )
     alpha = fixed_alpha
     if opinion_mode:
-        alpha, opinion_info = opinion_alpha(td, current, value, alpha=alpha,
-                                            span=p.dgppo_alpha_span, gain=p.dgppo_alpha_gain,
-                                            deadzone=p.dgppo_opinion_deadzone)
+        if future_lower_mode:
+            alpha, opinion_info = future_lower_alpha(
+                td, current, value, alpha=alpha, span=p.dgppo_alpha_span,
+                gain=p.dgppo_alpha_gain,
+                threshold=p.nod_future_relax_threshold,
+            )
+        else:
+            alpha, opinion_info = opinion_alpha(td, current, value, alpha=alpha,
+                                                span=p.dgppo_alpha_span, gain=p.dgppo_alpha_gain,
+                                                deadzone=p.dgppo_opinion_deadzone)
     # Scaling has already been applied above; do not normalize the mixed result.
     adjusted, info = dgppo_advantage(task, current, following, value, nxt,
                                     dt=p.dt, alpha=alpha, eps=p.dgppo_eps, weight=weight,
@@ -193,6 +219,14 @@ def prepare_dgppo_advantage(manager, td, advantage_key):
             opinion_advantage_delta_abs=mean((adjusted - fixed).abs()),
             opinion_advantage_changed_count=float(changed.sum()),
             opinion_advantage_changed_rate=mean(changed[info['eligible']]))
+        if future_lower_mode:
+            metrics.update(
+                future_lower_enabled=1.0,
+                future_lower_threshold=p.nod_future_relax_threshold,
+                future_lower_available_count=float(available.sum()),
+                future_lower_applied_count=float((opinion_info['applied'] & pair).sum()),
+                future_lower_mean=mean(opinion_info['lower_bounds'][available]),
+            )
     metrics.update(barrier_active=float(bool((adjusted != raw_task).any())),
                    barrier_eligible_count=float(info['eligible'].sum()),
                    barrier_fallback_count=float((~info['eligible']).sum()),

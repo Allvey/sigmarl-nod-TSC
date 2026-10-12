@@ -47,6 +47,9 @@ from tqdm import tqdm
 
 import os
 import hashlib
+import json
+import math
+import copy
 import random
 import numpy as np
 
@@ -264,6 +267,25 @@ def _load_policy_checkpoint(
 
 
 def mappo_cavs(parameters: Parameters):
+    control_nod_path = getattr(parameters, "nod_control_checkpoint", "")
+    if control_nod_path and not parameters.is_load_model:
+        if getattr(parameters, "nod_training_mode", "joint") != "joint":
+            raise ValueError("Control NOD override is only for Actor/Safety fine-tuning")
+        calibration_path = getattr(parameters, "nod_future_calibration_file", "")
+        if not calibration_path:
+            raise ValueError("Frozen future NOD control requires a calibration file")
+        with open(calibration_path, encoding="utf-8") as file:
+            calibration = json.load(file)
+        if (os.path.realpath(calibration.get("checkpoint", "")) != os.path.realpath(control_nod_path)
+                or calibration.get("eta") != parameters.nod_quantile_level
+                or calibration.get("relax_threshold", 0.5) != parameters.nod_future_relax_threshold
+                or calibration.get("bound_rule") != "min(mean, clamp(raw_quantile - correction, 0, 1))"):
+            raise ValueError("Calibration does not match the frozen future NOD checkpoint")
+        correction = calibration.get("correction")
+        if (isinstance(correction, bool) or not isinstance(correction, (int, float))
+                or not math.isfinite(correction) or not 0.0 <= correction <= 1.0):
+            raise ValueError("Calibration correction must be finite and in [0, 1]")
+        parameters.nod_future_lower_correction = float(correction)
     seed = getattr(parameters, "seed", None)
     if seed is None:
         seed = _generate_seed()
@@ -313,7 +335,24 @@ def mappo_cavs(parameters: Parameters):
     observation_key = get_observation_key(parameters)
     critic_observation_key = observation_key
 
-    nod_manager = NODOpinionManager(parameters=parameters)
+    future_candidate_mode = (
+        getattr(parameters, "nod_training_mode", "joint") == "candidate_only"
+        and getattr(parameters, "nod_label_mode", "instantaneous") == "future_mitigation"
+    )
+    if future_candidate_mode and parameters.is_load_model and parameters.is_continue_train:
+        raise ValueError(
+            "Continuing a future candidate requires a separately pinned behavior NOD; "
+            "start a new candidate run instead"
+        )
+    future_candidate = future_candidate_mode and not parameters.is_load_model
+    behavior_parameters = copy.copy(parameters) if future_candidate else parameters
+    if future_candidate:
+        # Existing policy checkpoints were collected with the responsibility
+        # filter. Keep their behavior NOD untouched while the separate learner
+        # adds a future-prediction head from completed trajectories.
+        behavior_parameters.nod_label_mode = "responsibility"
+        behavior_parameters.nod_predict_future_quantile = False
+    nod_manager = NODOpinionManager(parameters=behavior_parameters)
     scenario.nod_manager = nod_manager
     use_nod_actor = bool(
         getattr(parameters, "is_using_nod_actor", True) and nod_manager.enabled
@@ -465,7 +504,8 @@ def mappo_cavs(parameters: Parameters):
             raise ValueError('Training initialization must use a separate output directory')
         local_nod = nod_manager.enabled and parameters.nod_observation_mode == 'local_kinematics'
         required_suffixes = ('policy', 'critic', 'safety_value') + (
-            ('nod',) if nod_manager.enabled and (not local_nod or parameters.nod_freeze_training) else ())
+            ('nod',) if nod_manager.enabled and not control_nod_path
+            and (not local_nod or parameters.nod_freeze_training) else ())
         for suffix in required_suffixes:
             if not os.path.isfile(prefix + '_' + suffix + '.pth'):
                 raise FileNotFoundError(f'Missing training initialization: {prefix}_{suffix}.pth')
@@ -474,7 +514,7 @@ def mappo_cavs(parameters: Parameters):
                                              use_nod_actor=use_nod_actor)
         critic.load_state_dict(torch.load(prefix + '_critic.pth', map_location=parameters.device))
         _load_nod_if_available(
-            prefix + '_nod.pth', nod_manager, parameters,
+            control_nod_path or prefix + '_nod.pth', nod_manager, parameters,
             load_optimizer=parameters.safety_training_mode != 'finetune',
             allow_fresh=local_nod and policy_load == 'migrated' and not parameters.nod_freeze_training)
         _bind_frozen_nod(nod_manager, safety_value_manager, parameters)
@@ -628,13 +668,25 @@ def mappo_cavs(parameters: Parameters):
         # A disjoint learner consumes completed rollouts and never feeds back
         # into action selection during this experiment.
         learner_nod_manager = NODOpinionManager(parameters=parameters)
-        if not learner_nod_manager.load_checkpoint(
+        quantile_init = getattr(parameters, "nod_candidate_init_checkpoint", "")
+        if getattr(parameters, "nod_predict_future_quantile", False):
+            if not future_candidate or not quantile_init:
+                raise ValueError("Quantile candidate requires a pinned stage-1 NOD checkpoint")
+            learner_nod_manager.initialize_quantile_from_future(
+                torch.load(quantile_init, map_location=parameters.device)
+            )
+        elif future_candidate:
+            learner_nod_manager.initialize_future_from_behavior(
+                nod_manager.checkpoint_state()
+            )
+        elif not learner_nod_manager.load_checkpoint(
             nod_manager.checkpoint_state(), load_optimizer=False
         ):
             raise ValueError(
                 "Unable to initialize candidate NOD from the behavior NOD"
             )
-        learner_nod_manager.model.requires_grad_(True)
+        if not getattr(parameters, "nod_predict_future_quantile", False):
+            learner_nod_manager.model.requires_grad_(True)
         behavior_ids = {id(p) for p in nod_manager.model.parameters()}
         learner_ids = {id(p) for p in learner_nod_manager.model.parameters()}
         if not behavior_ids.isdisjoint(learner_ids):

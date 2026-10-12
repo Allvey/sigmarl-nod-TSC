@@ -72,6 +72,16 @@ class NODOpinionManager:
         self.parameters = parameters
         self.observation_mode = getattr(parameters, "nod_observation_mode", "legacy_paths")
         self.label_mode = getattr(parameters, "nod_label_mode", "instantaneous")
+        self.predict_future_mitigation = self.label_mode == "future_mitigation"
+        self.predict_future_quantile = bool(
+            getattr(parameters, "nod_predict_future_quantile", False)
+        )
+        if self.predict_future_quantile and not self.predict_future_mitigation:
+            raise ValueError("Future quantile requires future_mitigation mode")
+        self.checkpoint_version = (
+            5 if self.predict_future_quantile else
+            4 if self.predict_future_mitigation else 3
+        )
         self.enabled = bool(getattr(parameters, "is_using_nod_opinion", True))
         self.n_neighbors = max(1, int(getattr(parameters, "n_agents", 2)) - 1)
         dt = float(parameters.dt)
@@ -125,8 +135,10 @@ class NODOpinionManager:
                 ),
                 fixed_evidence_mapping=(
                     bool(getattr(parameters, "nod_fixed_evidence_mapping", False))
-                    or self.label_mode == "responsibility"
+                    or self.label_mode in {"responsibility", "future_mitigation"}
                 ),
+                predict_future_mitigation=self.predict_future_mitigation,
+                predict_future_quantile=self.predict_future_quantile,
             ).to(parameters.device)
         finally:
             torch.random.set_rng_state(cpu_rng_state)
@@ -205,7 +217,7 @@ class NODOpinionManager:
             ego_generations,
             neighbor_generations,
         ]
-        if self.label_mode == "responsibility":
+        if self.label_mode in {"responsibility", "future_mitigation"}:
             required.extend((positions, velocities))
         if any(value is None for value in required):
             return None
@@ -225,7 +237,7 @@ class NODOpinionManager:
             self.reset_online_state()
 
         opinion_mask = evidence_override = None
-        if self.label_mode == "responsibility":
+        if self.label_mode in {"responsibility", "future_mitigation"}:
             responsibility_shape = pair_features.shape[:-1]
             if (
                 self.responsibility_state is not None
@@ -272,6 +284,17 @@ class NODOpinionManager:
             evidence_override=evidence_override,
         )
         self.online_state = _detach_state(state)
+        if self.predict_future_quantile:
+            correction = float(getattr(self.parameters, "nod_future_lower_correction", 0.0))
+            future_lower_bound = (
+                (outputs["future_quantile_raw"][:, 0] - correction)
+                .clamp(0.0, 1.0)
+                .minimum(outputs["rho"][:, 0])
+            )
+            future_lower_valid = outputs["learning_valid"][:, 0]
+        else:
+            future_lower_bound = torch.zeros_like(outputs["rho"][:, 0])
+            future_lower_valid = torch.zeros_like(edge_mask)
         edge_context = torch.cat(
             [
                 state["hidden"],
@@ -294,6 +317,8 @@ class NODOpinionManager:
             ),
             "opinion": outputs["z"][:, 0].detach(),
             "risk_attention": outputs["attention"][:, 0].detach(),
+            "future_lower_bound": future_lower_bound.detach(),
+            "future_lower_valid": future_lower_valid.detach(),
         }
 
     def _losses(
@@ -331,6 +356,19 @@ class NODOpinionManager:
             + float(getattr(self.parameters, "nod_calibration_weight", 1.0))
             * calibration
         )
+        if self.predict_future_quantile:
+            if bool(calibration_valid.any()):
+                residual = (
+                    labels["label"][calibration_valid]
+                    - outputs["future_quantile_raw"][calibration_valid]
+                )
+                level = float(getattr(self.parameters, "nod_quantile_level", 0.1))
+                quantile_loss = torch.maximum(
+                    level * residual, (level - 1.0) * residual
+                ).mean()
+            else:
+                quantile_loss = outputs["future_quantile_raw"].sum() * 0.0
+            loss = loss + float(getattr(self.parameters, "nod_quantile_weight", 1.0)) * quantile_loss
         return loss, nll, calibration, brier, dynamics_valid, calibration_valid
 
     def train_on_rollout(self, tensordict) -> Dict[str, float]:
@@ -392,12 +430,12 @@ class NODOpinionManager:
         )
         opinion_mask = (
             labels.get("reference_active")
-            if self.label_mode == "responsibility"
+            if self.label_mode in {"responsibility", "future_mitigation"}
             else None
         )
         evidence_override = (
             labels.get("online_evidence")
-            if self.label_mode == "responsibility"
+            if self.label_mode in {"responsibility", "future_mitigation"}
             else None
         )
         dynamics_mask = opinion_mask if opinion_mask is not None else edge_mask
@@ -473,6 +511,8 @@ class NODOpinionManager:
                         opinion_chunk if opinion_chunk is not None else mask_chunk,
                     )
                     state = _detach_state(state)
+                    if self.predict_future_quantile and not bool(calibration_valid.any()):
+                        continue
                     if not bool(dynamics_valid.any() | calibration_valid.any()):
                         continue
                     self.optimizer.zero_grad(set_to_none=True)
@@ -612,6 +652,28 @@ class NODOpinionManager:
         if bool(calibration_valid.any()):
             metrics['label_positive_ratio'] = float((valid_label > .5).float().mean())
             metrics['label_neutral_ratio'] = float((valid_label == .5).float().mean())
+        if self.predict_future_mitigation:
+            prediction_error = valid_rho - valid_label
+            metrics['future_mitigation_mae'] = (
+                float(prediction_error.abs().mean())
+                if prediction_error.numel() else 0.0
+            )
+            metrics['future_mitigation_bias'] = (
+                float(prediction_error.mean())
+                if prediction_error.numel() else 0.0
+            )
+            filtered = outputs['filter_z'][dynamics_mask]
+            metrics['filter_z_mean'] = float(filtered.mean()) if filtered.numel() else 0.0
+        if self.predict_future_quantile:
+            raw = outputs["future_quantile_raw"][calibration_valid]
+            if raw.numel():
+                residual = valid_label - raw
+                level = float(getattr(self.parameters, "nod_quantile_level", 0.1))
+                metrics["future_quantile_pinball"] = float(
+                    torch.maximum(level * residual, (level - 1.0) * residual).mean()
+                )
+                metrics["future_quantile_raw_coverage"] = float((valid_label >= raw).float().mean())
+                metrics["future_quantile_raw_mean"] = float(raw.mean())
         if 'reference_active' in labels:
             metrics['label_reference_active_ratio'] = float(
                 labels['reference_active'][edge_mask].float().mean()) if bool(edge_mask.any()) else 0.
@@ -640,6 +702,12 @@ class NODOpinionManager:
             "history_mode": self.model.history_mode,
             "label_mode": self.label_mode,
             "fixed_evidence_mapping": self.model.fixed_evidence_mapping,
+            "predict_future_mitigation": self.predict_future_mitigation,
+            "predict_future_quantile": self.predict_future_quantile,
+            "future_quantile_level": (
+                float(getattr(self.parameters, "nod_quantile_level", 0.1))
+                if self.predict_future_quantile else None
+            ),
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "sequence_generator_state": self._sequence_generator.get_state(),
@@ -652,6 +720,10 @@ class NODOpinionManager:
             self.reset_online_state()
             return False
         version = checkpoint.get("version") if isinstance(checkpoint, dict) else None
+        if isinstance(checkpoint, dict) and checkpoint.get("label_mode", self.label_mode) != self.label_mode:
+            self.last_load_info = "incompatible NOD label mode"
+            self.reset_online_state()
+            return False
         state_dict = (
             checkpoint.get("model", checkpoint)
             if isinstance(checkpoint, dict)
@@ -662,6 +734,16 @@ class NODOpinionManager:
                 "legacy NOD checkpoint ignored because direct physical-pair "
                 "history has a different input contract"
             )
+            self.reset_online_state()
+            return False
+        if version is not None and int(version) > self.checkpoint_version:
+            self.last_load_info = "incompatible NOD checkpoint version"
+            self.reset_online_state()
+            return False
+        if self.predict_future_quantile and checkpoint.get("future_quantile_level") != float(
+            getattr(self.parameters, "nod_quantile_level", 0.1)
+        ):
+            self.last_load_info = "incompatible future quantile level"
             self.reset_online_state()
             return False
         self.model.load_state_dict(state_dict)
@@ -679,3 +761,49 @@ class NODOpinionManager:
         self.reset_online_state()
         self.last_load_info = "loaded"
         return True
+
+    def initialize_future_from_behavior(self, checkpoint: Dict) -> None:
+        """Reuse a frozen responsibility filter while training a new future head."""
+        if not self.predict_future_mitigation or self.predict_future_quantile:
+            raise ValueError("Future initialization requires future_mitigation mode")
+        if checkpoint.get("version") != 3 or checkpoint.get("label_mode") != "responsibility":
+            raise ValueError("Expected a version-3 responsibility behavior NOD")
+        if (checkpoint.get("observation_mode") != self.observation_mode
+                or checkpoint.get("pair_feature_dim") != self.model.pair_feature_dim
+                or checkpoint.get("history_mode") != self.model.history_mode
+                or not checkpoint.get("fixed_evidence_mapping")):
+            raise ValueError("Behavior NOD uses an incompatible evidence contract")
+        missing, unexpected = self.model.load_state_dict(
+            checkpoint["model"], strict=False
+        )
+        expected_missing = set(self.model.future_head.state_dict())
+        expected_missing = {f"future_head.{key}" for key in expected_missing}
+        if set(missing) != expected_missing or unexpected:
+            raise ValueError("Behavior NOD weights do not match the future filter")
+        self.reset_online_state()
+        self.last_load_info = "initialized future filter from behavior NOD"
+
+    def initialize_quantile_from_future(self, checkpoint: Dict) -> None:
+        """Start stage 2 from a stage-1 predictor; train only the new head."""
+        if not self.predict_future_quantile:
+            raise ValueError("Future quantile head is disabled")
+        if (checkpoint.get("version") != 4
+                or checkpoint.get("label_mode") != "future_mitigation"
+                or checkpoint.get("observation_mode") != self.observation_mode
+                or checkpoint.get("pair_feature_dim") != self.model.pair_feature_dim
+                or checkpoint.get("history_mode") != self.model.history_mode
+                or not checkpoint.get("fixed_evidence_mapping")):
+            raise ValueError("Expected a compatible version-4 future predictor")
+        missing, unexpected = self.model.load_state_dict(
+            checkpoint["model"], strict=False
+        )
+        expected_missing = {
+            f"future_quantile_head.{key}"
+            for key in self.model.future_quantile_head.state_dict()
+        }
+        if set(missing) != expected_missing or unexpected:
+            raise ValueError("Stage-1 predictor weights do not match stage 2")
+        for name, parameter in self.model.named_parameters():
+            parameter.requires_grad_(name.startswith("future_quantile_head."))
+        self.reset_online_state()
+        self.last_load_info = "initialized frozen future predictor with trainable quantile head"

@@ -9,6 +9,7 @@ from utilities.helper_training import Parameters
 from utilities.nod_marl.dgppo import (
     constraint_alpha,
     opinion_alpha,
+    future_lower_alpha,
     dgppo_advantage,
     prepare_dgppo_advantage,
 )
@@ -51,12 +52,14 @@ def advantage(td, state, nxt, alpha):
                           dt=.05, alpha=alpha, eps=.01, weight=1.)
 
 
-def test_config_roundtrip_and_matched_control():
+def test_config_roundtrip_and_archived_control_differences():
     p = params()
     assert Parameters.from_dict(p.to_dict()).to_dict() == p.to_dict()
     control = Parameters.from_json('configs/archive/nod_history/config_dgppo_nod_fixed_control_finetune.json')
     diff = {k for k, v in p.to_dict().items() if control.to_dict()[k] != v}
-    assert diff == {'dgppo_opinion_alpha', 'where_to_save'}
+    assert diff == {'dgppo_opinion_alpha', 'nod_safe_distance', 'where_to_save'}
+    assert p.nod_safe_distance == pytest.approx(.20)
+    assert control.nod_safe_distance == pytest.approx(.25)
     assert p.nod_freeze_training and p.training_init_checkpoint.endswith('reward7.33')
     assert not Parameters.from_json('configs/archive/nod_history/config_dgppo_nod_fixed_finetune.json').dgppo_opinion_alpha
 
@@ -67,6 +70,11 @@ def test_candidate_only_and_gain1_control_configs_are_staged():
     assert candidate.nod_freeze_training
     assert not candidate.dgppo_opinion_alpha
     assert candidate.nod_update_interval == 1
+    future = Parameters.from_json('configs/current/config_dgppo_nod_future_candidate_only.json')
+    assert future.nod_training_mode == 'candidate_only'
+    assert future.nod_label_mode == 'future_mitigation'
+    assert future.nod_freeze_training and not future.dgppo_opinion_alpha
+    assert future.training_init_checkpoint == candidate.training_init_checkpoint
     control = Parameters.from_json('configs/current/config_dgppo_nod_gain1_control_finetune.json')
     assert control.nod_training_mode == 'joint'
     assert control.nod_freeze_training
@@ -90,6 +98,77 @@ def test_candidate_only_and_gain1_control_configs_are_staged():
     assert road.dgppo_road_alpha_safe == pytest.approx(7.5)
     assert road.dgppo_road_alpha_recovery == pytest.approx(15.)
     assert road.training_init_checkpoint.endswith('reward7.18')
+
+
+def test_future_control_branches_share_everything_except_alpha_and_output():
+    fixed = Parameters.from_json('configs/current/config_dgppo_nod_future_fixed_alpha_finetune.json')
+    lower = Parameters.from_json('configs/current/config_dgppo_nod_future_lower_alpha_finetune.json')
+    assert fixed.nod_predict_future_quantile and lower.nod_predict_future_quantile
+    assert fixed.nod_freeze_training and lower.nod_freeze_training
+    assert fixed.nod_control_checkpoint == lower.nod_control_checkpoint
+    assert fixed.nod_future_calibration_file == lower.nod_future_calibration_file
+    assert fixed.training_init_checkpoint == lower.training_init_checkpoint
+    assert not fixed.dgppo_opinion_alpha and lower.dgppo_opinion_alpha
+    assert {key for key, value in fixed.to_dict().items()
+            if lower.to_dict()[key] != value} == {'where_to_save', 'dgppo_opinion_alpha'}
+
+    low_gain = Parameters.from_json('configs/current/config_dgppo_nod_future_lower_gain0p4_finetune.json')
+    assert low_gain.dgppo_alpha_gain == pytest.approx(.4)
+    assert {key for key, value in lower.to_dict().items()
+            if low_gain.to_dict()[key] != value} == {'where_to_save', 'dgppo_alpha_gain'}
+    base_value = SafetyValueManager(lower, 5, ('agents', 'observation'))
+    low_gain_value = SafetyValueManager(low_gain, 5, ('agents', 'observation'))
+    assert base_value.contract == low_gain_value.contract
+    assert base_value.loss_contract == low_gain_value.loss_contract
+    assert low_gain_value.barrier_contract['alpha_gain'] == pytest.approx(.4)
+    assert low_gain_value.barrier_contract['opinion_alpha_rule'] == (
+        'base_plus_span_clipped_gain_positive_normalized_lower_when_safe'
+    )
+
+
+def test_calibrated_future_lower_only_relaxes_safe_identity_aligned_pair():
+    td, state = sample()
+    cache = td['agents', 'info']
+    cache['nod_opinion_active'] = torch.ones_like(cache['nod_actor_edge_mask'])
+    cache['nod_future_lower_valid'] = torch.ones_like(cache['nod_actor_edge_mask'])
+    lower = torch.tensor([[[[.9, .3], [.4, .8], [.7, .1]]]])
+    cache['nod_future_lower_bound'] = lower
+    alpha, details = future_lower_alpha(td, state, state['g'], alpha=10., span=5.)
+    assert float(alpha[0, 0, 0, 1]) == pytest.approx(14.)
+    assert alpha[0, 0, 0, 2] == 10.
+    assert (alpha[..., -2:] == 10.).all()
+    assert details['applied'].sum() == 3
+
+    reduced, _ = future_lower_alpha(td, state, state['g'], alpha=10., span=5., gain=.4)
+    assert float(reduced[0, 0, 0, 1]) == pytest.approx(11.6)
+    assert reduced[0, 0, 0, 2] == 10.
+
+    cache['nod_future_lower_valid'][..., 0, 0] = False
+    invalid, _ = future_lower_alpha(td, state, state['g'], alpha=10., span=5.)
+    assert invalid[0, 0, 0, 1] == 10.
+    cache['nod_future_lower_valid'][..., 0, 0] = True
+    state['g'][..., 0, 1] = .1
+    unsafe, _ = future_lower_alpha(td, state, state['g'], alpha=10., span=5.)
+    assert unsafe[0, 0, 0, 1] == 10.
+
+
+def test_future_lower_alignment_survives_neighbor_slot_permutation():
+    td, state = sample()
+    cache = td['agents', 'info']
+    cache['nod_opinion_active'] = torch.ones_like(cache['nod_actor_edge_mask'])
+    cache['nod_future_lower_valid'] = torch.ones_like(cache['nod_actor_edge_mask'])
+    cache['nod_future_lower_bound'] = torch.tensor([[[[.9, .2], [.3, .8], [.7, .1]]]])
+    expected, _ = future_lower_alpha(td, state, state['g'], alpha=10., span=5.)
+    permuted = td.clone()
+    info = permuted['agents', 'info']
+    for key in (
+        'nod_neighbor_indices', 'nod_neighbor_generation', 'nod_actor_edge_mask',
+        'nod_edge_mask', 'nod_opinion_active', 'nod_future_lower_valid',
+        'nod_future_lower_bound',
+    ):
+        info[key] = info[key].flip(-1)
+    actual, _ = future_lower_alpha(permuted, state, state['g'], alpha=10., span=5.)
+    torch.testing.assert_close(actual, expected)
 
 
 def test_candidate_only_requires_frozen_initialized_behavior_nod():
@@ -117,7 +196,8 @@ def test_alignment_permutation_and_only_current_cache():
     td, state = sample()
     alpha, info = mapped(td, state)
     torch.testing.assert_close(alpha[0, 0, 0], torch.tensor([10., 5., 15., 10., 10.]))
-    assert info['applied'].sum() == 6
+    # Zero opinions remain at the base alpha and do not enter the applied mask.
+    assert info['applied'].sum() == 4
     permuted = td.clone(); cache = permuted['agents', 'info']
     for key in ['nod_neighbor_indices', 'nod_neighbor_generation', 'nod_actor_edge_mask', 'nod_edge_mask']:
         cache[key] = cache[key].flip(-1)
@@ -374,7 +454,9 @@ def test_gain_reaches_prepared_advantage_and_diagnostics():
 
 def test_gain_config_and_checkpoint_contract(tmp_path):
     p = Parameters.from_json('configs/archive/nod_history/config_dgppo_nod_opinion_gain2_finetune.json')
-    assert p.dgppo_alpha_gain == 2 and p.nod_freeze_training
+    # This archived experiment was subsequently configured with gain 3,
+    # although its historical file name still says gain2.
+    assert p.dgppo_alpha_gain == 3 and p.nod_freeze_training
     assert p.training_init_checkpoint.endswith('reward6.98')
     assert Parameters.from_dict(p.to_dict()).to_dict() == p.to_dict()
     old_p = params()
@@ -382,7 +464,7 @@ def test_gain_config_and_checkpoint_contract(tmp_path):
     old = SafetyValueManager(old_p, 5, ('agents', 'observation'))
     new = SafetyValueManager(p, 5, ('agents', 'observation'))
     assert 'alpha_gain' not in old.barrier_contract  # Old gain=1 contracts still match.
-    assert new.barrier_contract['alpha_gain'] == 2
+    assert new.barrier_contract['alpha_gain'] == 3
     assert old.contract == new.contract and old.loss_contract == new.loss_contract
     old.barrier_fit_batches = 50
     path = tmp_path / 'value.pth'; torch.save(old.checkpoint_state(), path)

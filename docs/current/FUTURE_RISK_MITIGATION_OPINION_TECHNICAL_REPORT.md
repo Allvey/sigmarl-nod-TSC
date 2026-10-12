@@ -1,6 +1,6 @@
 # 无通信交互中的未来风险缓解意见与保守安全学习：技术报告（方案稿）
 
-> **文档性质。** 本文是基于[现行实现技术报告](RESPONSIBILITY_OPINION_TECHNICAL_REPORT.md)提出的下一版**理论与方法方案**，不描述已经完成的实验，也不宣称新方案已由代码实现。原报告继续记录当前版本。本文区分“现有基础”“拟议修改”和“成立条件”，以免把设计目标当成已验证性质。
+> **文档性质。** 本文是基于[现行实现技术报告](RESPONSIBILITY_OPINION_TECHNICAL_REPORT.md)提出的下一版**理论与方法方案**，不描述实验结果。第一步的证据过滤与未来预测输出已加入独立候选模式；未来下界、校准和保守安全映射仍是拟议修改。原报告继续记录当前基线版本。本文区分“现有基础”“已加入的候选结构”和“待实现方案”，以免把设计目标当成已验证性质。
 
 ## 摘要
 
@@ -244,6 +244,22 @@ B_{t+1}\ge(1-\alpha_{ij,t}\Delta t)B_t.
 无通信还带来一个信息限制：两类邻车在时刻 \(t\) 之前可能产生相同观测，却在下一步分别让行和继续前进。本车基于同一历史必须作出同一动作；若该动作只在邻车让行时安全，就不可能对另一种未来也保证安全。因此，任何以意见放宽约束的保证都必须说明所依赖的邻车行为集合或概率假设，并保留可执行的保守回退。
 
 ## 7. 与现行版本的关系及验证问题
+
+`future_mitigation` 模式已将式 (3) 的过滤状态与式 (4) 的预测输出分开，并复用现有的式 (2) 标签。第一阶段候选训练使用冻结的旧版行为 NOD 收集轨迹，新预测头只在另一份 learner NOD 中训练；配置见 [`config_dgppo_nod_future_candidate_only.json`](../../configs/current/config_dgppo_nod_future_candidate_only.json)。训练批上的预测误差不能代替独立轨迹验收；[`evaluate_nod_future_mitigation.py`](../../scripts/evaluate_nod_future_mitigation.py) 使用固定行为模型和不同环境种子做旁路预测评估。
+
+第二阶段代码增加式 (5) 的下分位数预测头、式 (8) 的 pinball 损失和离线残差校准。配置见 [`config_dgppo_nod_future_quantile_candidate.json`](../../configs/current/config_dgppo_nod_future_quantile_candidate.json)。它从第一阶段 `final_nod.pth` 初始化，只更新新的分位数头；行为策略、旧 NOD、未来均值头、Actor 和 Safety Value 都保持冻结。校准采用独立环境种子，最终检查使用另一组种子；校准下界定义为 `min(m, clip(raw - correction, 0, 1))`，其中 `correction` 是校准集上 `raw - Q^H` 的保守经验分位数并限制为非负。这样做保留了下界不高于均值的数值约束，但**尚未经实测证实覆盖**。使用方法：
+
+```bash
+python main_training.py --config configs/current/config_dgppo_nod_future_quantile_candidate.json
+python -m scripts.calibrate_nod_future_quantile \
+  --calibration-seeds 404 505 606 --test-seeds 707 808 909
+```
+
+第二个命令把校准参数及按种子、按真实目标低/中/高分层的覆盖率写入 `outputs/dependencies/dgppo_nod_future_quantile_candidate/calibration.json`。默认还在独立的 `1001,1002` 种子上分别插入一辆让行、中等、不让行规则车，报告指向该车的有效意见对覆盖率。这是**分布变化诊断**，规则车样本不参与校准；真实目标低/中/高分层也不能替代规则车类型分层。可用 `--rule-test-seeds 1001 1002 1003` 扩大诊断。相邻时刻的未来窗口重叠，因此即使种子互不相同，当前脚本给出的仍是经验覆盖率，不是有限样本条件覆盖或碰撞概率保证。式 (10) 的 Safety 映射仍未接入。
+
+在接入式 (10) 前，脚本还检查 `relaxation`：默认仅统计校准下界 `ell > 0.5` 的车对时刻。`target_below_threshold_rate` 是这些候选中真实未来缓解 `Q^H <= 0.5` 的比例；`bound_violation_rate` 是真实 `Q^H < ell` 的比例；`bound_excess_*` 记录违反下界时 `ell-Q^H` 的幅度。结果分别按种子、全部测试样本及三种规则车邻居汇总。阈值可由 `--relax-threshold` 设置；这些数值仍只评价预测，不能直接证明放宽后的实际轨迹安全。若只需补算这些诊断，无需重新训练，只需重新执行校准脚本。
+
+第三阶段训练期控制已加入同起点配置，运行方法见 [`EXPERIMENTS.md`](../../EXPERIMENTS.md)。控制器从冻结的第二阶段 NOD 读取校准后的下界，并按车辆身份对齐到 Safety Value 成对通道。实现采用单侧映射 `alpha = alpha_0 + span * clip(gain * (ell-0.5)/0.5, 0, 1)`：只有交互有效、当前物理约束及 Safety Value 均处于安全侧、且 `ell>0.5` 时才放宽；其余保持基础值。原实验 `gain=1`，低增益实验 `gain=0.4`；在 `span=5, alpha_0=10` 时，两者的最大系数分别为 15 和 12。Actor 接收同一未来均值意见 `z=2m-1`。固定系数对照分支加载完全相同的 NOD 和校准信息，只固定 `alpha`。三种子、每种子 1200 步的测试中，`gain=1`、`gain=0.4` 和固定系数最终模型的车辆碰撞总数分别为 1、1、2，平均速度分别约为 0.652、0.661、0.678 m/s。低增益分支仍只有固定系数速度的 97.49%，未达到预先设定的 98% 速度门槛，因此本项目不再基于这三个种子继续调增益；现行 NOD-DGPPO 检查点仍为主模型。三个种子的单次碰撞差异不足以证明总体性能提升。该实现仍属第 5.2 节的层级 A，不构成执行时安全保证。
 
 | 问题 | 现行版本 | 本方案拟议目标 |
 | --- | --- | --- |

@@ -382,12 +382,25 @@ class SafetyValueManager:
                     opinion="cached_preaction_z_world_slot_generation",
                     opinion_alpha_rule="base_plus_span_z_when_value_negative_and_g_nonpositive",
                     missing_opinion="fixed_alpha", unsafe_opinion="fixed_alpha")
-                # Gain=1 preserves the old contract exactly, including resume
-                # warmup. A changed gain invalidates only the barrier contract.
+                if getattr(parameters, "dgppo_alpha_source", "opinion") == "future_lower":
+                    self.barrier_contract.update(
+                        alpha_source="calibrated_future_lower",
+                        opinion="cached_preaction_calibrated_lower_world_slot_generation",
+                        opinion_alpha_rule="base_plus_span_positive_normalized_lower_when_safe",
+                        future_lower_correction=parameters.nod_future_lower_correction,
+                        future_relax_threshold=parameters.nod_future_relax_threshold,
+                    )
+                # Gain=1 preserves the old contract. A changed gain invalidates
+                # only the barrier contract and restarts its warmup.
                 if parameters.dgppo_alpha_gain != 1.0:
+                    alpha_rule = (
+                        "base_plus_span_clipped_gain_positive_normalized_lower_when_safe"
+                        if getattr(parameters, "dgppo_alpha_source", "opinion") == "future_lower"
+                        else "base_plus_span_clipped_gain_z_when_value_negative_and_g_nonpositive"
+                    )
                     self.barrier_contract.update(
                         alpha_gain=parameters.dgppo_alpha_gain,
-                        opinion_alpha_rule="base_plus_span_clipped_gain_z_when_value_negative_and_g_nonpositive")
+                        opinion_alpha_rule=alpha_rule)
                 if parameters.dgppo_opinion_deadzone != 0.0:
                     self.barrier_contract.update(
                         opinion_deadzone=parameters.dgppo_opinion_deadzone,

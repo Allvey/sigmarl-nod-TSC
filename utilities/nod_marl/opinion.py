@@ -282,6 +282,8 @@ class NODOpinionModel(nn.Module):
         max_log_sigma: float = 0.0,
         max_risk_weight: float = 1.0,
         fixed_evidence_mapping: bool = False,
+        predict_future_mitigation: bool = False,
+        predict_future_quantile: bool = False,
     ):
         super().__init__()
         self.pair_feature_dim = int(pair_feature_dim)
@@ -302,6 +304,10 @@ class NODOpinionModel(nn.Module):
         self.max_log_sigma = float(max_log_sigma)
         self.max_risk_weight = float(max_risk_weight)
         self.fixed_evidence_mapping = bool(fixed_evidence_mapping)
+        self.predict_future_mitigation = bool(predict_future_mitigation)
+        self.predict_future_quantile = bool(predict_future_quantile)
+        if self.predict_future_quantile and not self.predict_future_mitigation:
+            raise ValueError("A future quantile requires a future mitigation head")
         if self.max_risk_weight <= 0.75:
             raise ValueError("max_risk_weight must be greater than 0.75")
 
@@ -313,6 +319,20 @@ class NODOpinionModel(nn.Module):
             nn.Tanh(),
             nn.Linear(self.hidden_dim, 3),
         )
+        if self.predict_future_mitigation:
+            # The KL state filters observed evidence. This separate head
+            # predicts future mitigation from causal history and that state.
+            self.future_head = nn.Sequential(
+                nn.Linear(self.hidden_dim + 1, self.hidden_dim),
+                nn.Tanh(),
+                nn.Linear(self.hidden_dim, 1),
+            )
+            if self.predict_future_quantile:
+                self.future_quantile_head = nn.Sequential(
+                    nn.Linear(self.hidden_dim + 1, self.hidden_dim),
+                    nn.Tanh(),
+                    nn.Linear(self.hidden_dim, 1),
+                )
 
         initial_risk_weights = torch.tensor(
             [0.75, 0.75, 0.50, 0.50, 0.50, 0.75], dtype=torch.float32
@@ -469,6 +489,8 @@ class NODOpinionModel(nn.Module):
             for key in (
                 "z",
                 "rho",
+                "future_quantile_raw",
+                "filter_z",
                 "attention",
                 "risk_score",
                 "evidence",
@@ -606,8 +628,38 @@ class NODOpinionModel(nn.Module):
                 opinion_active & retained, residual, torch.zeros_like(residual)
             )
 
-            output_lists["z"].append(output_z)
-            output_lists["rho"].append(0.5 * (1.0 + output_z))
+            if self.predict_future_mitigation:
+                forecast_input = torch.cat(
+                    [hidden, output_z.unsqueeze(-1)], dim=-1
+                )
+                future_mean = torch.sigmoid(
+                    self.future_head(forecast_input).squeeze(-1)
+                )
+                future_z = torch.where(
+                    opinion_active & retained,
+                    2.0 * future_mean - 1.0,
+                    torch.zeros_like(output_z),
+                )
+                future_mean = 0.5 * (1.0 + future_z)
+                if self.predict_future_quantile:
+                    future_quantile_raw = torch.sigmoid(
+                        self.future_quantile_head(forecast_input).squeeze(-1)
+                    )
+                    future_quantile_raw = torch.where(
+                        opinion_active & retained,
+                        future_quantile_raw,
+                        torch.zeros_like(future_quantile_raw),
+                    )
+                else:
+                    future_quantile_raw = torch.zeros_like(future_mean)
+            else:
+                future_z = output_z
+                future_mean = 0.5 * (1.0 + output_z)
+                future_quantile_raw = torch.zeros_like(future_mean)
+            output_lists["z"].append(future_z)
+            output_lists["rho"].append(future_mean)
+            output_lists["future_quantile_raw"].append(future_quantile_raw)
+            output_lists["filter_z"].append(output_z)
             output_lists["attention"].append(attention)
             output_lists["risk_score"].append(risk_score)
             output_lists["evidence"].append(evidence)

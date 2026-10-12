@@ -1,0 +1,62 @@
+{
+  "benchmark_name": "future_lower_control",
+  "reference_method": "future_lower",
+  "scenario": "intersection_2",
+  "max_steps": 1200,
+  "seeds": [101, 202, 303, 404, 505],
+  "deterministic_actions": true,
+  "observation_noise": false,
+  "methods": [
+    {
+      "name": "future_lower",
+      "label": "Future lower-bound alpha",
+      "model_path": "outputs/current/dgppo_nod_future_lower_alpha_finetune",
+      "expected_prioritized_marl": false
+    },
+    {
+      "name": "future_fixed",
+      "label": "Future NOD, fixed alpha",
+      "model_path": "outputs/current/dgppo_nod_future_fixed_alpha_finetune",
+      "expected_prioritized_marl": false
+    },
+    {
+      "name": "future_lower_final",
+      "label": "Future lower-bound alpha (final)",
+      "model_path": "outputs/current/dgppo_nod_future_lower_alpha_finetune",
+      "expected_prioritized_marl": false,
+      "checkpoint_kind": "final"
+    },
+    {
+      "name": "future_fixed_final",
+      "label": "Future NOD, fixed alpha (final)",
+      "model_path": "outputs/current/dgppo_nod_future_fixed_alpha_finetune",
+      "expected_prioritized_marl": false,
+      "checkpoint_kind": "final"
+    },
+    {
+      "name": "future_lower_gain0p4_final",
+      "label": "Future lower-bound alpha, gain 0.4 (final)",
+      "model_path": "outputs/current/dgppo_nod_future_lower_gain0p4_finetune",
+      "expected_prioritized_marl": false,
+      "checkpoint_kind": "final"
+    },
+    {
+      "name": "nod_dgppo",
+      "label": "Existing NOD-DGPPO",
+      "model_path": "outputs/current/dgppo_nod_gain1_control_finetune",
+      "expected_prioritized_marl": false
+    },
+    {
+      "name": "sigmarl",
+      "label": "SigmaRL",
+      "model_path": "checkpoints/itsc24/M0 (our)",
+      "expected_prioritized_marl": false
+    },
+    {
+      "name": "xp_marl",
+      "label": "XP-MARL",
+      "model_path": "checkpoints/icra25/M1 (XP-MARL)",
+      "expected_prioritized_marl": true
+    }
+  ]
+}

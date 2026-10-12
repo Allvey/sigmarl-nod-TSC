@@ -301,25 +301,25 @@ def build_counterfactual_labels(
 ) -> Dict[str, Tensor]:
     """Compare actual neighbor motion with a constant-velocity counterfactual.
 
-    Shapes are ``[B,T,N,...]``.  The ego's actual future is kept fixed while
-    neighbor ``j`` is replaced by constant-velocity extrapolation from time
-    ``t``.  A positive gap means the observed neighbor reduced future proximity
-    risk more than that counterfactual.  Labels crossing any agent reset are
-    invalidated using generation ids.
+    Shapes are ``[B,T,N,...]``. Legacy modes hold the ego's actual future
+    fixed; mitigation modes hold its anchored reference future fixed. The
+    neighbor's future is compared against a constant-velocity extrapolation.
+    Labels crossing any agent reset are invalidated using generation ids.
 
     ``instantaneous`` preserves legacy labels. ``interaction`` uses causal
     pre-yield velocity references and a symmetric neutral band. Outside an
     anchored interaction the attributed gap is zero (raw risks are still
     returned for diagnostics). Reference state is local to this rollout.
 
-    ``responsibility`` supervises the fraction of required avoidance carried
-    by the neighbor. It uses the same causal anchors as online NOD evidence,
-    holds the ego counterfactual fixed, and excludes non-interactions instead
-    of treating them as neutral cooperation samples.
+    ``responsibility`` and ``future_mitigation`` share the same future risk
+    mitigation target. Both use causal anchors, hold the ego reference motion
+    fixed, and exclude non-interactions. The latter mode gives that target a
+    predictive interpretation in the NOD model.
     """
 
-    if mode not in {"instantaneous", "interaction", "responsibility"}:
+    if mode not in {"instantaneous", "interaction", "responsibility", "future_mitigation"}:
         raise ValueError("Unknown NOD label mode")
+    mitigation_mode = mode in {"responsibility", "future_mitigation"}
     if (not math.isfinite(reference_seconds) or reference_seconds <= 0
             or not math.isfinite(dt) or dt <= 0):
         raise ValueError("NOD reference duration and dt must be positive and finite")
@@ -340,7 +340,7 @@ def build_counterfactual_labels(
             positions, velocities, generations, neighbor_indices, edge_mask,
             dt=dt, lookahead=horizon*dt, conflict_distance=1.5*safe_distance,
             max_age=reference_seconds)
-    elif mode == "responsibility":
+    elif mitigation_mode:
         responsibility_data, _ = build_responsibility_evidence(
             positions,
             velocities,
@@ -411,7 +411,7 @@ def build_counterfactual_labels(
         risk_actual = torch.stack(actual_risks, dim=0).amax(dim=0)
         risk_counterfactual = torch.stack(counterfactual_risks, dim=0).amax(dim=0)
         mitigation_gap = risk_counterfactual - risk_actual
-        if mode == "responsibility":
+        if mitigation_mode:
             required_reduction = (
                 risk_counterfactual - math.exp(-1.0)
             ).clamp_min(1e-6)
@@ -432,7 +432,7 @@ def build_counterfactual_labels(
         gap[:, t] = mitigation_gap
         label[:, t] = soft_label
         valid[:, t] = identity_valid & (
-            active[:, t] if mode == "responsibility" else True
+            active[:, t] if mitigation_mode else True
         )
         risk_actual_out[:, t] = risk_actual
         risk_counterfactual_out[:, t] = risk_counterfactual

@@ -58,6 +58,11 @@ def main() -> None:
     )
     summary_paths = []
     for method in methods:
+        checkpoint_kind = method.get("checkpoint_kind", "best")
+        if checkpoint_kind not in ("best", "final"):
+            parser.error(
+                f"{method['name']}: checkpoint_kind must be 'best' or 'final'"
+            )
         model_path = Path(method["model_path"])
         if not model_path.is_absolute():
             model_path = ROOT / model_path
@@ -77,6 +82,7 @@ def main() -> None:
                     "--max-steps", str(max_steps),
                     "--expected-prioritized-marl",
                     str(bool(method["expected_prioritized_marl"])).lower(),
+                    "--checkpoint-kind", checkpoint_kind,
                 ]
                 if not config.get("deterministic_actions", True):
                     command.append("--stochastic-actions")

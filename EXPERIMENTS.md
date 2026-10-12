@@ -64,7 +64,94 @@ python -m scripts.validate_actor_opinion_sensitivity \
   --seed 123 --ego 1
 ```
 
-## SigmaRL and XP-MARL benchmark
+## Future lower-bound control experiment
+
+The frozen stage-2 future NOD and its calibration are shared by two new
+fine-tuning branches. Both start from the same `reward7.18` policy and Safety
+Value checkpoint. The only experimental difference is whether the calibrated
+future lower bound changes the safe-side pair alpha. The NOD is not trained in
+either branch.
+
+```bash
+python main_training.py --config configs/current/config_dgppo_nod_future_fixed_alpha_finetune.json
+python main_training.py --config configs/current/config_dgppo_nod_future_lower_alpha_finetune.json
+```
+
+The lower-bound branch logs `future_lower_applied_count` and the existing
+`opinion_advantage_changed_rate`. A nonzero alpha count alone does not show
+that the Actor's update changed; check both metrics. After training, use the
+same deterministic seed and scenario protocol for both branches:
+
+```bash
+python -m scripts.run_sota_benchmark \
+  --config configs/benchmarks/future_lower_control.json \
+  --output-root outputs/benchmarks/future_lower_control \
+  --seeds 101 202 303 --max-steps 200
+```
+
+For the final comparison, omit `--seeds` and `--max-steps` to use the five-seed,
+1200-step manifest. The benchmark writes collision, speed, stop, and return
+summaries below `outputs/benchmarks/future_lower_control/`. This is an
+empirical policy comparison, not an execution-time safety certificate.
+
+The manifest also includes `future_lower_final` and `future_fixed_final`, which
+evaluate the policies after all fine-tuning iterations. The `future_lower` and
+`future_fixed` entries evaluate the reward-selected checkpoints. To add the
+final checkpoints to an existing three-seed, 1200-step benchmark without
+rerunning its completed methods, use the same output root and protocol:
+
+```bash
+python -m scripts.run_sota_benchmark \
+  --config configs/benchmarks/future_lower_control.json \
+  --output-root outputs/benchmarks/future_lower_control \
+  --seeds 101 202 303 --max-steps 1200 --skip-existing
+```
+
+Compare `future_lower_final` with `future_fixed_final` separately from the
+reward-selected pair; checkpoint selection can otherwise obscure the effect
+of later safety updates.
+
+The first final-checkpoint comparison showed fewer vehicle collisions with
+full lower-bound alpha (1 versus 2 over three seeds), but its mean speed was
+0.652 versus 0.678 m/s for fixed alpha. The follow-up isolates a smaller
+alpha response: `dgppo_alpha_gain=0.4` scales the normalized positive lower
+bound before the `dgppo_alpha_span=5` multiplier, so the maximum pair alpha
+is 12 rather than 15. The training initialization, frozen NOD, calibration,
+and other control settings are unchanged. Train this one additional branch:
+
+```bash
+python main_training.py --config configs/current/config_dgppo_nod_future_lower_gain0p4_finetune.json
+```
+
+Then add its final checkpoint to the existing three-seed evaluation. Completed
+results for the other methods are reused:
+
+```bash
+python -m scripts.run_sota_benchmark \
+  --config configs/benchmarks/future_lower_control.json \
+  --output-root outputs/benchmarks/future_lower_control \
+  --seeds 101 202 303 --max-steps 1200 --skip-existing
+```
+
+The primary paired comparison is `future_lower_gain0p4_final` against
+`future_fixed_final`. Judge vehicle collisions and throughput together; do
+not select a branch solely from training reward. Use this three-seed run as a
+single decision gate: continue to a final five-seed comparison only if the
+gain-0.4 branch has no more vehicle collisions than fixed alpha and its mean
+speed is at least 98% of fixed alpha. Otherwise retain the fixed-alpha or
+established NOD-DGPPO checkpoint rather than repeatedly tuning the gain on
+these same three seeds. The gate is an experiment-selection rule, not a
+statistical or safety guarantee.
+
+The gain-0.4 run on seeds 101, 202, and 303 produced 1 vehicle collision in
+total, versus 2 for fixed alpha, but mean speed was 0.6614 versus 0.6784 m/s
+(97.49% of fixed alpha). Its mean return was 61.88 versus 56.14. Thus it
+passed the collision condition but missed the predeclared speed condition.
+Stop gain tuning on these seeds. Keep the gain-0.4 checkpoint as a documented
+safety-throughput tradeoff; use the established NOD-DGPPO checkpoint as the
+current primary model until a separately justified method change is evaluated.
+
+## Existing SigmaRL and XP-MARL protocol
 
 The first cross-method benchmark is an all-Actor comparison. This preserves
 XP-MARL's learned priority action propagation and avoids coupling it to the

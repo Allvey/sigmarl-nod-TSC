@@ -229,3 +229,39 @@ def test_explicit_responsibility_mask_limits_where_opinion_evolves():
     assert outputs["z"][0, 1, 0, 0] > 0.0
     assert (outputs["z"][~opinion_mask] == 0.0).all()
     assert torch.equal(outputs["opinion_active"], opinion_mask)
+
+
+def test_future_prediction_is_separate_from_observed_evidence_filter():
+    model = NODOpinionModel(
+        pair_feature_dim=20,
+        hidden_dim=8,
+        fixed_evidence_mapping=True,
+        predict_future_mitigation=True,
+    )
+    with torch.no_grad():
+        model.future_head[-1].weight.zero_()
+        model.future_head[-1].bias.fill_(-2.0)
+    pair = torch.zeros(1, 3, 2, 1, 20)
+    mask = torch.ones(1, 3, 2, 1, dtype=torch.bool)
+    active = torch.zeros_like(mask)
+    active[:, :, 0, 0] = True
+    evidence = torch.ones_like(pair[..., 0])
+    generations = torch.ones(1, 3, 2, dtype=torch.long)
+    neighbors = torch.ones(1, 3, 2, 1, dtype=torch.long)
+
+    outputs, state = model.forward_sequence(
+        pair,
+        mask,
+        generations,
+        neighbors,
+        opinion_mask=active,
+        evidence_override=evidence,
+    )
+
+    assert outputs["z"][0, 0, 0, 0] == 0.0  # New edge has no mature opinion.
+    assert outputs["filter_z"][0, 1, 0, 0] > 0.0
+    assert outputs["z"][0, 1, 0, 0] < 0.0
+    torch.testing.assert_close(outputs["mean"], outputs["filter_z"])
+    torch.testing.assert_close(outputs["rho"], 0.5 * (outputs["z"] + 1.0))
+    assert (outputs["z"][~active] == 0.0).all()
+    torch.testing.assert_close(state["z"], outputs["filter_z"][:, -1])

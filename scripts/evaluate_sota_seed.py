@@ -31,6 +31,7 @@ def main() -> None:
     parser.add_argument("--stochastic-actions", action="store_true")
     parser.add_argument("--checkpoint-observation-noise", action="store_true")
     parser.add_argument("--save-video", action="store_true")
+    parser.add_argument("--checkpoint-kind", choices=("best", "final"), default="best")
     args = parser.parse_args()
     if args.seed < 0:
         parser.error("--seed must be non-negative")
@@ -47,6 +48,10 @@ def main() -> None:
         raise FileNotFoundError(f"Model directory does not exist: {model_path}")
 
     parameters, raw_parameters, checkpoint_prefix = load_benchmark_parameters(model_path)
+    if args.checkpoint_kind == "final":
+        if not (model_path / "final_policy.pth").is_file():
+            raise FileNotFoundError(f"Final policy checkpoint is missing: {model_path}")
+        checkpoint_prefix = "final"
     expected_prioritized = args.expected_prioritized_marl == "true"
     actual_prioritized = bool(raw_parameters.get("is_using_prioritized_marl", False))
     if actual_prioritized != expected_prioritized:
@@ -64,7 +69,7 @@ def main() -> None:
     parameters.frames_per_batch = args.max_steps
     parameters.is_testing_mode = True
     parameters.is_load_model = True
-    parameters.is_load_final_model = False
+    parameters.is_load_final_model = args.checkpoint_kind == "final"
     parameters.is_continue_train = False
     parameters.is_load_out_td = False
     parameters.is_save_eval_results = False

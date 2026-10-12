@@ -14,6 +14,8 @@ NOD_ACTOR_OBSERVATION_KEY = ("agents", "info", "nod_actor_observation")
 NOD_ACTOR_EDGE_CONTEXT_KEY = ("agents", "info", "nod_actor_edge_context")
 NOD_ACTOR_EDGE_MASK_KEY = ("agents", "info", "nod_actor_edge_mask")
 NOD_OPINION_ACTIVE_KEY = ("agents", "info", "nod_opinion_active")
+NOD_FUTURE_LOWER_KEY = ("agents", "info", "nod_future_lower_bound")
+NOD_FUTURE_LOWER_VALID_KEY = ("agents", "info", "nod_future_lower_valid")
 NOD_ACTOR_CONTEXT_READY_KEY = ("agents", "info", "nod_actor_context_ready")
 NOD_ACTOR_MESSAGE_KEY = ("agents", "info", "nod_actor_message")
 NOD_ACTOR_ATTENTION_KEY = ("agents", "info", "nod_actor_message_attention")
@@ -107,6 +109,8 @@ class NODActorInputModule(TensorDictModuleBase):
             NOD_ACTOR_EDGE_CONTEXT_KEY,
             NOD_ACTOR_EDGE_MASK_KEY,
             NOD_OPINION_ACTIVE_KEY,
+            NOD_FUTURE_LOWER_KEY,
+            NOD_FUTURE_LOWER_VALID_KEY,
             NOD_ACTOR_CONTEXT_READY_KEY,
             NOD_ACTOR_MESSAGE_KEY,
             NOD_ACTOR_ATTENTION_KEY,
@@ -170,6 +174,13 @@ class NODActorInputModule(TensorDictModuleBase):
                 device=observation.device,
                 dtype=torch.bool,
             ),
+            "future_lower_bound": observation.new_zeros(
+                *leading_shape, k_neighbors
+            ),
+            "future_lower_valid": torch.zeros(
+                *leading_shape, k_neighbors, device=observation.device,
+                dtype=torch.bool,
+            ),
         }
 
     def forward(self, tensordict):
@@ -188,6 +199,18 @@ class NODActorInputModule(TensorDictModuleBase):
             tensordict.set(
                 NOD_OPINION_ACTIVE_KEY,
                 online.get("opinion_active", online["edge_mask"]).detach(),
+            )
+            tensordict.set(
+                NOD_FUTURE_LOWER_KEY,
+                online.get("future_lower_bound", torch.zeros_like(
+                    online["edge_mask"], dtype=observation.dtype
+                )).detach(),
+            )
+            tensordict.set(
+                NOD_FUTURE_LOWER_VALID_KEY,
+                online.get("future_lower_valid", torch.zeros_like(
+                    online["edge_mask"], dtype=torch.bool
+                )).detach(),
             )
             ready = torch.ones(
                 *observation.shape[:-1],

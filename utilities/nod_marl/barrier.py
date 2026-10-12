@@ -56,6 +56,49 @@ def aligned_opinions(td, current):
 
 
 @torch.no_grad()
+def aligned_future_lower_bounds(td, current):
+    """Align cached pre-action lower bounds to world slots and generations."""
+    n = current['g'].shape[-2]
+    shape = current['g'][..., :n].shape
+    bounds = current['g'].new_zeros(shape)
+    available = torch.zeros_like(bounds, dtype=torch.bool)
+    info = td.get(('agents', 'info'), default=None)
+    if info is None:
+        return available, bounds
+    keys = (
+        'nod_future_lower_bound', 'nod_future_lower_valid',
+        'nod_actor_edge_mask', 'nod_opinion_active', 'nod_actor_context_ready',
+        'nod_neighbor_indices', 'nod_neighbor_generation', 'nod_edge_mask',
+    )
+    values = [info.get(key, default=None) for key in keys]
+    if any(value is None for value in values):
+        return available, bounds
+    lower, lower_valid, actor_mask, active, ready, ids, generations, physical_mask = values
+    ids = ids.long()
+    if any(value.shape != ids.shape for value in (
+        lower, lower_valid, actor_mask, active, generations, physical_mask
+    )):
+        raise ValueError('Future lower-bound cache and neighbor identities have incompatible shapes')
+    safe_ids = ids.clamp(0, n - 1)
+    valid_id = (ids >= 0) & (ids < n)
+    counts = torch.zeros_like(bounds, dtype=torch.long)
+    counts.scatter_add_(-1, safe_ids, valid_id.long())
+    unique = counts.gather(-1, safe_ids) == 1
+    expected = current['other_gen'][..., :n].gather(-1, safe_ids)
+    valid = (
+        valid_id & unique & lower_valid.bool() & actor_mask.bool()
+        & active.bool() & physical_mask.bool() & ready.bool()
+        & torch.isfinite(lower) & (lower >= 0) & (lower <= 1)
+        & (generations.long() == expected)
+    )
+    bounds.scatter_add_(-1, safe_ids, torch.where(valid, lower.detach(), 0.0))
+    available.scatter_add_(-1, safe_ids, valid)
+    available &= current['valid'][..., :n]
+    available &= ~torch.eye(n, dtype=torch.bool, device=bounds.device)
+    return available, bounds
+
+
+@torch.no_grad()
 def aligned_opinion_kappa(td, current, *, minimum, maximum):
     """Legacy barrier mapping: missing opinions retain the minimum kappa."""
     available, opinions = aligned_opinions(td, current)
