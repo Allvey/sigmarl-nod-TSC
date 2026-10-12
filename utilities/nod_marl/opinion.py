@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -284,6 +285,10 @@ class NODOpinionModel(nn.Module):
         fixed_evidence_mapping: bool = False,
         predict_future_mitigation: bool = False,
         predict_future_quantile: bool = False,
+        variance_mode: str = "learned",
+        fixed_variance_value: Optional[float] = None,
+        evidence_mode: str = "geometric",
+        variance_supervision: str = "posterior",
     ):
         super().__init__()
         self.pair_feature_dim = int(pair_feature_dim)
@@ -306,6 +311,35 @@ class NODOpinionModel(nn.Module):
         self.fixed_evidence_mapping = bool(fixed_evidence_mapping)
         self.predict_future_mitigation = bool(predict_future_mitigation)
         self.predict_future_quantile = bool(predict_future_quantile)
+        self.variance_mode = str(variance_mode)
+        self.evidence_mode = str(evidence_mode)
+        self.variance_supervision = str(variance_supervision)
+        if self.variance_supervision not in {"posterior", "evidence_error"}:
+            raise ValueError("variance_supervision must be posterior or evidence_error")
+        if self.variance_supervision == "evidence_error" and (
+            self.variance_mode != "learned" or self.evidence_mode != "geometric"
+            or not self.fixed_evidence_mapping or self.predict_future_mitigation
+        ):
+            raise ValueError("Evidence-error variance requires a learned-variance geometric filter")
+        if self.variance_supervision == "evidence_error" and not (
+            math.isfinite(self.min_log_sigma) and math.isfinite(self.max_log_sigma)
+            and self.min_log_sigma < 0
+            and self.max_log_sigma >= math.log(2.0) - 1e-8
+        ):
+            raise ValueError("Evidence-error variance bounds must include variance 1 and 4")
+        if self.variance_mode not in {"learned", "fixed"}:
+            raise ValueError("variance_mode must be learned or fixed")
+        if self.evidence_mode not in {"geometric", "learned"}:
+            raise ValueError("evidence_mode must be geometric or learned")
+        if self.evidence_mode == "learned" and self.variance_mode != "fixed":
+            raise ValueError("Learned evidence requires fixed variance")
+        if self.variance_mode == "fixed" and not self.fixed_evidence_mapping:
+            raise ValueError("Fixed variance requires the fixed evidence mapping")
+        if self.variance_mode == "fixed":
+            value = 1.0 if fixed_variance_value is None else float(fixed_variance_value)
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError("fixed_variance_value must be positive and finite")
+            self.register_buffer("fixed_variance", torch.tensor(value))
         if self.predict_future_quantile and not self.predict_future_mitigation:
             raise ValueError("A future quantile requires a future mitigation head")
         if self.max_risk_weight <= 0.75:
@@ -319,6 +353,8 @@ class NODOpinionModel(nn.Module):
             nn.Tanh(),
             nn.Linear(self.hidden_dim, 3),
         )
+        if self.evidence_mode == "learned":
+            self.evidence_head = nn.Linear(self.hidden_dim, 1)
         if self.predict_future_mitigation:
             # The KL state filters observed evidence. This separate head
             # predicts future mitigation from causal history and that state.
@@ -403,7 +439,12 @@ class NODOpinionModel(nn.Module):
             dim=-1,
         ).clamp(-1.0, 1.0)
 
-    def likelihood_parameters(self, hidden: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+    def likelihood_parameters(
+        self, hidden: Tensor, *, reference_variance: bool = False
+    ) -> Tuple[Tensor, Tensor, Tensor]:
+        if self.variance_mode == "fixed" and not reference_variance:
+            zero = torch.zeros_like(hidden[..., 0])
+            return zero, torch.ones_like(zero), torch.ones_like(zero) * self.fixed_variance
         raw = self.likelihood_head(hidden)
         if self.fixed_evidence_mapping:
             # Keep the checkpoint tensor shapes, but remove the learned
@@ -454,6 +495,7 @@ class NODOpinionModel(nn.Module):
         initial_state: Optional[Dict[str, Tensor]] = None,
         opinion_mask: Optional[Tensor] = None,
         evidence_override: Optional[Tensor] = None,
+        reference_variance: bool = False,
     ) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
         """Unroll edge state with identity-aware reset and short-gap retention."""
 
@@ -494,6 +536,7 @@ class NODOpinionModel(nn.Module):
                 "attention",
                 "risk_score",
                 "evidence",
+                "evidence_used",
                 "mean",
                 "variance",
                 "learning_valid",
@@ -565,19 +608,35 @@ class NODOpinionModel(nn.Module):
                     keep_inactive.unsqueeze(-1), hidden, torch.zeros_like(hidden)
                 ),
             )
-            mean_intercept, slope, variance = self.likelihood_parameters(hidden)
+            if self.evidence_mode == "learned":
+                evidence_used = torch.where(
+                    opinion_active,
+                    torch.tanh(self.evidence_head(hidden).squeeze(-1)),
+                    torch.zeros_like(evidence),
+                )
+            else:
+                evidence_used = evidence
+            mean_intercept, slope, variance = self.likelihood_parameters(
+                hidden, reference_variance=reference_variance
+            )
             risk_score = self.risk_score(current)
             attention = torch.sigmoid(
                 self.risk_temperature * (risk_score - self.risk_threshold)
             )
             z_before_update = z_state
+            # The independent error loss trains the scale. Opinion calibration
+            # trains attention, but must not tune that scale to fit its own z.
+            update_variance = (
+                variance.detach()
+                if self.variance_supervision == "evidence_error" else variance
+            )
             solved_z = kl_proximal_update(
                 z_before_update,
                 attention,
-                evidence,
+                evidence_used,
                 mean_intercept,
                 slope,
-                variance,
+                update_variance,
                 bifurcation_gain=self.bifurcation_gain,
                 observation_weight=self.observation_weight,
                 kl_weight=self.kl_weight,
@@ -607,7 +666,7 @@ class NODOpinionModel(nn.Module):
                 output_z,
                 torch.where(retained, z_before_update, torch.zeros_like(output_z)),
                 attention,
-                evidence,
+                evidence_used,
                 mean_intercept,
                 slope,
                 variance,
@@ -663,6 +722,7 @@ class NODOpinionModel(nn.Module):
             output_lists["attention"].append(attention)
             output_lists["risk_score"].append(risk_score)
             output_lists["evidence"].append(evidence)
+            output_lists["evidence_used"].append(evidence_used)
             output_lists["mean"].append(mean_intercept + slope * output_z)
             output_lists["variance"].append(variance)
             output_lists["learning_valid"].append(opinion_active & retained)

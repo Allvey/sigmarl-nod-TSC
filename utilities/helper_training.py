@@ -780,6 +780,11 @@ class Parameters:
         nod_min_log_sigma: float = -2.5,
         nod_max_log_sigma: float = 0.0,
         nod_fixed_evidence_mapping: bool = False,
+        nod_variance_mode: str = "learned",
+        nod_variance_supervision: str = "posterior",
+        nod_fixed_variance_value: Optional[float] = None,
+        nod_evidence_mode: str = "geometric",
+        nod_evidence_loss_weight: float = 1.0,
         nod_sensing_range: float = 0.8,
         nod_interaction_distance: float = 0.48,
         nod_conflict_radius: float = 0.08,
@@ -868,6 +873,7 @@ class Parameters:
         safety_barrier_kappa_max: float = 0.06,
         nod_freeze_training: bool = False,
         nod_training_mode: str = "joint",
+        nod_candidate_init_mode: str = "behavior",
         training_init_checkpoint: str = None,
         # Stage 6: independent temporal deadlock prediction.
         is_using_deadlock_critic: bool = True,
@@ -1146,6 +1152,10 @@ class Parameters:
         self.nod_freeze_training = nod_freeze_training
         if nod_training_mode not in {"joint", "candidate_only"}:
             raise ValueError("nod_training_mode must be joint or candidate_only")
+        if nod_candidate_init_mode not in {"behavior", "scratch"}:
+            raise ValueError("nod_candidate_init_mode must be behavior or scratch")
+        if nod_candidate_init_mode == "scratch" and nod_training_mode != "candidate_only":
+            raise ValueError("Scratch NOD initialization requires candidate_only training")
         if nod_training_mode == "candidate_only" and (
             not nod_freeze_training
             or not is_using_nod_opinion
@@ -1156,6 +1166,7 @@ class Parameters:
                 "candidate_only requires a frozen local behavior NOD and a training checkpoint"
             )
         self.nod_training_mode = nod_training_mode
+        self.nod_candidate_init_mode = nod_candidate_init_mode
         self.training_init_checkpoint = training_init_checkpoint
         if safety_control_mode == 'barrier_opinion' and (
                 not 0 < safety_barrier_kappa_min <= safety_barrier_kappa_max < 1
@@ -1247,6 +1258,26 @@ class Parameters:
         self.nod_min_log_sigma = nod_min_log_sigma
         self.nod_max_log_sigma = nod_max_log_sigma
         self.nod_fixed_evidence_mapping = nod_fixed_evidence_mapping
+        if nod_variance_mode not in {"learned", "fixed"}:
+            raise ValueError("nod_variance_mode must be learned or fixed")
+        if nod_variance_supervision not in {"posterior", "evidence_error"}:
+            raise ValueError("nod_variance_supervision must be posterior or evidence_error")
+        if nod_evidence_mode not in {"geometric", "learned"}:
+            raise ValueError("nod_evidence_mode must be geometric or learned")
+        if nod_fixed_variance_value is not None and (
+            not math.isfinite(nod_fixed_variance_value)
+            or nod_fixed_variance_value <= 0.0
+        ):
+            raise ValueError("nod_fixed_variance_value must be positive and finite")
+        if not math.isfinite(nod_evidence_loss_weight) or nod_evidence_loss_weight < 0.0:
+            raise ValueError("nod_evidence_loss_weight must be nonnegative and finite")
+        if nod_evidence_mode == "learned" and nod_variance_mode != "fixed":
+            raise ValueError("Learned NOD evidence requires fixed variance")
+        self.nod_variance_mode = nod_variance_mode
+        self.nod_variance_supervision = nod_variance_supervision
+        self.nod_fixed_variance_value = nod_fixed_variance_value
+        self.nod_evidence_mode = nod_evidence_mode
+        self.nod_evidence_loss_weight = nod_evidence_loss_weight
         self.nod_sensing_range = nod_sensing_range
         self.nod_interaction_distance = nod_interaction_distance
         self.nod_conflict_radius = nod_conflict_radius
@@ -1262,6 +1293,25 @@ class Parameters:
         if not 0 < nod_reference_seconds < float("inf"):
             raise ValueError("nod_reference_seconds must be positive and finite")
         self.nod_label_mode = nod_label_mode
+        if nod_variance_supervision == "evidence_error" and (
+            nod_label_mode != "responsibility" or nod_variance_mode != "learned"
+            or nod_evidence_mode != "geometric" or not nod_fixed_evidence_mapping
+        ):
+            raise ValueError("Evidence-error supervision requires the responsibility geometric filter with learned variance")
+        if nod_variance_supervision == "evidence_error" and not (
+            math.isfinite(nod_min_log_sigma) and math.isfinite(nod_max_log_sigma)
+            and nod_min_log_sigma < 0.0
+            and nod_max_log_sigma >= math.log(2.0) - 1e-8
+        ):
+            raise ValueError("Evidence-error variance bounds must include initial variance 1 and squared errors up to 4")
+        if nod_variance_mode == "fixed" and (
+            nod_label_mode != "responsibility" or not nod_fixed_evidence_mapping
+        ):
+            raise ValueError("Fixed-variance NOD requires responsibility mode and fixed evidence mapping")
+        if nod_candidate_init_mode == "scratch" and (
+            nod_variance_mode != "fixed" or nod_fixed_variance_value is None
+        ):
+            raise ValueError("Scratch candidate requires an explicit fixed NOD variance")
         self.nod_reference_seconds = nod_reference_seconds
         self.nod_nll_weight = nod_nll_weight
         self.nod_calibration_weight = nod_calibration_weight

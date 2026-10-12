@@ -5,6 +5,12 @@ The formal paper-metric comparison is run through
 ITSC24 and ICRA25 scripts while adding matched seeds, official-checkpoint
 compatibility, and CSV/JSON export.
 
+For a new control branch, use `--model-paths` and `--legends` with matching
+numbers of entries, and a separate `--output-root`. The default three-method
+comparison remains unchanged. The four-method error-scale NOD comparison,
+including its training command, is recorded in
+[`EXPERIMENTS.md`](../../EXPERIMENTS.md#frozen-error-scale-nod-control-fine-tuning).
+
 Run a short check with:
 
 ```bash

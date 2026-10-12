@@ -100,6 +100,60 @@ def test_candidate_only_and_gain1_control_configs_are_staged():
     assert road.training_init_checkpoint.endswith('reward7.18')
 
 
+def test_fixed_variance_and_learned_evidence_ablation_configs_are_paired():
+    candidates = [Parameters.from_json(path) for path in (
+        'configs/ablations/config_dgppo_nod_fixed_variance_candidate.json',
+        'configs/ablations/config_dgppo_nod_learned_evidence_candidate.json',
+    )]
+    controls = [Parameters.from_json(path) for path in (
+        'configs/ablations/config_dgppo_nod_fixed_variance_control.json',
+        'configs/ablations/config_dgppo_nod_learned_evidence_control.json',
+    )]
+    assert all(p.nod_variance_mode == 'fixed' for p in candidates + controls)
+    assert all(p.nod_fixed_variance_value is None for p in candidates + controls)
+    assert [p.nod_evidence_mode for p in candidates] == ['geometric', 'learned']
+    assert [p.nod_evidence_mode for p in controls] == ['geometric', 'learned']
+    assert all(p.nod_training_mode == 'candidate_only' for p in candidates)
+    assert all(p.nod_freeze_training for p in candidates + controls)
+    assert {key for key, value in candidates[0].to_dict().items()
+            if candidates[1].to_dict()[key] != value} == {
+        'where_to_save', 'nod_evidence_mode'
+    }
+    assert {key for key, value in controls[0].to_dict().items()
+            if controls[1].to_dict()[key] != value} == {
+        'where_to_save', 'training_init_checkpoint', 'nod_evidence_mode'
+    }
+
+
+def test_scratch_nod_candidates_keep_behavior_checkpoint_and_variance_fixed():
+    warm = Parameters.from_json(
+        'configs/ablations/config_dgppo_nod_fixed_variance_candidate.json'
+    )
+    scratch_paths = (
+        'configs/ablations/config_dgppo_nod_fixed_variance_scratch_candidate.json',
+        'configs/ablations/config_dgppo_nod_learned_evidence_scratch_candidate.json',
+    )
+    scratch = [Parameters.from_json(path) for path in scratch_paths]
+    assert all(p.nod_candidate_init_mode == 'scratch' for p in scratch)
+    assert all(p.training_init_checkpoint == warm.training_init_checkpoint for p in scratch)
+    assert scratch[0].nod_fixed_variance_value == pytest.approx(
+        scratch[1].nod_fixed_variance_value
+    )
+    assert scratch[0].nod_fixed_variance_value == pytest.approx(0.0067381109)
+    assert [p.nod_evidence_mode for p in scratch] == ['geometric', 'learned']
+    assert {key for key, value in warm.to_dict().items()
+            if scratch[0].to_dict()[key] != value} == {
+        'where_to_save', 'nod_candidate_init_mode', 'nod_fixed_variance_value'
+    }
+    for change in (
+        {'nod_fixed_variance_value': None},
+        {'nod_training_mode': 'joint'},
+        {'nod_variance_mode': 'learned'},
+    ):
+        with pytest.raises(ValueError):
+            Parameters.from_dict(dict(scratch[0].to_dict(), **change))
+
+
 def test_future_control_branches_share_everything_except_alpha_and_output():
     fixed = Parameters.from_json('configs/current/config_dgppo_nod_future_fixed_alpha_finetune.json')
     lower = Parameters.from_json('configs/current/config_dgppo_nod_future_lower_alpha_finetune.json')

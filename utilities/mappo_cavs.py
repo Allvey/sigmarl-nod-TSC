@@ -345,13 +345,39 @@ def mappo_cavs(parameters: Parameters):
             "start a new candidate run instead"
         )
     future_candidate = future_candidate_mode and not parameters.is_load_model
-    behavior_parameters = copy.copy(parameters) if future_candidate else parameters
+    error_variance_mode = (
+        getattr(parameters, "nod_training_mode", "joint") == "candidate_only"
+        and getattr(parameters, "nod_variance_supervision", "posterior") == "evidence_error"
+    )
+    if error_variance_mode and parameters.is_load_model and parameters.is_continue_train:
+        raise ValueError("Start a new evidence-error candidate run to keep its original behavior NOD pinned")
+    error_variance_candidate = error_variance_mode and not parameters.is_load_model
+    ablation_candidate = (
+        getattr(parameters, "nod_training_mode", "joint") == "candidate_only"
+        and getattr(parameters, "nod_variance_mode", "learned") == "fixed"
+        and not parameters.is_load_model
+    )
+    behavior_parameters = copy.copy(parameters) if (
+        future_candidate or ablation_candidate or error_variance_candidate
+    ) else parameters
     if future_candidate:
         # Existing policy checkpoints were collected with the responsibility
         # filter. Keep their behavior NOD untouched while the separate learner
         # adds a future-prediction head from completed trajectories.
         behavior_parameters.nod_label_mode = "responsibility"
         behavior_parameters.nod_predict_future_quantile = False
+    if ablation_candidate:
+        behavior_parameters.nod_variance_mode = "learned"
+        behavior_parameters.nod_evidence_mode = "geometric"
+        behavior_parameters.nod_candidate_init_mode = "behavior"
+    if error_variance_candidate:
+        # The candidate uses a wider error-scale range, while the original
+        # behavior filter must retain its saved range during collection.
+        with open(parameters.training_init_checkpoint + "_data.json", encoding="utf-8") as file:
+            source_parameters = json.load(file)["parameters"]
+        behavior_parameters.nod_variance_supervision = "posterior"
+        behavior_parameters.nod_min_log_sigma = source_parameters.get("nod_min_log_sigma", -2.5)
+        behavior_parameters.nod_max_log_sigma = source_parameters.get("nod_max_log_sigma", 0.0)
     nod_manager = NODOpinionManager(parameters=behavior_parameters)
     scenario.nod_manager = nod_manager
     use_nod_actor = bool(
@@ -679,6 +705,20 @@ def mappo_cavs(parameters: Parameters):
             learner_nod_manager.initialize_future_from_behavior(
                 nod_manager.checkpoint_state()
             )
+        elif error_variance_candidate:
+            learner_nod_manager.initialize_error_variance_from_behavior(
+                nod_manager.checkpoint_state()
+            )
+        elif ablation_candidate and getattr(parameters, "nod_candidate_init_mode", "behavior") == "scratch":
+            # Keep the loaded Actor and behavior NOD frozen for collection,
+            # but leave the independent learner at its fresh initialization.
+            if learner_nod_manager._variance_needs_calibration:
+                raise ValueError("Scratch candidate needs an explicit fixed variance")
+            learner_nod_manager.last_load_info = "fresh scratch ablation learner"
+        elif ablation_candidate:
+            learner_nod_manager.initialize_ablation_from_behavior(
+                nod_manager.checkpoint_state()
+            )
         elif not learner_nod_manager.load_checkpoint(
             nod_manager.checkpoint_state(), load_optimizer=False
         ):
@@ -691,7 +731,8 @@ def mappo_cavs(parameters: Parameters):
         learner_ids = {id(p) for p in learner_nod_manager.model.parameters()}
         if not behavior_ids.isdisjoint(learner_ids):
             raise RuntimeError("Behavior and learner NOD parameters must be disjoint")
-        print('[INFO] Candidate-only NOD training: Policy, Safety and behavior NOD fixed')
+        print('[INFO] Candidate-only NOD training: Policy, Safety and behavior NOD fixed; '
+              f'learner initialization={getattr(parameters, "nod_candidate_init_mode", "behavior")}')
     checkpoint_nod_manager = learner_nod_manager or nod_manager
 
     # Loading probes and NOD parameter updates invalidate recurrent online

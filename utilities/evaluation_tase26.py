@@ -29,6 +29,15 @@ DEFAULT_SCENARIOS = ["CPM_entire", "intersection_2", "on_ramp_1", "roundabout_1"
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--model-paths", nargs="+", default=MODEL_PATHS,
+        help="Model directories, in the same order as --legends; defaults to the established comparison.",
+    )
+    parser.add_argument("--legends", nargs="+", default=LEGENDS)
+    parser.add_argument(
+        "--output-root", default="outputs/benchmarks/paper_metrics",
+        help="Separate result root for a new comparison, relative to the project root or absolute.",
+    )
+    parser.add_argument(
         "--scenarios", nargs="+", choices=sorted(SCENARIOS),
         default=DEFAULT_SCENARIOS,
     )
@@ -51,12 +60,16 @@ def main() -> None:
         parser.error("--steps must be at least 2")
     if args.seed < 0:
         parser.error("--seed must be non-negative")
+    if len(args.model_paths) != len(args.legends):
+        parser.error("--model-paths and --legends must have the same number of entries")
+    if len(set(args.legends)) != len(args.legends):
+        parser.error("--legends must be unique")
 
-    for relative_path in MODEL_PATHS:
+    for relative_path in args.model_paths:
         if not (ROOT / relative_path).is_dir():
             raise FileNotFoundError(
                 f"Missing model directory: {ROOT / relative_path}. "
-                "Run `python -m scripts.prepare_sota_checkpoints` first."
+                "Train the corresponding branch or prepare the official comparison checkpoints first."
             )
 
     fig_sizes = {
@@ -73,14 +86,15 @@ def main() -> None:
         "average_speed": [0, 100],
         "smoothness": [0, 100],
     }
-    model_paths = [str((ROOT / path).resolve()) + os.sep for path in MODEL_PATHS]
+    model_paths = [str((ROOT / path).resolve()) + os.sep for path in args.model_paths]
+    output_root = (ROOT / args.output_root).resolve()
 
     for scenario in args.scenarios:
         print("*" * 72)
         print(f"[INFO] Matched paper evaluation: {scenario}")
         print("*" * 72)
         output_dir = (
-            ROOT / "outputs" / "benchmarks" / "paper_metrics" / scenario
+            output_root / scenario
             / f"steps_{args.steps}_envs_{args.num_simulations}_seed_{args.seed}"
         )
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -94,17 +108,17 @@ def main() -> None:
             y_limits=y_limits,
             simulation_steps=args.steps,
             is_show_different_collisions=True,
-            x_ticks=LEGENDS,
+            x_ticks=args.legends,
             x_tick_label_rotation=15,
             where_to_save_eva_results=str(output_dir),
             where_to_save_logging=str(output_dir / "log.txt"),
-            legends=LEGENDS,
-            render_titles=LEGENDS,
+            legends=args.legends,
+            render_titles=args.legends,
             num_simulations_per_model=args.num_simulations,
             is_render=False,
             is_save_simulation_video=False,
             is_measure_policy_inference_time=args.measure_inference_time,
-            video_names=["nod_dgppo", "sigmarl", "xp_marl"],
+            video_names=[f"method_{index}" for index in range(len(model_paths))],
             evaluation_seed=args.seed,
             deterministic_actions=not args.stochastic_actions,
             observation_noise=(None if args.checkpoint_observation_noise else False),

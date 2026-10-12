@@ -78,9 +78,24 @@ class NODOpinionManager:
         )
         if self.predict_future_quantile and not self.predict_future_mitigation:
             raise ValueError("Future quantile requires future_mitigation mode")
+        self.variance_mode = str(getattr(parameters, "nod_variance_mode", "learned"))
+        self.evidence_mode = str(getattr(parameters, "nod_evidence_mode", "geometric"))
+        self.variance_supervision = str(
+            getattr(parameters, "nod_variance_supervision", "posterior")
+        )
+        if self.variance_supervision == "evidence_error" and self.label_mode != "responsibility":
+            raise ValueError("Evidence-error supervision requires responsibility labels")
+        if self.variance_mode == "fixed" and self.label_mode != "responsibility":
+            raise ValueError("Fixed variance is only supported in responsibility mode")
         self.checkpoint_version = (
+            7 if self.variance_supervision == "evidence_error" else
+            6 if self.variance_mode == "fixed" else
             5 if self.predict_future_quantile else
             4 if self.predict_future_mitigation else 3
+        )
+        self._variance_needs_calibration = (
+            self.variance_mode == "fixed"
+            and getattr(parameters, "nod_fixed_variance_value", None) is None
         )
         self.enabled = bool(getattr(parameters, "is_using_nod_opinion", True))
         self.n_neighbors = max(1, int(getattr(parameters, "n_agents", 2)) - 1)
@@ -139,6 +154,10 @@ class NODOpinionManager:
                 ),
                 predict_future_mitigation=self.predict_future_mitigation,
                 predict_future_quantile=self.predict_future_quantile,
+                variance_mode=self.variance_mode,
+                fixed_variance_value=getattr(parameters, "nod_fixed_variance_value", None),
+                evidence_mode=self.evidence_mode,
+                variance_supervision=self.variance_supervision,
             ).to(parameters.device)
         finally:
             torch.random.set_rng_state(cpu_rng_state)
@@ -329,16 +348,26 @@ class NODOpinionManager:
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         dynamics_valid = outputs["learning_valid"] & edge_mask
         calibration_valid = dynamics_valid & labels["valid"]
+        if self.variance_supervision == "evidence_error":
+            # Neither target depends on the learned filter or its variance.
+            # Incomplete future windows and resets are excluded by valid.
+            error = (
+                outputs["evidence"].detach()
+                - (2.0 * labels["label"].detach() - 1.0)
+            )
+            nll_mask = calibration_valid
+        else:
+            error = outputs["evidence"] - outputs["mean"]
+            nll_mask = dynamics_valid
         nll_element = 0.5 * (
-            (outputs["evidence"] - outputs["mean"]).square()
-            / outputs["variance"]
+            error.square() / outputs["variance"]
             + torch.log(outputs["variance"])
             + math.log(2.0 * math.pi)
         )
-        if bool(dynamics_valid.any()):
-            nll = nll_element[dynamics_valid].mean()
+        if bool(nll_mask.any()):
+            nll = nll_element[nll_mask].mean()
         else:
-            nll = outputs["mean"].sum() * 0.0
+            nll = outputs["variance"].sum() * 0.0 + outputs["mean"].sum() * 0.0
         if bool(calibration_valid.any()):
             calibration = F.binary_cross_entropy(
                 outputs["rho"][calibration_valid].clamp(1e-6, 1.0 - 1e-6),
@@ -356,6 +385,17 @@ class NODOpinionManager:
             + float(getattr(self.parameters, "nod_calibration_weight", 1.0))
             * calibration
         )
+        if self.evidence_mode == "learned":
+            if bool(dynamics_valid.any()):
+                evidence_loss = F.smooth_l1_loss(
+                    outputs["evidence_used"][dynamics_valid],
+                    outputs["evidence"][dynamics_valid].detach(),
+                )
+            else:
+                evidence_loss = outputs["evidence_used"].sum() * 0.0
+            loss = loss + float(
+                getattr(self.parameters, "nod_evidence_loss_weight", 1.0)
+            ) * evidence_loss
         if self.predict_future_quantile:
             if bool(calibration_valid.any()):
                 residual = (
@@ -440,6 +480,24 @@ class NODOpinionManager:
         )
         dynamics_mask = opinion_mask if opinion_mask is not None else edge_mask
 
+        if self._variance_needs_calibration:
+            # Use only the first frozen-behavior rollout, before any learner
+            # update. Both ablation branches therefore share the same scale.
+            self.model.eval()
+            with torch.no_grad():
+                reference, _ = self.model.forward_sequence(
+                    pair_features, edge_mask, ego_generations,
+                    neighbor_generations, opinion_mask=opinion_mask,
+                    evidence_override=evidence_override,
+                    reference_variance=True,
+                )
+                valid = reference["learning_valid"] & dynamics_mask
+                if not bool(valid.any()):
+                    self.last_metrics = {"enabled": 1.0, "fixed_variance_pending": 1.0}
+                    return self.last_metrics
+                self.model.fixed_variance.copy_(reference["variance"][valid].median())
+            self._variance_needs_calibration = False
+
         batch_size, time_steps = pair_features.shape[:2]
         sequence_length = max(
             1, int(getattr(self.parameters, "nod_sequence_length", 32))
@@ -511,7 +569,7 @@ class NODOpinionManager:
                         opinion_chunk if opinion_chunk is not None else mask_chunk,
                     )
                     state = _detach_state(state)
-                    if self.predict_future_quantile and not bool(calibration_valid.any()):
+                    if (self.predict_future_quantile or self.variance_supervision == "evidence_error") and not bool(calibration_valid.any()):
                         continue
                     if not bool(dynamics_valid.any() | calibration_valid.any()):
                         continue
@@ -602,6 +660,14 @@ class NODOpinionManager:
             ),
             "optimizer_updates": float(optimizer_updates),
             "nll": float(nll),
+            "variance_mode_fixed": float(self.variance_mode == "fixed"),
+            "candidate_init_scratch": float(
+                getattr(self.parameters, "nod_candidate_init_mode", "behavior") == "scratch"
+            ),
+            "fixed_variance": (
+                float(self.model.fixed_variance)
+                if self.variance_mode == "fixed" else 0.0
+            ),
             "calibration_bce": float(calibration),
             "brier": float(brier),
             "ece": _expected_calibration_error(valid_rho, valid_label),
@@ -649,9 +715,51 @@ class NODOpinionManager:
             "expired_edges": float(outputs["expired_edges"]),
         }
         self.last_metrics = metrics
+        if self.variance_supervision == "evidence_error":
+            metrics["variance_supervision_evidence_error"] = 1.0
+            metrics["variance_error_nll"] = float(nll)
+            if bool(calibration_valid.any()):
+                variance = outputs["variance"][calibration_valid]
+                error_squared = (
+                    outputs["evidence"][calibration_valid]
+                    - (2.0 * valid_label - 1.0)
+                ).square()
+                metrics.update(
+                    variance_mean=float(variance.mean()),
+                    variance_p10=float(torch.quantile(variance, 0.1)),
+                    variance_p90=float(torch.quantile(variance, 0.9)),
+                    variance_lower_bound_ratio=float(
+                        (variance <= math.exp(2 * self.model.min_log_sigma) * 1.01).float().mean()
+                    ),
+                    variance_upper_bound_ratio=float(
+                        (variance >= math.exp(2 * self.model.max_log_sigma) * 0.99).float().mean()
+                    ),
+                    evidence_future_error_mse=float(error_squared.mean()),
+                    variance_error_correlation=_correlation(variance, error_squared),
+                    variance_normalized_error_mean=float((error_squared / variance).mean()),
+                )
+                # Bins are ordered by predicted scale; tied predictions must
+                # not be split arbitrarily into a false ranking diagnostic.
+                low_cut = torch.quantile(variance, 0.25)
+                high_cut = torch.quantile(variance, 0.75)
+                if bool(low_cut < high_cut):
+                    for name, selected in (
+                        ("low", variance <= low_cut), ("high", variance >= high_cut)
+                    ):
+                        metrics[f"variance_{name}_bin_predicted"] = float(variance[selected].mean())
+                        metrics[f"variance_{name}_bin_error_mse"] = float(error_squared[selected].mean())
         if bool(calibration_valid.any()):
             metrics['label_positive_ratio'] = float((valid_label > .5).float().mean())
             metrics['label_neutral_ratio'] = float((valid_label == .5).float().mean())
+        if self.evidence_mode == "learned" and bool(dynamics_valid.any()):
+            teacher = outputs["evidence"][dynamics_valid]
+            predicted = outputs["evidence_used"][dynamics_valid]
+            metrics["evidence_mae"] = float((predicted - teacher).abs().mean())
+            signed = teacher.abs() > 0.1
+            metrics["evidence_sign_accuracy"] = (
+                float(((predicted[signed] > 0) == (teacher[signed] > 0)).float().mean())
+                if bool(signed.any()) else 0.0
+            )
         if self.predict_future_mitigation:
             prediction_error = valid_rho - valid_label
             metrics['future_mitigation_mae'] = (
@@ -702,6 +810,12 @@ class NODOpinionManager:
             "history_mode": self.model.history_mode,
             "label_mode": self.label_mode,
             "fixed_evidence_mapping": self.model.fixed_evidence_mapping,
+            "variance_mode": self.variance_mode,
+            "variance_supervision": self.variance_supervision,
+            "variance_log_bounds": [self.model.min_log_sigma, self.model.max_log_sigma],
+            "evidence_mode": self.evidence_mode,
+            "candidate_init_mode": getattr(self.parameters, "nod_candidate_init_mode", "behavior"),
+            "fixed_variance_calibrated": not self._variance_needs_calibration,
             "predict_future_mitigation": self.predict_future_mitigation,
             "predict_future_quantile": self.predict_future_quantile,
             "future_quantile_level": (
@@ -724,11 +838,43 @@ class NODOpinionManager:
             self.last_load_info = "incompatible NOD label mode"
             self.reset_online_state()
             return False
+        if isinstance(checkpoint, dict) and (
+            checkpoint.get("variance_mode", "learned") != self.variance_mode
+            or checkpoint.get("variance_supervision", "posterior") != self.variance_supervision
+            or checkpoint.get("evidence_mode", "geometric") != self.evidence_mode
+            or (self.variance_supervision == "evidence_error"
+                and not checkpoint.get("fixed_evidence_mapping", False))
+            or (self.variance_mode == "fixed"
+                and (not checkpoint.get("fixed_variance_calibrated", False)
+                     or not checkpoint.get("fixed_evidence_mapping", False)))
+        ):
+            self.last_load_info = "incompatible NOD evidence/variance contract"
+            self.reset_online_state()
+            return False
+        if self.variance_supervision == "evidence_error" and checkpoint.get("variance_log_bounds") != [
+            self.model.min_log_sigma, self.model.max_log_sigma
+        ]:
+            self.last_load_info = "incompatible evidence-error variance bounds"
+            self.reset_online_state()
+            return False
         state_dict = (
             checkpoint.get("model", checkpoint)
             if isinstance(checkpoint, dict)
             else checkpoint
         )
+        if self.variance_mode == "fixed" and "fixed_variance" not in state_dict:
+            self.last_load_info = "fixed NOD checkpoint is missing its calibrated variance"
+            self.reset_online_state()
+            return False
+        configured_variance = getattr(self.parameters, "nod_fixed_variance_value", None)
+        if (self.variance_mode == "fixed" and configured_variance is not None
+                and not math.isclose(
+                    float(state_dict["fixed_variance"]), float(configured_variance),
+                    rel_tol=1e-6, abs_tol=1e-8,
+                )):
+            self.last_load_info = "incompatible fixed NOD variance value"
+            self.reset_online_state()
+            return False
         if version is not None and int(version) < self.checkpoint_version:
             self.last_load_info = (
                 "legacy NOD checkpoint ignored because direct physical-pair "
@@ -747,6 +893,7 @@ class NODOpinionManager:
             self.reset_online_state()
             return False
         self.model.load_state_dict(state_dict)
+        self._variance_needs_calibration = False
         if (
             load_optimizer
             and isinstance(checkpoint, dict)
@@ -761,6 +908,57 @@ class NODOpinionManager:
         self.reset_online_state()
         self.last_load_info = "loaded"
         return True
+
+    def initialize_error_variance_from_behavior(self, checkpoint: Dict) -> None:
+        """Keep the old history/attention, restart the independent scale output."""
+        if self.variance_supervision != "evidence_error":
+            raise ValueError("Evidence-error variance supervision is disabled")
+        if (checkpoint.get("version") != 3
+                or checkpoint.get("label_mode") != "responsibility"
+                or checkpoint.get("variance_mode", "learned") != "learned"
+                or checkpoint.get("variance_supervision", "posterior") != "posterior"
+                or checkpoint.get("evidence_mode", "geometric") != "geometric"
+                or checkpoint.get("observation_mode") != self.observation_mode
+                or checkpoint.get("pair_feature_dim") != self.model.pair_feature_dim
+                or checkpoint.get("history_mode") != self.model.history_mode
+                or not checkpoint.get("fixed_evidence_mapping")):
+            raise ValueError("Expected a compatible version-3 responsibility behavior NOD")
+        self.model.load_state_dict(checkpoint["model"])
+        # Old scale outputs often saturate at their minimum. Initialize the
+        # new objective at variance 1, retaining the shared hidden features.
+        fraction = -self.model.min_log_sigma / (
+            self.model.max_log_sigma - self.model.min_log_sigma
+        )
+        raw_initial = math.log(fraction / (1.0 - fraction))
+        with torch.no_grad():
+            self.model.likelihood_head[-1].weight[2].zero_()
+            self.model.likelihood_head[-1].bias[2].fill_(raw_initial)
+        self.reset_online_state()
+        self.last_load_info = "initialized evidence-error variance output at variance 1"
+
+    def initialize_ablation_from_behavior(self, checkpoint: Dict) -> None:
+        """Warm-start a fixed-variance learner from a frozen responsibility NOD."""
+        if self.variance_mode != "fixed" or self.label_mode != "responsibility":
+            raise ValueError("Expected a fixed-variance responsibility learner")
+        if (checkpoint.get("version") != 3
+                or checkpoint.get("label_mode") != "responsibility"
+                or checkpoint.get("variance_mode", "learned") != "learned"
+                or checkpoint.get("evidence_mode", "geometric") != "geometric"
+                or checkpoint.get("observation_mode") != self.observation_mode
+                or checkpoint.get("pair_feature_dim") != self.model.pair_feature_dim
+                or checkpoint.get("history_mode") != self.model.history_mode
+                or not checkpoint.get("fixed_evidence_mapping")):
+            raise ValueError("Expected a compatible version-3 responsibility behavior NOD")
+        missing, unexpected = self.model.load_state_dict(checkpoint["model"], strict=False)
+        expected_missing = {"fixed_variance"}
+        if self.evidence_mode == "learned":
+            expected_missing.update(
+                f"evidence_head.{key}" for key in self.model.evidence_head.state_dict()
+            )
+        if set(missing) != expected_missing or unexpected:
+            raise ValueError("Behavior NOD weights do not match the ablation learner")
+        self.reset_online_state()
+        self.last_load_info = "initialized ablation learner from behavior NOD"
 
     def initialize_future_from_behavior(self, checkpoint: Dict) -> None:
         """Reuse a frozen responsibility filter while training a new future head."""

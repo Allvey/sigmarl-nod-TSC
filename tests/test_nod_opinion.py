@@ -202,6 +202,46 @@ def test_fixed_evidence_mapping_has_zero_intercept_and_unit_slope():
     assert (variance > 0.0).all()
 
 
+def test_fixed_variance_is_constant_but_reference_variance_uses_old_head():
+    model = NODOpinionModel(
+        pair_feature_dim=20, hidden_dim=8, fixed_evidence_mapping=True,
+        variance_mode="fixed", fixed_variance_value=0.2,
+    )
+    hidden = torch.randn(2, 3, 8)
+    _, _, fixed = model.likelihood_parameters(hidden)
+    _, _, reference = model.likelihood_parameters(hidden, reference_variance=True)
+
+    torch.testing.assert_close(fixed, torch.full_like(fixed, 0.2))
+    assert torch.isfinite(reference).all()
+    assert (reference > 0).all()
+
+
+def test_learned_evidence_updates_opinion_but_teacher_remains_separate():
+    model = NODOpinionModel(
+        pair_feature_dim=20, hidden_dim=8, fixed_evidence_mapping=True,
+        variance_mode="fixed", fixed_variance_value=0.2,
+        evidence_mode="learned",
+    )
+    with torch.no_grad():
+        model.evidence_head.weight.zero_()
+        model.evidence_head.bias.fill_(1.0)
+    pair = torch.zeros(1, 3, 2, 1, 20)
+    mask = torch.ones(1, 3, 2, 1, dtype=torch.bool)
+    generations = torch.ones(1, 3, 2, dtype=torch.long)
+    neighbors = torch.ones(1, 3, 2, 1, dtype=torch.long)
+    teacher = -torch.ones_like(mask, dtype=torch.float32)
+
+    outputs, _ = model.forward_sequence(
+        pair, mask, generations, neighbors,
+        opinion_mask=mask, evidence_override=teacher,
+    )
+
+    torch.testing.assert_close(outputs["evidence"], teacher)
+    assert (outputs["evidence_used"] > 0).all()
+    assert (outputs["z"][:, 1:] > 0).all()
+    assert (outputs["variance"] == outputs["variance"][:, :1]).all()
+
+
 def test_explicit_responsibility_mask_limits_where_opinion_evolves():
     model = NODOpinionModel(
         pair_feature_dim=20,

@@ -19,6 +19,28 @@ The root directory no longer stores experiment JSON files.
 
 ## Ablations
 
+- `ablations/config_dgppo_nod_evidence_error_variance_candidate.json`: independent
+  error-scale supervision for the geometric responsibility evidence. The new
+  candidate starts its scale at 1, predicts squared error against future labels,
+  and blocks opinion-calibration gradients into the scale head. Its wider range
+  is not applied to the frozen behavior NOD collecting the trajectories.
+- `ablations/config_dgppo_nod_evidence_error_variance_control.json`: frozen
+  error-scale NOD control fine-tuning. Loads all four final checkpoint modules
+  from that candidate, trains Actor/message aggregator, task Critic and Safety
+  Value, and retains gain 1 and opinion deadzone 0.1. The candidate's learned
+  variance range and supervision contract are preserved during loading.
+- `ablations/config_dgppo_nod_fixed_variance_candidate.json` and
+  `ablations/config_dgppo_nod_learned_evidence_candidate.json`: matched
+  responsibility-NOD candidates. Both keep the frozen behavior policy and
+  replace the learned variance with the same first-rollout median; the second
+  candidate additionally learns evidence from the causal geometric teacher.
+- `ablations/config_dgppo_nod_fixed_variance_scratch_candidate.json` and
+  `ablations/config_dgppo_nod_learned_evidence_scratch_candidate.json`: the
+  same objectives with randomly initialized learner NODs. The behavior policy
+  stays frozen, and both runs pin the variance measured in the warm-start runs.
+- `ablations/config_dgppo_nod_fixed_variance_control.json` and
+  `ablations/config_dgppo_nod_learned_evidence_control.json`: corresponding
+  frozen-NOD Actor/Safety fine-tunes, each initialized from its own candidate.
 - `ablations/config_dgppo_nod_ablation_fixed_alpha.json`: Actor receives the
   online opinion, while the safety barrier uses fixed alpha.
 - `ablations/config_dgppo_nod_ablation_neutral_z.json`: the Actor opinion input

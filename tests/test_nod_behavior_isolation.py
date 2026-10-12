@@ -156,3 +156,57 @@ def test_future_quantile_starts_from_frozen_stage_one_predictor():
     loss.backward()
     assert stage_two.model.future_quantile_head[-1].weight.grad is not None
     assert stage_two.model.future_head[-1].weight.grad is None
+
+
+def test_fixed_variance_learned_evidence_warmstart_and_teacher_loss():
+    common = dict(
+        device="cpu", dt=0.1, is_using_nod_opinion=True,
+        nod_hidden_dim=8, nod_label_mode="responsibility",
+    )
+    behavior = NODOpinionManager(SimpleNamespace(**common))
+    candidate = NODOpinionManager(SimpleNamespace(
+        **common, nod_variance_mode="fixed", nod_evidence_mode="learned",
+    ))
+    assert not candidate.load_checkpoint(behavior.checkpoint_state())
+    candidate.initialize_ablation_from_behavior(behavior.checkpoint_state())
+    for key, value in behavior.model.history.state_dict().items():
+        torch.testing.assert_close(candidate.model.history.state_dict()[key], value)
+
+    pair = torch.zeros(1, 3, 2, 1, 20)
+    mask = torch.ones(1, 3, 2, 1, dtype=torch.bool)
+    generations = torch.ones(1, 3, 2, dtype=torch.long)
+    neighbors = torch.ones(1, 3, 2, 1, dtype=torch.long)
+    outputs, _ = candidate.model.forward_sequence(
+        pair, mask, generations, neighbors, opinion_mask=mask,
+        evidence_override=-torch.ones_like(mask, dtype=torch.float32),
+    )
+    labels = {"label": torch.zeros_like(outputs["rho"]), "valid": mask}
+    loss, *_ = candidate._losses(outputs, labels, mask)
+    loss.backward()
+    assert candidate.model.evidence_head.weight.grad is not None
+    assert torch.isfinite(candidate.model.evidence_head.weight.grad).all()
+
+    # A pending auto-calibrated learner must not be used as a frozen controller.
+    assert not NODOpinionManager(SimpleNamespace(
+        **common, nod_variance_mode="fixed", nod_evidence_mode="learned",
+    )).load_checkpoint(candidate.checkpoint_state())
+    candidate.model.fixed_variance.fill_(0.2)
+    candidate._variance_needs_calibration = False
+    loaded = NODOpinionManager(SimpleNamespace(
+        **common, nod_variance_mode="fixed", nod_evidence_mode="learned",
+    ))
+    assert loaded.load_checkpoint(candidate.checkpoint_state())
+    assert float(loaded.model.fixed_variance) == float(candidate.model.fixed_variance)
+
+
+def test_scratch_candidate_keeps_explicit_variance_without_calibration():
+    manager = NODOpinionManager(SimpleNamespace(
+        device="cpu", dt=0.1, is_using_nod_opinion=True,
+        nod_hidden_dim=8, nod_label_mode="responsibility",
+        nod_variance_mode="fixed", nod_evidence_mode="learned",
+        nod_fixed_variance_value=0.006738110911101103,
+        nod_candidate_init_mode="scratch",
+    ))
+    assert not manager._variance_needs_calibration
+    assert manager.checkpoint_state()["candidate_init_mode"] == "scratch"
+    assert float(manager.model.fixed_variance) == torch.tensor(0.006738110911101103).item()
