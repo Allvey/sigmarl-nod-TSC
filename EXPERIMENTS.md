@@ -317,11 +317,180 @@ It is not uniformly superior: XP-MARL has much smaller centerline deviation
 and smoother actions, and slightly lower summed collision rate; SigmaRL is
 faster and smoother. This establishes the implemented mechanism and an
 initial policy comparison, not the causal contribution of adaptive scaling.
-The next mechanism-focused comparison should freeze a constant scale near
-the candidate's typical scale, retain the same learned attention and history,
-and retrain the control branch from the same Actor/Safety initialization.
-Merely changing variance at deployment on the trained new Actor would test
-distribution sensitivity, rather than provide the matched training ablation.
+The next priority is the future-evidence counterpart below, returning to the
+original learned-evidence versus learned-variance comparison. A constant-scale
+geometric-evidence control remains an optional follow-up for isolating adaptive
+scaling itself. Merely changing variance at deployment on the trained new Actor
+would test distribution sensitivity, rather than provide a matched training
+ablation.
+
+## Future evidence versus learned error scale
+
+This branch returns to the original question: should a network predict the
+future evidence value, or estimate the squared future error of current
+geometric evidence? It is separate from the older geometric-teacher learned
+evidence experiment and from the post-filter future-head/lower-bound work.
+
+The future-evidence head takes the GRU state and current causal geometric
+evidence, predicts `q_hat = sigmoid(MLP([hidden, e_geom]))`, and supplies
+`e_used = 2*q_hat-1` to the existing KL opinion update. Its MLP has widths
+`65 -> 64 -> 1` with Tanh internally. The final layer starts at zero, producing
+neutral evidence. Variance is explicitly fixed at 1, close to the error-scale
+candidate's final training mean of 0.95674 and its initial value of 1; it is
+not copied from the old collapsed scale. The same learned attention, fixed
+`b=0,s=1`, opinion masks and reset rules remain in place.
+
+The losses are future-evidence BCE and opinion BCE, each with weight 1, against
+the same future label `q*`. The old observed-evidence NLL and geometric-teacher
+Huber loss are excluded. Both losses require complete future windows, active
+interaction and consistent vehicle identities. No future label enters online
+inference. New diagnostics distinguish forecast quality
+(`future_evidence_bce/brier/mae/bias`) from filtered opinion quality
+(`calibration_bce`, `brier`, `z_counterfactual_gap_correlation`), with
+`geometric_future_brier` evaluated against the same targets as a reference.
+These candidate metrics remain training diagnostics.
+
+The candidate reuses the exact frozen `reward7.21` behavior checkpoint,
+training seed, 30 iterations and optimizer/minibatch budget of the learned
+error-scale candidate. It warm-starts history and attention from that source,
+while its prediction head starts neutral. The behavior NOD remains the old
+geometric filter. This compares two implementations using the same causal
+information at the system level; it is not a single-parameter ablation:
+the learned targets, gradient paths and input wiring differ by design.
+
+Run the targeted tests, then candidate training:
+
+```bash
+python -m pytest tests/test_nod_future_evidence.py tests/test_nod_evidence_error_variance.py tests/test_nod_behavior_isolation.py tests/test_nod_opinion.py -q
+python main_training.py --config configs/ablations/config_dgppo_nod_future_evidence_candidate.json
+```
+
+Outputs go to `outputs/current/ablations/dgppo_nod_future_evidence_candidate/`.
+Version-8 NOD checkpoints record `evidence_target=future`, so they cannot be
+silently loaded as the old geometric-teacher or learned-variance model.
+Future-evidence candidate continuation from a loaded candidate is rejected
+to avoid replacing the separately pinned behavior NOD with the learner.
+
+The future-evidence candidate completed 30 iterations. Its logged behavior
+reward and agent-collision-flag sequences exactly match the learned error-scale
+candidate; every NOD metric entry confirms candidate-only training with frozen
+behavior NOD. This supports the intended collection isolation, without claiming
+that aggregate logs establish tensor-level equality of every trajectory.
+Last-five-iteration opinion diagnostics compare as follows:
+
+| Training diagnostic | Learned future evidence | Learned error scale |
+| --- | ---: | ---: |
+| Filtered-opinion Brier | 0.15899 | 0.15858 |
+| Opinion BCE | 0.60556 | 0.59814 |
+| Opinion/future-gap correlation | 0.53749 | 0.50827 |
+| Opinion ECE | 0.18550 | 0.14970 |
+| Opinion standard deviation | 0.18647 | 0.30352 |
+
+The forecast head's own Brier is `0.11000`, versus `0.22906` when the current
+geometric evidence is directly scored against the same future labels. Its
+future-q MAE is `0.24769`, bias `+0.01367`, and evidence sign accuracy `0.78916`
+(excluding future evidence within 0.1 of zero). Neither opinion solving nor
+boundary saturation failed in these last five iterations; variance remained
+fixed at 1 and the old NLL remained zero. Forecast and filtered-opinion Brier
+must not be conflated: filtering increases Brier from 0.11000 to 0.15899 on
+this training distribution. This may reflect temporal lag or shrinkage, but
+these logs alone do not identify the cause.
+
+The result removes the earlier impression that learning evidence inherently
+performs poorly: the new future target gives comparable opinion Brier and
+somewhat higher correlation, though opinion BCE/ECE favor the error-scale
+branch. These are post-update candidate-training diagnostics, not independent
+calibration or control results. Proceed with the already configured control
+fine-tune without changing variance or opinion dynamics before comparing the
+two trained control branches.
+
+After reviewing candidate diagnostics, run the corresponding 70-iteration
+control fine-tune (already configured):
+
+```bash
+python main_training.py --config configs/ablations/config_dgppo_nod_future_evidence_control.json
+```
+
+It loads the candidate's full `final` bundle. Actor/task Critic/Safety weights
+in that bundle stayed frozen during candidate collection. NOD weights are
+then frozen during control fine-tuning, with the same warmup, gain 1 and
+deadzone 0.1 as the learned error-scale control. Outputs go to
+`outputs/current/ablations/dgppo_nod_future_evidence_control/`. Candidate
+training and all 70 control fine-tuning iterations have completed;
+the independent two-branch performance evaluation has also completed.
+
+The future-evidence control produced `reward7.08_*` and `final_*` checkpoints.
+Every saved NOD metric entry confirms frozen NOD weights with zero optimizer
+updates. Its last-batch alpha spans `7.97640` to `12.82799`. The last 20
+training iterations compare as follows:
+
+| Training diagnostic | Learned future evidence | Learned error scale |
+| --- | ---: | ---: |
+| Mean episode return | 6.42452 | 6.60777 |
+| Vehicle collision flag fraction | 0.00006104 | 0.00007935 |
+| Road collision flag fraction | 0.00098877 | 0.00087891 |
+| Opinion-changed advantage fraction | 0.01647 | 0.01710 |
+| Barrier violation fraction | 0.24361 | 0.23063 |
+
+The future-evidence branch has lower vehicle collision flag frequency but
+lower return in these stochastic training rollouts. Both branches actively
+use opinion-modulated advantages. These mixed results do not rank independent
+control performance; proceed with the focused evaluation below, keeping both
+configurations unchanged.
+
+The focused comparison uses the existing paper-metric evaluator:
+
+```bash
+python utilities/evaluation_tase26.py \
+  --model-paths \
+    outputs/current/ablations/dgppo_nod_future_evidence_control/ \
+    outputs/current/ablations/dgppo_nod_evidence_error_variance_control/ \
+  --legends 'Learned future evidence' 'Learned error scale' \
+  --output-root outputs/benchmarks/future_evidence_vs_variance_paper_metrics \
+  --scenarios intersection_2 --num-simulations 32 --steps 1200 --seed 101
+```
+
+Optionally visualize the learned-evidence control with `python main_testing.py
+--model-path outputs/current/ablations/dgppo_nod_future_evidence_control/
+--env-seed 101 --no-speed-print --no-realtime`. Both evaluators load the
+highest-training-reward intermediate checkpoint. The two-method comparison
+reuses the established protocol without retraining the variance branch or
+launching new lower-bound/calibration experiments.
+
+The focused evaluation completed using `reward7.08` for future evidence and
+`reward7.38` for error scale, with the protocol above. The error-scale metrics
+exactly reproduce that branch's previous four-method evaluation. Results are
+in [`metrics_summary.json`](outputs/benchmarks/future_evidence_vs_variance_paper_metrics/intersection_2/steps_1200_envs_32_seed_101/metrics_summary.json).
+
+| Evaluation mean (percent) | Learned future evidence | Learned error scale |
+| --- | ---: | ---: |
+| Vehicle collision rate (lower is better) | 0.17462 | 0.22936 |
+| Road collision rate (lower is better) | 1.66024 | 1.56380 |
+| Sum of collision rates (lower is better) | 1.83486 | 1.79316 |
+| Normalized average speed (higher is better) | 82.71497 | 83.27902 |
+| Collision-penalized speed (higher is better) | 79.04525 | 79.69270 |
+| Centerline deviation (lower is better) | 54.34002 | 56.07506 |
+| Action change (lower is smoother) | 7.48459 | 7.24631 |
+
+Future evidence reduces the mean vehicle collision rate by 23.9%, an absolute
+0.05473 percentage-point difference, while normalized speed falls by 0.56406
+points (0.68% relative). Error scale has lower road and summed collision rates
+and smoother actions; future evidence has smaller centerline deviation. The
+vehicle-collision standard deviations are 0.12744 and 0.15879 percentage points.
+The metric definitions and speed-cohort limitation are the same as in the
+earlier paper-metric comparison; test return is not exported.
+
+The original implementation comparison is now complete at the candidate,
+control-training and first independent evaluation levels. If vehicle-vehicle
+avoidance is the primary criterion and road contacts are temporarily secondary,
+this run favors the future-evidence implementation at a small normalized-speed
+cost. It does not show uniform superiority, statistical significance or a
+universal preference for learning evidence over variance. Future evidence
+prediction and geometric-error-scale estimation are different learned targets,
+and the observation wiring/gradients differ; the conclusion is limited to
+these two implementations on this one-scenario, one-seed protocol. Retain both
+branches, with no further mechanism additions or default-model switch implied
+by this result.
 
 ## Future lower-bound control experiment
 

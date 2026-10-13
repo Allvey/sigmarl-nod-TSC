@@ -288,6 +288,7 @@ class NODOpinionModel(nn.Module):
         variance_mode: str = "learned",
         fixed_variance_value: Optional[float] = None,
         evidence_mode: str = "geometric",
+        evidence_target: str = "geometric",
         variance_supervision: str = "posterior",
     ):
         super().__init__()
@@ -313,6 +314,15 @@ class NODOpinionModel(nn.Module):
         self.predict_future_quantile = bool(predict_future_quantile)
         self.variance_mode = str(variance_mode)
         self.evidence_mode = str(evidence_mode)
+        self.evidence_target = str(evidence_target)
+        if self.evidence_target not in {"geometric", "future"}:
+            raise ValueError("evidence_target must be geometric or future")
+        if self.evidence_target == "future" and (
+            self.evidence_mode != "learned" or self.variance_mode != "fixed"
+            or fixed_variance_value is None or not self.fixed_evidence_mapping
+            or self.predict_future_mitigation
+        ):
+            raise ValueError("Future evidence requires a fixed-variance learned-evidence filter")
         self.variance_supervision = str(variance_supervision)
         if self.variance_supervision not in {"posterior", "evidence_error"}:
             raise ValueError("variance_supervision must be posterior or evidence_error")
@@ -354,7 +364,17 @@ class NODOpinionModel(nn.Module):
             nn.Linear(self.hidden_dim, 3),
         )
         if self.evidence_mode == "learned":
-            self.evidence_head = nn.Linear(self.hidden_dim, 1)
+            if self.evidence_target == "future":
+                self.evidence_head = nn.Sequential(
+                    nn.Linear(self.hidden_dim + 1, self.hidden_dim),
+                    nn.Tanh(),
+                    nn.Linear(self.hidden_dim, 1),
+                )
+                # Start neutral, independently of the old collapsed variance.
+                nn.init.zeros_(self.evidence_head[-1].weight)
+                nn.init.zeros_(self.evidence_head[-1].bias)
+            else:
+                self.evidence_head = nn.Linear(self.hidden_dim, 1)
         if self.predict_future_mitigation:
             # The KL state filters observed evidence. This separate head
             # predicts future mitigation from causal history and that state.
@@ -609,9 +629,18 @@ class NODOpinionModel(nn.Module):
                 ),
             )
             if self.evidence_mode == "learned":
+                if self.evidence_target == "future":
+                    # Only causal history and observed geometric evidence enter
+                    # this head; future trajectories are loss targets only.
+                    forecast_input = torch.cat([hidden, evidence.unsqueeze(-1)], dim=-1)
+                    predicted_evidence = 2.0 * torch.sigmoid(
+                        self.evidence_head(forecast_input).squeeze(-1)
+                    ) - 1.0
+                else:
+                    predicted_evidence = torch.tanh(self.evidence_head(hidden).squeeze(-1))
                 evidence_used = torch.where(
                     opinion_active,
-                    torch.tanh(self.evidence_head(hidden).squeeze(-1)),
+                    predicted_evidence,
                     torch.zeros_like(evidence),
                 )
             else:

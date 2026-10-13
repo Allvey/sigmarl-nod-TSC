@@ -784,6 +784,7 @@ class Parameters:
         nod_variance_supervision: str = "posterior",
         nod_fixed_variance_value: Optional[float] = None,
         nod_evidence_mode: str = "geometric",
+        nod_evidence_target: str = "geometric",
         nod_evidence_loss_weight: float = 1.0,
         nod_sensing_range: float = 0.8,
         nod_interaction_distance: float = 0.48,
@@ -1264,6 +1265,15 @@ class Parameters:
             raise ValueError("nod_variance_supervision must be posterior or evidence_error")
         if nod_evidence_mode not in {"geometric", "learned"}:
             raise ValueError("nod_evidence_mode must be geometric or learned")
+        if nod_evidence_target not in {"geometric", "future"}:
+            raise ValueError("nod_evidence_target must be geometric or future")
+        if nod_evidence_target == "future" and (
+            nod_evidence_mode != "learned" or nod_variance_mode != "fixed"
+            or nod_fixed_variance_value is None or not nod_fixed_evidence_mapping
+            or nod_label_mode != "responsibility" or nod_variance_supervision != "posterior"
+            or nod_nll_weight != 0.0 or nod_evidence_loss_weight <= 0.0
+        ):
+            raise ValueError("Future evidence requires responsibility learned evidence, explicit fixed variance, fixed mapping, positive evidence loss and zero NLL weight")
         if nod_fixed_variance_value is not None and (
             not math.isfinite(nod_fixed_variance_value)
             or nod_fixed_variance_value <= 0.0
@@ -1277,6 +1287,7 @@ class Parameters:
         self.nod_variance_supervision = nod_variance_supervision
         self.nod_fixed_variance_value = nod_fixed_variance_value
         self.nod_evidence_mode = nod_evidence_mode
+        self.nod_evidence_target = nod_evidence_target
         self.nod_evidence_loss_weight = nod_evidence_loss_weight
         self.nod_sensing_range = nod_sensing_range
         self.nod_interaction_distance = nod_interaction_distance

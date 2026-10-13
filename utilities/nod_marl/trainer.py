@@ -80,6 +80,13 @@ class NODOpinionManager:
             raise ValueError("Future quantile requires future_mitigation mode")
         self.variance_mode = str(getattr(parameters, "nod_variance_mode", "learned"))
         self.evidence_mode = str(getattr(parameters, "nod_evidence_mode", "geometric"))
+        self.evidence_target = str(getattr(parameters, "nod_evidence_target", "geometric"))
+        if self.evidence_target == "future" and (
+            self.label_mode != "responsibility"
+            or float(getattr(parameters, "nod_nll_weight", 1.0)) != 0.0
+            or float(getattr(parameters, "nod_evidence_loss_weight", 1.0)) <= 0.0
+        ):
+            raise ValueError("Future evidence requires responsibility labels, positive evidence loss and zero NLL weight")
         self.variance_supervision = str(
             getattr(parameters, "nod_variance_supervision", "posterior")
         )
@@ -88,6 +95,7 @@ class NODOpinionManager:
         if self.variance_mode == "fixed" and self.label_mode != "responsibility":
             raise ValueError("Fixed variance is only supported in responsibility mode")
         self.checkpoint_version = (
+            8 if self.evidence_target == "future" else
             7 if self.variance_supervision == "evidence_error" else
             6 if self.variance_mode == "fixed" else
             5 if self.predict_future_quantile else
@@ -157,6 +165,7 @@ class NODOpinionManager:
                 variance_mode=self.variance_mode,
                 fixed_variance_value=getattr(parameters, "nod_fixed_variance_value", None),
                 evidence_mode=self.evidence_mode,
+                evidence_target=self.evidence_target,
                 variance_supervision=self.variance_supervision,
             ).to(parameters.device)
         finally:
@@ -348,7 +357,10 @@ class NODOpinionManager:
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         dynamics_valid = outputs["learning_valid"] & edge_mask
         calibration_valid = dynamics_valid & labels["valid"]
-        if self.variance_supervision == "evidence_error":
+        if self.evidence_target == "future":
+            # The future-evidence branch has no observed-evidence likelihood.
+            nll = outputs["mean"].sum() * 0.0
+        elif self.variance_supervision == "evidence_error":
             # Neither target depends on the learned filter or its variance.
             # Incomplete future windows and resets are excluded by valid.
             error = (
@@ -359,15 +371,16 @@ class NODOpinionManager:
         else:
             error = outputs["evidence"] - outputs["mean"]
             nll_mask = dynamics_valid
-        nll_element = 0.5 * (
-            error.square() / outputs["variance"]
-            + torch.log(outputs["variance"])
-            + math.log(2.0 * math.pi)
-        )
-        if bool(nll_mask.any()):
-            nll = nll_element[nll_mask].mean()
-        else:
-            nll = outputs["variance"].sum() * 0.0 + outputs["mean"].sum() * 0.0
+        if self.evidence_target != "future":
+            nll_element = 0.5 * (
+                error.square() / outputs["variance"]
+                + torch.log(outputs["variance"])
+                + math.log(2.0 * math.pi)
+            )
+            if bool(nll_mask.any()):
+                nll = nll_element[nll_mask].mean()
+            else:
+                nll = outputs["variance"].sum() * 0.0 + outputs["mean"].sum() * 0.0
         if bool(calibration_valid.any()):
             calibration = F.binary_cross_entropy(
                 outputs["rho"][calibration_valid].clamp(1e-6, 1.0 - 1e-6),
@@ -386,7 +399,12 @@ class NODOpinionManager:
             * calibration
         )
         if self.evidence_mode == "learned":
-            if bool(dynamics_valid.any()):
+            if self.evidence_target == "future" and bool(calibration_valid.any()):
+                evidence_loss = F.binary_cross_entropy(
+                    (0.5 * (outputs["evidence_used"][calibration_valid] + 1.0)).clamp(1e-6, 1.0 - 1e-6),
+                    labels["label"][calibration_valid].detach(),
+                )
+            elif self.evidence_target == "geometric" and bool(dynamics_valid.any()):
                 evidence_loss = F.smooth_l1_loss(
                     outputs["evidence_used"][dynamics_valid],
                     outputs["evidence"][dynamics_valid].detach(),
@@ -569,7 +587,7 @@ class NODOpinionManager:
                         opinion_chunk if opinion_chunk is not None else mask_chunk,
                     )
                     state = _detach_state(state)
-                    if (self.predict_future_quantile or self.variance_supervision == "evidence_error") and not bool(calibration_valid.any()):
+                    if (self.predict_future_quantile or self.variance_supervision == "evidence_error" or self.evidence_target == "future") and not bool(calibration_valid.any()):
                         continue
                     if not bool(dynamics_valid.any() | calibration_valid.any()):
                         continue
@@ -751,15 +769,28 @@ class NODOpinionManager:
         if bool(calibration_valid.any()):
             metrics['label_positive_ratio'] = float((valid_label > .5).float().mean())
             metrics['label_neutral_ratio'] = float((valid_label == .5).float().mean())
-        if self.evidence_mode == "learned" and bool(dynamics_valid.any()):
-            teacher = outputs["evidence"][dynamics_valid]
-            predicted = outputs["evidence_used"][dynamics_valid]
+        evidence_mask = calibration_valid if self.evidence_target == "future" else dynamics_valid
+        if self.evidence_mode == "learned" and bool(evidence_mask.any()):
+            teacher = (
+                2.0 * labels["label"][evidence_mask] - 1.0
+                if self.evidence_target == "future" else outputs["evidence"][evidence_mask]
+            )
+            predicted = outputs["evidence_used"][evidence_mask]
             metrics["evidence_mae"] = float((predicted - teacher).abs().mean())
             signed = teacher.abs() > 0.1
             metrics["evidence_sign_accuracy"] = (
                 float(((predicted[signed] > 0) == (teacher[signed] > 0)).float().mean())
                 if bool(signed.any()) else 0.0
             )
+            if self.evidence_target == "future":
+                forecast = 0.5 * (predicted + 1.0)
+                target = labels["label"][evidence_mask]
+                metrics["future_evidence_bce"] = float(F.binary_cross_entropy(forecast.clamp(1e-6, 1.0 - 1e-6), target))
+                metrics["future_evidence_brier"] = float((forecast - target).square().mean())
+                metrics["future_evidence_mae"] = float((forecast - target).abs().mean())
+                metrics["future_evidence_bias"] = float((forecast - target).mean())
+                metrics["geometric_future_brier"] = float((0.5 * (outputs["evidence"][evidence_mask] + 1.0) - target).square().mean())
+        metrics["evidence_target_future"] = float(self.evidence_target == "future")
         if self.predict_future_mitigation:
             prediction_error = valid_rho - valid_label
             metrics['future_mitigation_mae'] = (
@@ -814,6 +845,7 @@ class NODOpinionManager:
             "variance_supervision": self.variance_supervision,
             "variance_log_bounds": [self.model.min_log_sigma, self.model.max_log_sigma],
             "evidence_mode": self.evidence_mode,
+            "evidence_target": self.evidence_target,
             "candidate_init_mode": getattr(self.parameters, "nod_candidate_init_mode", "behavior"),
             "fixed_variance_calibrated": not self._variance_needs_calibration,
             "predict_future_mitigation": self.predict_future_mitigation,
@@ -842,6 +874,7 @@ class NODOpinionManager:
             checkpoint.get("variance_mode", "learned") != self.variance_mode
             or checkpoint.get("variance_supervision", "posterior") != self.variance_supervision
             or checkpoint.get("evidence_mode", "geometric") != self.evidence_mode
+            or checkpoint.get("evidence_target", "geometric") != self.evidence_target
             or (self.variance_supervision == "evidence_error"
                 and not checkpoint.get("fixed_evidence_mapping", False))
             or (self.variance_mode == "fixed"

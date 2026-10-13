@@ -19,6 +19,14 @@ The root directory no longer stores experiment JSON files.
 
 ## Ablations
 
+- `ablations/config_dgppo_nod_future_evidence_candidate.json` and
+  `ablations/config_dgppo_nod_future_evidence_control.json`: future-evidence
+  counterpart to the learned error-scale branch. The head predicts future
+  mitigation from causal history plus current geometry, supplies evidence to
+  the original NOD solve, and uses fixed variance 1. Candidate training uses
+  future-evidence BCE plus opinion BCE, with no old NLL or geometric teacher
+  loss; the control stage freezes this version-8 NOD. This is separate from
+  the older post-filter future-head/lower-bound experiment.
 - `ablations/config_dgppo_nod_evidence_error_variance_candidate.json`: independent
   error-scale supervision for the geometric responsibility evidence. The new
   candidate starts its scale at 1, predicts squared error against future labels,

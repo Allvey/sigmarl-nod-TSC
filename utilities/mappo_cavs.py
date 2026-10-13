@@ -352,6 +352,12 @@ def mappo_cavs(parameters: Parameters):
     if error_variance_mode and parameters.is_load_model and parameters.is_continue_train:
         raise ValueError("Start a new evidence-error candidate run to keep its original behavior NOD pinned")
     error_variance_candidate = error_variance_mode and not parameters.is_load_model
+    future_evidence_candidate_mode = (
+        getattr(parameters, "nod_training_mode", "joint") == "candidate_only"
+        and getattr(parameters, "nod_evidence_target", "geometric") == "future"
+    )
+    if future_evidence_candidate_mode and parameters.is_load_model and parameters.is_continue_train:
+        raise ValueError("Start a new future-evidence candidate run to keep its original behavior NOD pinned")
     ablation_candidate = (
         getattr(parameters, "nod_training_mode", "joint") == "candidate_only"
         and getattr(parameters, "nod_variance_mode", "learned") == "fixed"
@@ -369,6 +375,7 @@ def mappo_cavs(parameters: Parameters):
     if ablation_candidate:
         behavior_parameters.nod_variance_mode = "learned"
         behavior_parameters.nod_evidence_mode = "geometric"
+        behavior_parameters.nod_evidence_target = "geometric"
         behavior_parameters.nod_candidate_init_mode = "behavior"
     if error_variance_candidate:
         # The candidate uses a wider error-scale range, while the original

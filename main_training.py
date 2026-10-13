@@ -19,4 +19,9 @@ if parameters.safety_control_mode == "dgppo":
           f"{parameters.dgppo_road_alpha_recovery}; opinion gain={parameters.dgppo_alpha_gain}; "
           f"deadzone={parameters.dgppo_opinion_deadzone}")
 print(f"[INFO] Actor opinion input: {parameters.nod_actor_opinion_mode}")
+if parameters.is_using_nod_opinion:
+    print(f"[INFO] NOD evidence: {parameters.nod_evidence_mode}, "
+          f"target={parameters.nod_evidence_target}; variance={parameters.nod_variance_mode}, "
+          f"fixed value={parameters.nod_fixed_variance_value}; "
+          f"supervision={parameters.nod_variance_supervision}")
 mappo_cavs(parameters=parameters)
