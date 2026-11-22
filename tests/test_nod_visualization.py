@@ -1,6 +1,7 @@
 """Offline checks for truthful, read-only opinion/alpha display."""
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from test_dgppo_opinion import sample, params
@@ -74,3 +75,27 @@ def test_display_marks_deadzone_fallback():
     manager.parameters.dgppo_opinion_deadzone = 0.1
     lines = opinion_alpha_lines(td, manager)
     assert 'A1 -> A2  z=+0.080  alpha=10.00  [deadzone: fixed]' in lines
+
+
+@pytest.mark.parametrize('target', ['evidence', 'attention'])
+def test_ppo_gate_display_uses_collected_neighbor_slots_without_mutation(target):
+    td, state, manager = fixture()
+    manager.parameters.nod_evidence_gate_mode = 'ppo'
+    manager.parameters.nod_evidence_gate_target = target
+    gate = torch.zeros(1, 3, 2, 75)
+    gate[..., -5] = .6
+    gate[..., -4] = -.4
+    gate[..., -1] = 1.
+    td.set(('agents', 'info', 'nod_evidence_gate_context'), gate)
+    td.set(('agents', 'info', 'nod_evidence_weight'), torch.tensor([[[.2, .8], [.3, .7], [.4, .6]]]))
+    before = td.clone()
+    lines = opinion_alpha_lines(td, manager)
+    detail = ('e=-0.400  A_RL=0.200  A0=0.600' if target == 'attention'
+              else 'e=-0.400  beta=0.200  A=0.600')
+    weight_label = 'A_RL' if target == 'attention' else 'beta'
+    assert any('A1 -> A2' in row and detail in row for row in lines)
+    assert any('A1 -> A3' in row and f'{weight_label}=0.800' in row for row in lines)
+    for key in before.keys(True, True):
+        torch.testing.assert_close(td[key], before[key], rtol=0, atol=0)
+    td['agents', 'info', 'nod_evidence_gate_context'][..., -1] = 0.
+    assert all(f'{weight_label}=N/A' in row for row in opinion_alpha_lines(td, manager)[1:])

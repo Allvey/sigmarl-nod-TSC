@@ -24,4 +24,15 @@ if parameters.is_using_nod_opinion:
           f"target={parameters.nod_evidence_target}; variance={parameters.nod_variance_mode}, "
           f"fixed value={parameters.nod_fixed_variance_value}; "
           f"supervision={parameters.nod_variance_supervision}")
+    print(f"[INFO] Control weight: {parameters.nod_evidence_gate_mode}; "
+          f"target={parameters.nod_evidence_gate_target}; "
+          f"gate lr={parameters.nod_evidence_gate_lr}; "
+          f"max logit shift={parameters.nod_evidence_gate_max_logit_shift}")
+    if parameters.nod_evidence_gate_mode == "ppo":
+        print(f"[INFO] Gate optimization: ordered replay length={parameters.nod_evidence_gate_sequence_length}; "
+              f"gate-only batches after warmup={parameters.nod_evidence_gate_only_iters}; "
+              f"joint Actor lr={parameters.lr}; message lr={parameters.nod_message_lr}")
+    if parameters.training_checkpoint_preupdate:
+        print(f"[INFO] Checkpoints use the scored pre-update policy; "
+              f"periodic control-batch interval={parameters.training_checkpoint_interval}")
 mappo_cavs(parameters=parameters)

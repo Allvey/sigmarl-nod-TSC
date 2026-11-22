@@ -786,6 +786,15 @@ class Parameters:
         nod_evidence_mode: str = "geometric",
         nod_evidence_target: str = "geometric",
         nod_evidence_loss_weight: float = 1.0,
+        nod_evidence_gate_mode: str = "fixed",
+        nod_evidence_gate_hidden_dim: int = 32,
+        nod_evidence_gate_max_logit_shift: float = 2.0,
+        nod_evidence_gate_lr: float = 5e-5,
+        nod_evidence_gate_sequence_length: int = 1,
+        nod_evidence_gate_only_iters: int = 0,
+        nod_evidence_gate_target: str = "evidence",
+        training_checkpoint_preupdate: bool = False,
+        training_checkpoint_interval: int = 0,
         nod_sensing_range: float = 0.8,
         nod_interaction_distance: float = 0.48,
         nod_conflict_radius: float = 0.08,
@@ -1289,6 +1298,65 @@ class Parameters:
         self.nod_evidence_mode = nod_evidence_mode
         self.nod_evidence_target = nod_evidence_target
         self.nod_evidence_loss_weight = nod_evidence_loss_weight
+        if nod_evidence_gate_mode not in {"fixed", "ppo"}:
+            raise ValueError("nod_evidence_gate_mode must be fixed or ppo")
+        if nod_evidence_gate_target not in {"evidence", "attention"}:
+            raise ValueError("nod_evidence_gate_target must be evidence or attention")
+        if nod_evidence_gate_target == "attention" and nod_evidence_gate_mode != "ppo":
+            raise ValueError("Learned unified attention requires PPO mode")
+        if (nod_evidence_gate_hidden_dim < 1
+                or not math.isfinite(nod_evidence_gate_max_logit_shift)
+                or not 0.0 < nod_evidence_gate_max_logit_shift <= 4.0
+                or not math.isfinite(nod_evidence_gate_lr) or nod_evidence_gate_lr <= 0.0):
+            raise ValueError("Invalid NOD evidence gate size, bounded logit shift or learning rate")
+        if nod_evidence_gate_mode == "ppo" and not (
+            is_using_nod_opinion and is_using_nod_actor
+            and nod_observation_mode == "local_kinematics"
+            and nod_evidence_target == "future" and nod_freeze_training
+            and nod_training_mode == "joint" and nod_actor_opinion_mode == "online"
+            and not is_using_prioritized_marl and safety_control_mode == "dgppo"
+        ):
+            raise ValueError("PPO evidence gate requires frozen future evidence, online local Actor and joint non-prioritized DGPPO control")
+        self.nod_evidence_gate_mode = nod_evidence_gate_mode
+        self.nod_evidence_gate_target = nod_evidence_gate_target
+        self.nod_evidence_gate_hidden_dim = int(nod_evidence_gate_hidden_dim)
+        self.nod_evidence_gate_max_logit_shift = nod_evidence_gate_max_logit_shift
+        self.nod_evidence_gate_lr = nod_evidence_gate_lr
+        if (not isinstance(nod_evidence_gate_sequence_length, int)
+                or nod_evidence_gate_sequence_length < 1
+                or not isinstance(nod_evidence_gate_only_iters, int)
+                or nod_evidence_gate_only_iters < 0):
+            raise ValueError("Gate replay length and gate-only iterations must be nonnegative integers; length >= 1")
+        if nod_evidence_gate_sequence_length > 1 or nod_evidence_gate_only_iters > 0:
+            if nod_evidence_gate_mode != "ppo" or safety_training_mode != "finetune":
+                raise ValueError("Staged/sequence evidence gate requires PPO safety fine-tuning")
+            if nod_evidence_gate_only_iters >= n_iters - safety_barrier_warmup_batches:
+                raise ValueError("Gate-only phase must leave iterations for joint fine-tuning")
+        if nod_evidence_gate_sequence_length > 1 and (
+            max_steps % nod_evidence_gate_sequence_length
+            or minibatch_size % nod_evidence_gate_sequence_length
+            or frames_per_batch % minibatch_size
+            or frames_per_batch % max_steps
+        ):
+            raise ValueError("Gate replay length must divide max_steps and minibatch_size; max_steps and minibatch_size must divide frames_per_batch")
+        self.nod_evidence_gate_sequence_length = nod_evidence_gate_sequence_length
+        self.nod_evidence_gate_only_iters = nod_evidence_gate_only_iters
+        if not isinstance(training_checkpoint_preupdate, bool):
+            raise ValueError("training_checkpoint_preupdate must be boolean")
+        if (not isinstance(training_checkpoint_interval, int)
+                or isinstance(training_checkpoint_interval, bool)
+                or training_checkpoint_interval < 0):
+            raise ValueError("training_checkpoint_interval must be a nonnegative integer")
+        if training_checkpoint_preupdate and not (
+            nod_evidence_gate_mode == "ppo" and nod_evidence_gate_target == "attention"
+            and nod_freeze_training and safety_training_mode == "finetune"
+            and is_save_intermediate_model and not is_continue_train
+        ):
+            raise ValueError("Scored pre-update checkpoints require a fresh shared-A fine-tuning branch with frozen NOD and intermediate saving")
+        if training_checkpoint_interval and not training_checkpoint_preupdate:
+            raise ValueError("Periodic scored checkpoints require pre-update checkpoint alignment")
+        self.training_checkpoint_preupdate = training_checkpoint_preupdate
+        self.training_checkpoint_interval = training_checkpoint_interval
         self.nod_sensing_range = nod_sensing_range
         self.nod_interaction_distance = nod_interaction_distance
         self.nod_conflict_radius = nod_conflict_radius
@@ -1434,6 +1502,7 @@ class SaveData:
         safety_metrics_list: [] = None,
         deadlock_metrics_list: [] = None,
         safety_value_metrics_list: [] = None,
+        checkpoint_selection: Optional[dict] = None,
     ):
         self.parameters = parameters
         self.episode_reward_mean_list = episode_reward_mean_list
@@ -1444,9 +1513,10 @@ class SaveData:
         self.safety_metrics_list = safety_metrics_list
         self.deadlock_metrics_list = deadlock_metrics_list
         self.safety_value_metrics_list = safety_value_metrics_list
+        self.checkpoint_selection = checkpoint_selection
 
     def to_dict(self):
-        return {
+        data = {
             "parameters": self.parameters.to_dict(),  # Convert Parameters instance to dict
             "episode_reward_mean_list": self.episode_reward_mean_list,
             "collision_agents_rate_list": self.collision_agents_rate_list,
@@ -1457,6 +1527,9 @@ class SaveData:
             "deadlock_metrics_list": self.deadlock_metrics_list,
             "safety_value_metrics_list": self.safety_value_metrics_list,
         }
+        if self.checkpoint_selection is not None:
+            data["checkpoint_selection"] = self.checkpoint_selection
+        return data
 
     @classmethod
     def from_dict(cls, dict_data):
@@ -1475,6 +1548,7 @@ class SaveData:
             safety_metrics_list=dict_data.get("safety_metrics_list", None),
             deadlock_metrics_list=dict_data.get("deadlock_metrics_list", None),
             safety_value_metrics_list=dict_data.get("safety_value_metrics_list", None),
+            checkpoint_selection=dict_data.get("checkpoint_selection", None),
         )
 
 

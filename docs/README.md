@@ -5,6 +5,15 @@ method, reusable repository details, or an earlier experiment.
 
 ## Current method
 
+- [LEARNING_IN_NOD_TECHNICAL_PLAN.md](current/LEARNING_IN_NOD_TECHNICAL_PLAN.md):
+  Paper-method specification: supervised future risk-mitigation evidence,
+  risk attention A learned during candidate supervision and frozen during
+  control learning, and an independent PPO evidence-assimilation weight beta.
+  Defines the extended NOD equation, Actor/message and opinion-adjusted safety
+  learning, architecture, losses, staged sequence replay, gradient boundaries,
+  theoretical conditions and reproduction configs. Alternatives and measured
+  tradeoffs are kept in appendices; later experiments do not automatically
+  change the main method.
 - [`RESPONSIBILITY_OPINION_TECHNICAL_REPORT.md`](current/RESPONSIBILITY_OPINION_TECHNICAL_REPORT.md):
   Chinese technical report covering the problem definition, counterfactual
   responsibility, network architecture, loss functions, training sequence,
@@ -21,7 +30,8 @@ method, reusable repository details, or an earlier experiment.
   official SigmaRL and XP-MARL checkpoints, commands, metrics, and outputs.
 - [`FUTURE_RISK_MITIGATION_OPINION_TECHNICAL_REPORT.md`](current/FUTURE_RISK_MITIGATION_OPINION_TECHNICAL_REPORT.md):
   implemented future-prediction extension and its current limitations; this is
-  not the selected method for the responsibility-opinion manuscript.
+  an alternative to the frozen-NOD future-evidence mainline, with a different
+  future-head placement and calibrated-lower-bound mechanism.
 
 The selected checkpoint, output locations, and common commands are maintained
 in [`EXPERIMENTS.md`](../EXPERIMENTS.md).
@@ -39,6 +49,11 @@ in [`EXPERIMENTS.md`](../EXPERIMENTS.md).
   dynamics, maps, and the historical environment design.
 
 ## Historical experiments
+
+- [LEARNING_IN_NOD_EXPLORATION_RECORD.md](archive/LEARNING_IN_NOD_EXPLORATION_RECORD.md):
+  Complete pre-finalization record of evidence/scale, beta and PPO shared-A
+  experiments, including joint adaptation and measured limitations. Historical
+  recommendations in this archive do not define the current paper method.
 
 `archive/` contains the earlier DGPPO minimal branch, staged NOD plans, fixed and
 opinion-alpha steps, PPO profile experiments, safety fine-tuning, road-safety

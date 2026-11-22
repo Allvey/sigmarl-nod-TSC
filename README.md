@@ -134,6 +134,19 @@ Detailed configuration roles are listed in
 [configs/README.md](configs/README.md). The current benchmark candidate and
 common commands are listed in [EXPERIMENTS.md](EXPERIMENTS.md).
 
+For the fixed paper-method specification, see
+[Learning in NOD technical plan](docs/current/LEARNING_IN_NOD_TECHNICAL_PLAN.md).
+The mainline separates supervised future risk-mitigation prediction from
+PPO evidence assimilation: risk attention A is learned during candidate
+supervision and frozen during control learning, while an independent beta
+modulates the evidence term of the extended NOD equation. Actor/message
+learning uses opinion-adjusted safety advantages. Architecture, losses, staged
+sequence replay and gradient boundaries are specified together. Alternatives
+and measured tradeoffs belong in the appendices rather than redefining the method.
+The complete earlier evidence/scale, beta and PPO shared-A exploration is kept
+in [Learning in NOD exploration record](docs/archive/LEARNING_IN_NOD_EXPLORATION_RECORD.md).
+This documentation choice does not switch the repository's default checkpoint.
+
 ## Customize Your Own Maps
 We support maps customized in <a href="https://josm.openstreetmap.de/" target="_blank">JOSM</a>, an open-source editor for ​OpenStreetMap. Follow these steps:
 - Install and open JOSM, click the green download button

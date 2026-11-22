@@ -215,7 +215,7 @@ class NODOpinionManager:
         )
 
     @torch.no_grad()
-    def online_step(self, tensordict):
+    def online_step(self, tensordict, *, evidence_gate=None):
         """Advance NOD exactly once from the current, causally available frame.
 
         The returned tensors are detached rollout context. PPO can shuffle them
@@ -310,6 +310,7 @@ class NODOpinionManager:
             initial_state=self.online_state,
             opinion_mask=opinion_mask,
             evidence_override=evidence_override,
+            evidence_gate=evidence_gate,
         )
         self.online_state = _detach_state(state)
         if self.predict_future_quantile:
@@ -332,7 +333,7 @@ class NODOpinionManager:
             ],
             dim=-1,
         )
-        return {
+        online = {
             "edge_context": edge_context.detach(),
             # Keep the Actor's physical neighbor graph unchanged. Outside an
             # active conflict z is neutral, but the Actor still sees the
@@ -348,6 +349,9 @@ class NODOpinionManager:
             "future_lower_bound": future_lower_bound.detach(),
             "future_lower_valid": future_lower_valid.detach(),
         }
+        if evidence_gate is not None:
+            online["gate_context"] = outputs["gate_context"][:, 0].detach()
+        return online
 
     def _losses(
         self,

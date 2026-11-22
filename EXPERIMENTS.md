@@ -21,6 +21,34 @@ The current method and evaluation notes are indexed in
 [`docs/current/`](docs/current/); historical implementation notes are kept in
 [`docs/archive/`](docs/archive/).
 
+## Fixed paper method and exploration records
+
+The paper method is specified in
+[Learning in NOD technical plan](docs/current/LEARNING_IN_NOD_TECHNICAL_PLAN.md):
+supervised future risk-mitigation evidence, A learned during candidate supervision
+and frozen during control learning, and an independent PPO beta that assimilates
+evidence in the extended NOD equation. Actor/message updates use opinion-adjusted
+safety advantages.
+
+Its candidate and preparatory fixed-weight control configurations are
+[future evidence candidate](configs/ablations/config_dgppo_nod_future_evidence_candidate.json)
+and [frozen-NOD control](configs/ablations/config_dgppo_nod_future_evidence_control.json).
+The preparatory control checkpoint prefix is
+outputs/current/ablations/dgppo_nod_future_evidence_control/reward7.08.
+The selected paper branch uses
+[staged sequence PPO beta](configs/ablations/config_dgppo_nod_future_evidence_ppo_gate_sequence_control.json),
+with the assessed checkpoint prefix
+outputs/current/ablations/dgppo_nod_future_evidence_ppo_gate_sequence_control/reward7.16.
+
+This method specification is distinct from the repository's default reward7.18
+benchmark candidate listed above. No default checkpoint has been switched.
+The staged sequence beta section below now corresponds to the paper mainline;
+the fixed-weight and PPO shared-A branches remain comparisons. Their full
+technical evolution is preserved in
+[the exploration archive](docs/archive/LEARNING_IN_NOD_EXPLORATION_RECORD.md).
+New experiments update this index and the plan's appendices unless an explicit
+method redesign is chosen.
+
 ## Current output layout
 
 ```text
@@ -323,6 +351,408 @@ geometric-evidence control remains an optional follow-up for isolating adaptive
 scaling itself. Merely changing variance at deployment on the trained new Actor
 would test distribution sensitivity, rather than provide a matched training
 ablation.
+
+## Supervised future evidence with PPO evidence weight
+
+This opt-in branch separates the frozen forecast from its task-dependent use.
+It loads the existing future-evidence candidate's full `final` bundle and freezes
+its GRU, evidence head, risk attention A and fixed variance 1. A new PPO-owned
+MLP (`73 -> 32 -> 1`, 2401 parameters) produces beta in (0,1), modifying only
+the evidence term of the KL opinion update. The bounded logit residual starts
+at zero, so beta initially matches A. The risk self-amplification term retains
+the frozen A. Beta is a control weight, not calibrated prediction confidence.
+
+The policy caches causal inputs and previous z during collection. PPO re-solves
+the current opinion step from those detached inputs so its actor objective can
+train beta; it never advances the online history during shuffled replay. This
+uses one-step truncated recurrent gradients, not a full history reconstruction.
+Future labels do not enter the control update. Safety advantages use the
+collected z and remain detached; beta learns through the actor's action
+probability and entropy, with the existing safety-adjusted advantage. The
+predictor's supervised weights remain frozen.
+
+Run the offline checks, then the single new control branch:
+
+```bash
+python -m pytest tests/test_nod_evidence_gate.py tests/test_nod_future_evidence.py tests/test_nod_actor.py tests/test_nod_opinion.py tests/test_dgppo_nod.py tests/test_nod_visualization.py -q
+python main_training.py --config configs/ablations/config_dgppo_nod_future_evidence_ppo_gate_control.json
+```
+
+No new candidate training is needed. Outputs are saved to
+`outputs/current/ablations/dgppo_nod_future_evidence_ppo_gate_control/`.
+Gate weights are stored in the policy checkpoint; the NOD version-8 sidecar is
+still the frozen forecast/filter parameters. Load the saved configuration and
+the complete bundle when evaluating or resuming. Introducing a fresh gate is
+allowed only from the explicit initialization prefix; inference loading is
+strict, and cannot silently discard a learned gate or initialize it randomly.
+
+After warmup, `nod_metrics_list` records `evidence_gate_ppo_updates`,
+`evidence_gate_grad_norm_mean` and `evidence_gate_parameter_delta_l2` to confirm
+optimization, plus the collected `evidence_weight_mean/min/max` and
+`evidence_weight_risk_delta_abs` for the active interactions. Existing
+`training_frozen=1` and `optimizer_updates=0` refer to the predictor's supervised
+optimizer, not to this PPO-owned gate. There may be no gate gradients in a batch
+with no active interactions. Warmup freezes the actor and gate together.
+
+Optional mixed-controller visualization:
+
+```bash
+python main_testing.py --model-path outputs/current/ablations/dgppo_nod_future_evidence_ppo_gate_control/ --env-seed 101 --no-speed-print --no-realtime
+```
+
+The overlay appends predicted e, learned beta and frozen A for each active pair.
+It reads the collected decision snapshot and does not advance the opinion state.
+Video and mixed-controller statistics stay under this branch's
+`rule_vehicle_visualization/<run-name>/` directory.
+
+For the first performance comparison, reuse the completed fixed-weight future
+control with the same candidate, seed and 70-iteration budget:
+
+```bash
+python utilities/evaluation_tase26.py \
+  --model-paths outputs/current/ablations/dgppo_nod_future_evidence_ppo_gate_control/ outputs/current/ablations/dgppo_nod_future_evidence_control/ \
+  --legends 'PPO evidence weight' 'Fixed evidence weight' \
+  --output-root outputs/benchmarks/future_evidence_ppo_gate_paper_metrics \
+  --scenarios intersection_2 --num-simulations 32 --steps 1200 --seed 101
+```
+
+The PPO-gate branch has completed 70 iterations and saved `reward6.95` plus all
+four `final` checkpoint modules. Every logged predictor entry has
+`training_frozen=1` and `optimizer_updates=0`. The gate begins updating at
+iteration 21, after 20 warmup iterations, with nonzero gradient and parameter
+change in all 50 subsequent iterations (1348 PPO minibatch updates in total).
+All recorded scalar NOD and Safety Value diagnostics are finite.
+
+Last-20-iteration training means compare as follows:
+
+| Training diagnostic | PPO evidence weight | Fixed evidence weight |
+| --- | ---: | ---: |
+| Episode return | 6.26325 | 6.42452 |
+| Agent collision flag fraction | 0.00003662 | 0.00006104 |
+| Road collision flag fraction | 0.00135498 | 0.00098877 |
+| Barrier violation fraction | 0.34016 | 0.24361 |
+| Opinion-changed advantage fraction | 0.01513 | 0.01647 |
+| PPO minibatch updates per iteration | 56.35 | 63.35 |
+
+The learned gate's mean gradient norm is `2.27e-5`, and mean per-iteration
+parameter displacement is `0.001746` over the last 20 iterations. Its collected
+mean beta is `0.41417`, but mean `abs(beta-A)` is only `0.001268`. Thus the PPO
+gradient path works, while the learned modulation currently remains small.
+These values do not establish that beta learned a useful state-dependent
+evidence-use strategy. Agent-collision flags improve during training, but return
+falls and road-collision flags rise; training diagnostics do not settle the
+independent performance ranking.
+
+The independent comparison is now complete at
+`outputs/benchmarks/future_evidence_ppo_gate_paper_metrics/intersection_2/steps_1200_envs_32_seed_101/`.
+It uses deterministic actions, no observation noise, 32 parallel simulations,
+1200 requested steps and evaluation seed 101. The selected checkpoints are
+`reward6.95` for the PPO gate and `reward7.08` for the fixed weight, each selected
+by training reward within its branch. The fixed branch's complete metric summary
+exactly reproduces the preceding future-evidence-versus-variance evaluation.
+
+| Independent metric | PPO evidence weight | Fixed evidence weight |
+| --- | ---: | ---: |
+| Agent-agent collision rate (%) | 0.28148 | 0.17462 |
+| Road collision rate (%) | 1.19892 | 1.66024 |
+| Summed collision rate (%) | 1.48040 | 1.83486 |
+| Normalized average speed (%) | 83.62932 | 82.71497 |
+| Penalized normalized speed (%) | 80.66853 | 79.04525 |
+| Centerline deviation (%) | 49.22356 | 54.34002 |
+| Action change (%) | 7.16872 | 7.48459 |
+
+The PPO branch improves road collision rate by 27.8% relative, normalized speed
+by 0.91435 percentage points, centerline deviation by 9.4% relative and action
+change by 4.2% relative. However, agent-agent collision rate increases by 61.2%
+relative (0.10686 percentage points). Its lower summed collision rate is driven
+by fewer road contacts and does not establish improved vehicle-vehicle safety.
+Collision rates count collision time steps, not independent accident events;
+the sum may count overlapping vehicle and road contacts twice. The evaluator
+preferentially computes speed from vehicles that were collision-free throughout
+the rollout, so it is not unconditional fleet throughput. Thirty-two parallel
+simulations with one evaluation seed are not thirty-two independent seed
+replications; no statistical significance or cross-scenario claim is made.
+
+The mechanism is implemented and its PPO gradient path works, but this first
+comparison does not support making learned evidence use the main contribution
+for improving vehicle-vehicle avoidance. With that objective prioritized, keep
+fixed-weight future evidence as the preferred candidate and retain the PPO gate
+as a tradeoff/ablation branch. The small beta-A displacement and jointly trained
+Actor do not establish that the gate itself caused the change in behavior or
+learned to deliberately accept more risk. Do not automatically increase the gate
+gain from this result. This comparison adds the learned gate and the corresponding
+one-step replay gradient path; the default project model has not been switched.
+
+## Staged sequence PPO evidence weight
+
+This follow-up addresses two optimization limitations of the first PPO gate:
+Actor/message updates compete with the new gate for the same KL budget, and
+flat one-step replay cuts credit from later actions to earlier evidence weights.
+It initializes all four modules from the trained fixed-weight controller
+`outputs/current/ablations/dgppo_nod_future_evidence_control/reward7.08`,
+introducing only a fresh gate at beta=A. The old gate branch remains reproducible.
+
+Configuration:
+`configs/ablations/config_dgppo_nod_future_evidence_ppo_gate_sequence_control.json`.
+The 70-iteration schedule is:
+
+| Iterations | Policy optimization | Other training |
+| --- | --- | --- |
+| 1–20 | Actor, messages and beta frozen | Safety Value warmup |
+| 21–30 | beta only; Actor/message parameter gradients cleared | Task Critic and Safety Value continue training |
+| 31–70 | beta plus Actor/messages jointly | Task Critic and Safety Value continue training |
+
+The phase counter advances only on rollout batches with an actual PPO update.
+The fixed forecast, GRU and risk attention A never receive control gradients or
+supervised updates. Actor/message initial LR is `1e-5`, gate LR is `5e-5`, and
+task Critic initial LR is `1e-5`; the existing LR schedule still applies.
+Target KL remains `0.01`, logit shift bound remains 2, variance remains 1,
+alpha gain remains 1 and opinion deadzone remains 0.1.
+
+Replay packs each environment's 128 collected steps into nonoverlapping ordered
+8-step windows. Each minibatch has 64 windows (512 frames). Shuffle windows,
+never time inside them. Starting opinions and the forecast/history caches are
+detached; recomputed opinions and beta inputs form a gradient chain within a
+window. Identity/generation changes, inactive interactions, cached state resets
+and available terminal flags cut that chain. Replay never advances online NOD
+state. This is truncated backpropagation through the opinion state, not through
+the frozen GRU or the simulator, and not through detached Safety advantages.
+
+Implementation includes checks for Actor/message parameter isolation during
+the gate-only phase. The counter is stored in the policy checkpoint together
+with its weights, so selecting an intermediate checkpoint retains its phase
+progress. Evaluation/resume requires that checkpoint's matching configuration.
+
+Run the offline checks and training locally:
+
+```bash
+python -m pytest tests/test_nod_evidence_gate_sequence.py tests/test_nod_evidence_gate.py tests/test_nod_future_evidence.py tests/test_nod_actor.py tests/test_nod_opinion.py tests/test_dgppo_nod.py -q
+python main_training.py --config configs/ablations/config_dgppo_nod_future_evidence_ppo_gate_sequence_control.json
+```
+
+Outputs go to
+`outputs/current/ablations/dgppo_nod_future_evidence_ppo_gate_sequence_control/`.
+Inspect `nod_metrics_list`: `evidence_gate_only_phase` should be 1 for the first
+10 active control batches and 0 afterward; `evidence_gate_body_parameter_delta_l2`
+must be zero in that first phase. `evidence_gate_training_batches`,
+`evidence_gate_ppo_updates`, `evidence_gate_parameter_delta_l2`, and
+`evidence_weight_risk_delta_abs` distinguish actual optimization from a
+gate remaining near initialization. `evidence_gate_preupdate_kl` checks numerical
+replay consistency before each batch's updates; it should be near zero.
+
+After training, use the existing visualization or one direct performance comparison:
+
+```bash
+python main_testing.py --model-path outputs/current/ablations/dgppo_nod_future_evidence_ppo_gate_sequence_control/ --env-seed 101 --no-speed-print --no-realtime
+python utilities/evaluation_tase26.py \
+  --model-paths outputs/current/ablations/dgppo_nod_future_evidence_ppo_gate_sequence_control/ outputs/current/ablations/dgppo_nod_future_evidence_control/ \
+  --legends 'Staged sequence PPO weight' 'Fixed evidence weight' \
+  --output-root outputs/benchmarks/future_evidence_ppo_gate_sequence_paper_metrics \
+  --scenarios intersection_2 --num-simulations 32 --steps 1200 --seed 101
+```
+
+Status: the user completed all 70 training iterations and the independent
+evaluation. The staged phase matches iterations 21–30 with exactly zero
+Actor/message parameter displacement; forecast supervision remains frozen.
+PPO made 18771 minibatch updates, compared with 1348 in the one-step branch.
+The best active-rollout checkpoint is `reward7.16` (iteration 43); later training
+returns decline, so the evaluation uses this intermediate checkpoint, not `final`.
+
+Under the command above, vehicle collision time rate is 0.09904% versus
+0.17462% for the fixed weight (43.3% relative reduction), normalized speed is
+81.70083% versus 82.71497%, road collision rate is 1.63678% versus 1.66024%,
+centerline deviation is 56.85823% versus 54.34002%, and action change is
+7.84812% versus 7.48459%. The fixed baseline exactly reproduces the previous
+evaluation. This supports a vehicle-safety tradeoff in the tested protocol,
+with lower speed and worse smoothness, not uniform performance dominance.
+The coding agent only read the artifacts and did not execute training or tests.
+For the method synthesis and evidence limits, see
+[Learning in NOD technical plan](docs/current/LEARNING_IN_NOD_TECHNICAL_PLAN.md).
+The new initialization, extra fine-tuning budget, learning rates and replay all differ
+from the original trial. This evaluates a practical optimization follow-up,
+not a single-factor ablation or a proof that beta alone causes any improvement.
+The default project model has not been switched.
+
+## Original-equation PPO attention with frozen future evidence
+
+The new branch retains the original NOD equation: one PPO-owned A multiplies
+both `tanh(a*z)` and `(w/v)*(e-z)`. The frozen risk attention A0 supplies the
+initialization prior; it is not a separate self-amplification coefficient.
+Future evidence, GRU and variance 1 remain frozen. Actor messages receive the
+same A as the opinion update, including during PPO replay. A can affect the
+Actor both through z and through its existing attention input coordinate.
+
+Configuration:
+`configs/ablations/config_dgppo_nod_future_evidence_ppo_attention_sequence_control.json`.
+It differs from the staged beta configuration only in
+`nod_evidence_gate_target="attention"` and its new output directory. Missing
+target fields default to `"evidence"` for the historical split-beta behavior.
+The complete `reward7.08` fixed-weight controller is the source. Reuse 20 Safety
+warmup iterations, 10 active A-only PPO batches, subsequent joint training and
+ordered 8-step replay. A-only updates preserve Actor/message parameters.
+No candidate NOD retraining is needed. Unified-A policies carry a semantic
+marker that prevents exchanging them with same-shaped beta policies.
+
+The user executes tests and training:
+
+```bash
+python -m pytest tests/test_nod_unified_attention.py tests/test_nod_evidence_gate.py tests/test_nod_evidence_gate_sequence.py tests/test_nod_opinion.py tests/test_nod_visualization.py -q
+python main_training.py --config configs/ablations/config_dgppo_nod_future_evidence_ppo_attention_sequence_control.json
+```
+
+Outputs:
+`outputs/current/ablations/dgppo_nod_future_evidence_ppo_attention_sequence_control/`.
+Logs add `attention_rl_mean`, `attention_prior_mean`,
+`attention_prior_delta_abs`, and `control_weight_target_attention`; phase,
+gradient and parameter-displacement diagnostics keep the `evidence_gate_*`
+names. The visualization shows `e`, `A_RL`, and `A0`.
+
+After training, use one direct comparison to confirm control performance:
+
+```bash
+python utilities/evaluation_tase26.py \
+  --model-paths outputs/current/ablations/dgppo_nod_future_evidence_ppo_attention_sequence_control/ outputs/current/ablations/dgppo_nod_future_evidence_control/ outputs/current/ablations/dgppo_nod_future_evidence_ppo_gate_sequence_control/ \
+  --legends 'PPO shared A' 'Fixed A' 'PPO beta' \
+  --output-root outputs/benchmarks/future_evidence_ppo_attention_sequence_paper_metrics \
+  --scenarios intersection_2 --num-simulations 32 --steps 1200 --seed 101
+```
+
+Optional visualization:
+
+```bash
+python main_testing.py --model-path outputs/current/ablations/dgppo_nod_future_evidence_ppo_attention_sequence_control/ --env-seed 101 --no-speed-print --no-realtime
+```
+
+Status: the user completed 70 training iterations and the three-model evaluation.
+PPO made 17290 minibatch updates; predictor supervision remained frozen and
+Actor/message displacement was zero in iterations 21–30. The last-20 mean A
+was 0.22844 versus prior A0=0.37191. Highest active-rollout reward was 7.33555
+at iteration 26, producing `reward7.34` during the A-only phase. Later joint
+training declined: last-20 reward averaged 4.73516. A-only fixed-state action
+mode changes averaged only 1.38e-6 per iteration, so parameter adaptation did
+not establish strong action sensitivity. Checkpoint filenames use pre-update
+rollout reward, while saving occurs after optimization.
+
+Under the command above, shared A / fixed A / split beta respectively achieved:
+
+| Metric | Shared A | Fixed A | Split beta |
+| --- | ---: | ---: | ---: |
+| Vehicle collision time rate % | 0.23978 | 0.17462 | 0.09904 |
+| Road collision time rate % | 1.61854 | 1.66024 | 1.63678 |
+| Normalized speed % | 82.95641 | 82.71497 | 81.70083 |
+| Centerline deviation % | 54.40619 | 54.34002 | 56.85823 |
+| Action change % | 7.50337 | 7.48459 | 7.84812 |
+
+Fixed A and beta exactly reproduced their previous exported metrics. Shared A
+increased vehicle collision time rate by 37.3% relative to fixed A, while speed
+rose by only 0.24144 percentage points. This run confirms implementation and
+learning, but does not support a vehicle-safety advantage for shared A. Split
+beta remains the safer tested candidate at a speed/smoothness cost; this single
+evaluation seed does not establish universal or statistically significant ranking.
+Results are in
+`outputs/benchmarks/future_evidence_ppo_attention_sequence_paper_metrics/intersection_2/steps_1200_envs_32_seed_101/metrics_summary.json`.
+The coding agent only analyzed saved artifacts and did not run training or simulation.
+
+The measured 43.3% reduction above belongs to the separate beta branch and is
+not evidence for this new A branch. Shared A also reinforces prior opinion;
+unlike beta alone, increasing it need not pull z toward the predicted e.
+Theory and gradient details for this exploratory branch are in section 13 of
+[the archived exploration record](docs/archive/LEARNING_IN_NOD_EXPLORATION_RECORD.md).
+
+## Shared-A joint adaptation with aligned checkpoints
+
+This independent follow-up retains the original shared-A equation and starts
+again from the fixed-weight controller `reward7.08`, rather than the degraded
+final shared-A policy. Forecast, GRU, risk prior and variance 1 remain frozen.
+After 20 Safety warmup iterations, use 50 joint Actor/message/A iterations;
+remove the A-only phase. Initial Actor/Critic LR is `1e-5`, message LR `3e-5`,
+A LR `5e-6`; use 30 PPO epochs, KL limit `0.005`, and the existing 8-step replay.
+Set `ppo_training_profile="current"` so these explicit settings take effect;
+the legacy `original` profile would force 60 epochs during parameter loading.
+GAE lambda and clip remain explicitly `0.9` and `0.2`.
+This is a practical optimization follow-up with several simultaneous changes,
+not a single-factor ablation or a demonstrated stability guarantee.
+
+Configuration:
+`configs/ablations/config_dgppo_nod_future_evidence_ppo_attention_joint_control.json`.
+
+```bash
+python -m pytest tests/test_nod_joint_control.py tests/test_nod_unified_attention.py tests/test_nod_evidence_gate_sequence.py tests/test_nod_visualization.py -q
+python main_training.py --config configs/ablations/config_dgppo_nod_future_evidence_ppo_attention_joint_control.json
+```
+
+Outputs:
+`outputs/current/ablations/dgppo_nod_future_evidence_ppo_attention_joint_control/`.
+`actor_message_grad_norm_mean` and `actor_message_parameter_delta_l2` supplement
+the existing A gradient, displacement and action-response diagnostics.
+
+`training_checkpoint_preupdate=true` snapshots the complete scored policy,
+critic, frozen NOD and Safety Value before the current rollout's optimizer
+updates. Best-score bundles keep the `rewardX.XX` convention; selection uses
+the raw reward and JSON `checkpoint_selection` retains the selected rollout
+iteration, pre-update policy-batch counter and timing even as history grows.
+Final weights remain post-update and are not assigned a rollout score.
+
+`training_checkpoint_interval=5` also stores scored bundles under
+`iterations/iteration0025/`, `iterations/iteration0030/`, etc. Each folder has
+the usual reward-named files and can be passed directly to existing evaluation.
+These folders survive best-checkpoint cleanup. Old configurations default to
+legacy checkpoint behavior; the aligned branch requires a fresh run and does
+not claim complete optimizer/collector resume support.
+
+After training, run one direct performance comparison:
+
+```bash
+python utilities/evaluation_tase26.py \
+  --model-paths outputs/current/ablations/dgppo_nod_future_evidence_ppo_attention_joint_control/ outputs/current/ablations/dgppo_nod_future_evidence_control/ outputs/current/ablations/dgppo_nod_future_evidence_ppo_gate_sequence_control/ \
+  --legends 'Joint shared A' 'Fixed A' 'PPO beta' \
+  --output-root outputs/benchmarks/future_evidence_ppo_attention_joint_paper_metrics \
+  --scenarios intersection_2 --num-simulations 32 --steps 1200 --seed 101
+```
+
+Status: the user completed all 70 training iterations. Saved settings confirm
+30 epochs, profile=current, A LR `5e-6`, message LR `3e-5`, and KL `0.005`.
+There were 4409 PPO minibatch updates and no predictor supervision updates;
+46 of 50 joint batches reached the KL stop. Last-20 mean rollout reward was
+6.26800 versus 4.73516 in the first shared-A run; final rollout reward was
+6.87110. This eases the prior late training decline, but is not an independent
+performance comparison.
+
+The last-20 mean absolute A-prior deviation was only 0.00088186 (mean A=0.39773,
+A0=0.39853), versus 0.15266 before. Message parameters update, but A outputs
+remain nearly fixed; improved training behavior cannot be attributed to A.
+The selected aligned bundle is `reward7.26`: rollout 37, raw reward 7.26266,
+16 prior policy-update batches. The subsequent iteration-37 optimization is
+logged as batch 17 and is not included in those saved weights. All 10 periodic
+bundles and the root best bundle are complete, with aligned JSON provenance.
+
+The user completed independent performance evaluation on 2026-10-14 under
+the command above. Fixed A and beta reproduce all previously exported metrics.
+
+| Metric | Joint shared A | Fixed A | Split beta |
+| --- | ---: | ---: | ---: |
+| Vehicle collision time rate % | 0.17723 | 0.17462 | 0.09904 |
+| Road collision time rate % | 1.73322 | 1.66024 | 1.63678 |
+| Normalized speed % | 82.48520 | 82.71497 | 81.70083 |
+| Centerline deviation % | 58.36640 | 54.34002 | 56.85823 |
+| Action change % | 7.62916 | 7.48459 | 7.84812 |
+
+Joint adaptation reduces vehicle collision time rate by 26.1% versus the first
+shared-A trial, but remains 1.49% above fixed A (absolute +0.002606 percentage
+points). Speed is 0.22977 percentage points lower; centerline deviation and
+action change are respectively 7.41% and 1.93% higher than fixed A. All five
+tested means favor fixed A over this follow-up; this is not a significance,
+equivalence or noninferiority test. Near-prior A outputs and improved training
+stability have not established a shared-A control benefit.
+
+Results are at
+`outputs/benchmarks/future_evidence_ppo_attention_joint_paper_metrics/intersection_2/steps_1200_envs_32_seed_101/metrics_summary.json`.
+Implementation, training and direct performance confirmation are complete.
+Fixed A remains the supported original-equation candidate; beta remains the
+safer tested vehicle-avoidance candidate at an efficiency/smoothness cost.
+No further parameter sweep or training change was made in this analysis.
+The coding agent reads saved artifacts and performs static checks only;
+the user executes runtime work.
 
 ## Future evidence versus learned error scale
 

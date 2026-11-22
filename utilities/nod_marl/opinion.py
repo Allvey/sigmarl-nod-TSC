@@ -24,6 +24,20 @@ def _atanh_safe(value: Tensor, eps: float) -> Tensor:
     return torch.atanh(value.clamp(-1.0 + eps, 1.0 - eps))
 
 
+def control_attentions(base_attention, control_weight, valid, target="evidence"):
+    """Resolve the original shared A or the opt-in split evidence weight.
+
+    Unified attention uses exactly the same tensor in both NOD terms. Outside
+    retained interactions keep the physical risk prior for Actor context.
+    """
+    if target == "attention":
+        attention = torch.where(valid.bool(), control_weight, base_attention)
+        return attention, attention
+    if target == "evidence":
+        return base_attention, control_weight
+    raise ValueError("Control weight target must be evidence or attention")
+
+
 def _stationarity(
     z: Tensor,
     z_previous: Tensor,
@@ -37,11 +51,12 @@ def _stationarity(
     observation_weight: float,
     kl_weight: float,
     eps: float,
+    evidence_attention: Optional[Tensor] = None,
 ) -> Tensor:
     mean = mean_intercept + slope * z
     likelihood_gradient = (
         float(observation_weight)
-        * attention
+        * (attention if evidence_attention is None else evidence_attention)
         * (mean - evidence)
         * slope
         / variance
@@ -67,6 +82,7 @@ class _ImplicitKLProximalSolve(torch.autograd.Function):
         mean_intercept: Tensor,
         slope: Tensor,
         variance: Tensor,
+        evidence_attention: Tensor,
         bifurcation_gain: float,
         observation_weight: float,
         kl_weight: float,
@@ -91,6 +107,7 @@ class _ImplicitKLProximalSolve(torch.autograd.Function):
                 observation_weight=observation_weight,
                 kl_weight=kl_weight,
                 eps=eps,
+                evidence_attention=evidence_attention,
             )
 
         with torch.no_grad():
@@ -121,6 +138,7 @@ class _ImplicitKLProximalSolve(torch.autograd.Function):
             mean_intercept,
             slope,
             variance,
+            evidence_attention,
             boundary,
         )
         ctx.bifurcation_gain = float(bifurcation_gain)
@@ -139,6 +157,7 @@ class _ImplicitKLProximalSolve(torch.autograd.Function):
             mean_intercept,
             slope,
             variance,
+            evidence_attention,
             boundary,
         ) = ctx.saved_tensors
         a = ctx.bifurcation_gain
@@ -152,7 +171,7 @@ class _ImplicitKLProximalSolve(torch.autograd.Function):
             kl_weight / (1.0 - z.square()).clamp_min(eps)
             + 1.0
             - attention * a * sech_squared
-            + obs_weight * attention * slope.square() / variance
+            + obs_weight * evidence_attention * slope.square() / variance
         ).clamp_min(1e-8)
         scale = -grad_output / curvature
         scale = torch.where(boundary, torch.zeros_like(scale), scale)
@@ -160,20 +179,19 @@ class _ImplicitKLProximalSolve(torch.autograd.Function):
         derivative_z_previous = -kl_weight / (
             1.0 - z_previous.square()
         ).clamp_min(eps)
-        derivative_attention = -torch.tanh(a * z) + (
-            obs_weight * (mean - evidence) * slope / variance
-        )
-        derivative_evidence = -obs_weight * attention * slope / variance
-        derivative_mean_intercept = obs_weight * attention * slope / variance
+        derivative_attention = -torch.tanh(a * z)
+        derivative_evidence_attention = obs_weight * (mean - evidence) * slope / variance
+        derivative_evidence = -obs_weight * evidence_attention * slope / variance
+        derivative_mean_intercept = obs_weight * evidence_attention * slope / variance
         derivative_slope = (
             obs_weight
-            * attention
+            * evidence_attention
             * ((mean - evidence) + slope * z)
             / variance
         )
         derivative_variance = (
             -obs_weight
-            * attention
+            * evidence_attention
             * (mean - evidence)
             * slope
             / variance.square()
@@ -186,6 +204,7 @@ class _ImplicitKLProximalSolve(torch.autograd.Function):
             scale * derivative_mean_intercept,
             scale * derivative_slope,
             scale * derivative_variance,
+            scale * derivative_evidence_attention,
             None,
             None,
             None,
@@ -209,6 +228,7 @@ def kl_proximal_update(
     eps: float = 1e-4,
     max_iterations: int = 48,
     tolerance: float = 1e-7,
+    evidence_attention: Optional[Tensor] = None,
 ) -> Tensor:
     """Solve one bounded Bernoulli-KL proximal opinion update."""
 
@@ -219,6 +239,7 @@ def kl_proximal_update(
         mean_intercept,
         slope,
         variance,
+        attention if evidence_attention is None else evidence_attention,
         float(bifurcation_gain),
         float(observation_weight),
         float(kl_weight),
@@ -241,13 +262,16 @@ def kl_objective(
     observation_weight: float,
     kl_weight: float,
     eps: float = 1e-6,
+    evidence_attention: Optional[Tensor] = None,
 ) -> Tensor:
     """The scalar objective minimized by :func:`kl_proximal_update`."""
 
     a = float(bifurcation_gain)
     prior = 0.5 * z.square() - attention / a * torch.log(torch.cosh(a * z))
     mean = mean_intercept + slope * z
-    likelihood = 0.5 * float(observation_weight) * attention * (
+    likelihood = 0.5 * float(observation_weight) * (
+        attention if evidence_attention is None else evidence_attention
+    ) * (
         (evidence - mean).square() / variance + torch.log(variance)
     )
     probability = ((1.0 + z) * 0.5).clamp(eps, 1.0 - eps)
@@ -516,6 +540,7 @@ class NODOpinionModel(nn.Module):
         opinion_mask: Optional[Tensor] = None,
         evidence_override: Optional[Tensor] = None,
         reference_variance: bool = False,
+        evidence_gate=None,
     ) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
         """Unroll edge state with identity-aware reset and short-gap retention."""
 
@@ -571,6 +596,8 @@ class NODOpinionModel(nn.Module):
             "resumed_edges": pair_features.new_zeros(()),
             "expired_edges": pair_features.new_zeros(()),
         }
+        if evidence_gate is not None:
+            output_lists.update(gate_context=[], evidence_attention=[])
 
         for time_index in range(pair_features.shape[1]):
             current = pair_features[:, time_index]
@@ -653,6 +680,21 @@ class NODOpinionModel(nn.Module):
                 self.risk_temperature * (risk_score - self.risk_threshold)
             )
             z_before_update = z_state
+            evidence_attention = attention
+            if evidence_gate is not None:
+                # Sufficient causal inputs for one-step PPO replay. The last
+                # five coordinates are A, e, previous z, variance, valid.
+                gate_context = torch.cat([
+                    hidden, self.risk_components(current),
+                    attention.unsqueeze(-1), evidence_used.unsqueeze(-1),
+                    z_before_update.unsqueeze(-1), variance.unsqueeze(-1),
+                    (opinion_active & retained).to(current.dtype).unsqueeze(-1),
+                ], dim=-1)
+                evidence_attention = evidence_gate(gate_context)
+                attention, evidence_attention = control_attentions(
+                    attention, evidence_attention, gate_context[..., -1],
+                    getattr(evidence_gate, "target", "evidence"),
+                )
             # The independent error loss trains the scale. Opinion calibration
             # trains attention, but must not tune that scale to fit its own z.
             update_variance = (
@@ -672,6 +714,7 @@ class NODOpinionModel(nn.Module):
                 eps=self.z_epsilon,
                 max_iterations=self.root_iterations,
                 tolerance=self.root_tolerance,
+                evidence_attention=evidence_attention,
             )
             z_state = torch.where(
                 opinion_active & retained,
@@ -703,13 +746,14 @@ class NODOpinionModel(nn.Module):
                 observation_weight=self.observation_weight,
                 kl_weight=self.kl_weight,
                 eps=self.z_epsilon,
+                evidence_attention=evidence_attention,
             ).abs()
             sech_squared = 1.0 - torch.tanh(self.bifurcation_gain * output_z).square()
             curvature = (
                 self.kl_weight / (1.0 - output_z.square()).clamp_min(self.z_epsilon)
                 + 1.0
                 - attention * self.bifurcation_gain * sech_squared
-                + self.observation_weight * attention * slope.square() / variance
+                + self.observation_weight * evidence_attention * slope.square() / variance
             )
             boundary = output_z.abs() >= (1.0 - 2.0 * self.z_epsilon)
             residual = torch.where(
@@ -759,6 +803,9 @@ class NODOpinionModel(nn.Module):
             output_lists["curvature"].append(curvature)
             output_lists["boundary"].append(boundary & opinion_active & retained)
             output_lists["opinion_active"].append(opinion_active)
+            if evidence_gate is not None:
+                output_lists["gate_context"].append(gate_context)
+                output_lists["evidence_attention"].append(evidence_attention)
 
             event_counts["new_edges"] += new_edge.sum().to(pair_features.dtype)
             event_counts["resumed_edges"] += resumed.sum().to(pair_features.dtype)

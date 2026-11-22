@@ -411,6 +411,26 @@ class SafetyValueManager:
                                          actor_warmup='frozen_until_value_fit_batches',
                                          finetune_lr=parameters.safety_finetune_lr,
                                          target_kl=parameters.safety_finetune_target_kl)
+        if getattr(parameters, "nod_evidence_gate_mode", "fixed") == "ppo":
+            self.barrier_contract.update(
+                evidence_gate="ppo_bounded_logit_residual_one_step_replay",
+                evidence_gate_max_logit_shift=parameters.nod_evidence_gate_max_logit_shift,
+                evidence_gate_hidden_dim=parameters.nod_evidence_gate_hidden_dim,
+                predictor="frozen_future_evidence",
+            )
+            if parameters.nod_evidence_gate_sequence_length > 1:
+                self.barrier_contract.update(
+                    evidence_gate="ppo_bounded_logit_residual_sequence_replay",
+                    evidence_gate_sequence_length=parameters.nod_evidence_gate_sequence_length,
+                    evidence_gate_boundary="cached_detached_opinion_identity_and_terminal_reset",
+                )
+            if parameters.nod_evidence_gate_only_iters > 0:
+                self.barrier_contract.update(evidence_gate_only_iters=parameters.nod_evidence_gate_only_iters)
+            if parameters.nod_evidence_gate_target == "attention":
+                self.barrier_contract.update(
+                    control_weight_target="unified_attention",
+                    attention_rule="same_ppo_A_in_self_amplification_evidence_and_actor_context",
+                )
         self.model = self.target = self.optimizer = None
         self.last_load_info = "disabled" if not self.enabled else "fresh shadow Value"
         if not self.enabled:

@@ -83,6 +83,7 @@ from utilities.helper_training import (
     save,
     compute_td_error,
     get_observation_key,
+    delete_files_with_lower_mean_reward,
 )
 
 from scenarios.road_traffic import ScenarioRoadTraffic
@@ -96,6 +97,8 @@ from utilities.nod_marl.deadlock import DeadlockCriticManager
 from utilities.nod_marl.safety_value import SafetyValueManager, DeterministicSafetySampler
 from utilities.nod_marl.barrier import prepare_barrier_advantage
 from utilities.nod_marl.finetune import actor_warmup_frozen, approximate_policy_kl
+from utilities.nod_marl.gate_training import ordered_gate_windows, freeze_actor_body_gradients
+from utilities.nod_marl.checkpointing import snapshot_state, write_scored_checkpoint
 
 class BoundedNormalParamExtractor(NormalParamExtractor):
     """Keep the original scale mapping and floor, with a fixed upper bound."""
@@ -189,6 +192,28 @@ def _load_policy_checkpoint(
     """
 
     state_dict = torch.load(path, map_location=parameters.device)
+    current = policy.state_dict()
+    gate_keys = {key for key in current if ".evidence_gate." in key}
+    source_gate_keys = {key for key in state_dict if ".evidence_gate." in key}
+    if gate_keys or source_gate_keys:
+        # Only a fresh, explicitly pinned branch may introduce a new gate.
+        # Evaluation/resume must never silently drop or randomize its weights.
+        fresh_gate = (
+            gate_keys and not source_gate_keys and not parameters.is_load_model
+            and parameters.training_init_checkpoint
+            and os.path.realpath(path) == os.path.realpath(
+                parameters.training_init_checkpoint + "_policy.pth")
+            and set(current) - set(state_dict) == gate_keys
+            and not set(state_dict) - set(current)
+            and all(current[key].shape == value.shape for key, value in state_dict.items())
+        )
+        if fresh_gate:
+            policy.load_state_dict(state_dict, strict=False)
+            target = getattr(parameters, "nod_evidence_gate_target", "evidence")
+            print(f"[INFO] Preserved source Actor/message weights; initialized PPO {target} weight at frozen risk prior")
+            return "gate_initialized"
+        policy.load_state_dict(state_dict)
+        return "loaded"
     try:
         policy.load_state_dict(state_dict)
         return "loaded"
@@ -408,6 +433,12 @@ def mappo_cavs(parameters: Parameters):
             ),
             message_scale=float(getattr(parameters, "nod_message_scale", 0.1)),
             opinion_mode=str(getattr(parameters, "nod_actor_opinion_mode", "online")),
+            evidence_gate_mode=parameters.nod_evidence_gate_mode,
+            evidence_gate_hidden_dim=parameters.nod_evidence_gate_hidden_dim,
+            evidence_gate_max_logit_shift=parameters.nod_evidence_gate_max_logit_shift,
+            evidence_gate_sequence_length=parameters.nod_evidence_gate_sequence_length,
+            evidence_gate_only_iters=parameters.nod_evidence_gate_only_iters,
+            evidence_gate_target=parameters.nod_evidence_gate_target,
         ).to(parameters.device)
         actor_observation_key = NOD_ACTOR_OBSERVATION_KEY
         actor_observation_dim = actor_input_module.actor_input_dim
@@ -824,6 +855,22 @@ def mappo_cavs(parameters: Parameters):
         for parameter in trainable_parameters
         if id(parameter) not in message_parameter_ids
     ]
+    gate_parameter_ids = (
+        {id(p) for p in actor_input_module.evidence_gate.parameters()}
+        if use_nod_actor and parameters.nod_evidence_gate_mode == "ppo" else set()
+    )
+    gate_parameters = [p for p in task_parameters if id(p) in gate_parameter_ids]
+    if len(gate_parameters) != len(gate_parameter_ids):
+        raise RuntimeError("The evidence gate is not fully registered in the PPO optimizer")
+    task_parameters = [p for p in task_parameters if id(p) not in gate_parameter_ids]
+    actor_body_parameters = [
+        p for p in trainable_parameters
+        if id(p) in policy_parameter_ids and id(p) not in gate_parameter_ids
+    ]
+    if gate_parameters and len(actor_body_parameters) != len(policy_parameter_ids - gate_parameter_ids):
+        raise RuntimeError("All Actor/message parameters must be identified for staged gate training")
+    sequence_gate = bool(gate_parameters and parameters.nod_evidence_gate_sequence_length > 1)
+    gate_sequence_generator = torch.Generator(device="cpu").manual_seed(int(parameters.seed or 0) ^ 0x47415445)
     if message_parameters:
         message_lr = float(getattr(parameters, "nod_message_lr", 5e-5))
         lr_floor_ratio = float(parameters.lr_min) / max(float(parameters.lr), 1e-12)
@@ -855,6 +902,13 @@ def mappo_cavs(parameters: Parameters):
             ]
         )
 
+    if gate_parameters:
+        gate_lr = float(parameters.nod_evidence_gate_lr)
+        optim.add_param_group(dict(
+            params=gate_parameters, lr=gate_lr, initial_lr=gate_lr,
+            minimum_lr=gate_lr * float(parameters.lr_min) / max(float(parameters.lr), 1e-12),
+        ))
+
     pbar = tqdm(total=parameters.n_iters, desc="epi_rew_mean = 0")
 
     episode_reward_mean_list = []
@@ -870,7 +924,10 @@ def mappo_cavs(parameters: Parameters):
                       if safety_value_manager.enabled and not candidate_only else None)
 
     t_start = time.time()
-    finetune_actor_batches = 0
+    gate_progress = (getattr(actor_input_module.evidence_gate, "training_batches", None)
+                     if gate_parameters else None)
+    finetune_actor_batches = int(gate_progress.item()) if gate_progress is not None else 0
+    aligned_best_score = -math.inf
     try:
         for tensordict_data in collector:
             # Snapshot the same pre-PPO policy on an isolated deterministic rollout.
@@ -917,6 +974,41 @@ def mappo_cavs(parameters: Parameters):
             kl_last = kl_max = 0.
             if finetune:
                 barrier_metrics['finetune_actor_frozen'] = float(freeze_actor)
+            gate_only = bool(gate_parameters and not freeze_actor
+                             and finetune_actor_batches < parameters.nod_evidence_gate_only_iters)
+            scored_snapshot = None
+            scored_selection = None
+            scored_best = scored_periodic = False
+            if parameters.training_checkpoint_preupdate and not freeze_actor:
+                # Collection is complete but PPO, NOD and Value have not updated
+                # any weights. Save this exact bundle for the score of this rollout.
+                score_done = tensordict_data.get(("next", "agents", "done"))
+                scored_reward = float(tensordict_data.get(
+                    ("next", "agents", "episode_reward"))[score_done].mean())
+                scored_best = math.isfinite(scored_reward) and scored_reward > aligned_best_score
+                control_batch = pbar.n + 1 - parameters.safety_barrier_warmup_batches
+                interval = parameters.training_checkpoint_interval
+                scored_periodic = bool(math.isfinite(scored_reward) and interval
+                                       and control_batch > 0 and control_batch % interval == 0)
+                if scored_best or scored_periodic:
+                    scored_states = dict(
+                        policy=policy.state_dict(), critic=critic.state_dict(),
+                        nod=checkpoint_nod_manager.checkpoint_state(),
+                        safety_value=safety_value_manager.checkpoint_state(),
+                    )
+                    if safety_manager.enabled:
+                        scored_states['safety_critic'] = safety_manager.checkpoint_state()
+                    if deadlock_manager.enabled:
+                        scored_states['deadlock_critic'] = deadlock_manager.checkpoint_state()
+                    scored_snapshot = snapshot_state(scored_states)
+                    scored_selection = dict(
+                        weights_timing="before_current_rollout_optimization",
+                        reward_source="collected_rollout_episode_mean",
+                        scored_iteration=int(pbar.n + 1),
+                        policy_update_batches=int(finetune_actor_batches),
+                        phase="A_only" if gate_only else "joint",
+                        raw_reward=scored_reward,
+                    )
             if barrier_metrics['barrier_active']:
                 # NOD's preceding supervised step may leave gradients attached.
                 # Clear those before checking isolation of this PPO backward.
@@ -936,12 +1028,19 @@ def mappo_cavs(parameters: Parameters):
             data_view = tensordict_data.reshape(
                 -1
             )  # Flatten the batch size to shuffle data
-            replay_buffer.extend(data_view)
+            sequence_data = (ordered_gate_windows(tensordict_data, parameters.nod_evidence_gate_sequence_length)
+                             if sequence_gate else None)
+            if sequence_data is None:
+                replay_buffer.extend(data_view)
             action_probe = None
             if parameters.safety_control_mode in {'barrier_opinion', 'dgppo'} or (
                     parameters.nod_freeze_training and parameters.safety_control_mode == 'barrier_fixed'):
                 with torch.no_grad():
-                    action_probe = data_view[:min(128, data_view.numel())].detach().clone()
+                    if sequence_data is not None:
+                        probe_windows = max(1, 128 // parameters.nod_evidence_gate_sequence_length)
+                        action_probe = sequence_data[:min(probe_windows, sequence_data.shape[0])].detach().clone()
+                    else:
+                        action_probe = data_view[:min(128, data_view.numel())].detach().clone()
                     before_mode = loss_module.actor.get_dist(action_probe, params=loss_module.actor_params).mode.clone()
                     before_scale = action_probe.get(('agents', 'scale')).clone()
                     if parameters.safety_control_mode == 'dgppo':
@@ -950,11 +1049,29 @@ def mappo_cavs(parameters: Parameters):
             # replay_buffer.update_tensordict_priority() # Not necessary, as priorities were updated automatically when calling `replay_buffer.extend()`
 
             last_loss_value = None
+            gate_before = [p.detach().clone() for p in gate_parameters]
+            message_before = [p.detach().clone() for p in message_parameters] if gate_parameters else []
+            body_before = [p.detach().clone() for p in actor_body_parameters] if gate_parameters else []
+            gate_grad_norms = []
+            message_grad_norms = []
+            gate_preupdate_kl = 0.0
+            if sequence_gate and action_probe is not None:
+                gate_preupdate_kl = float(approximate_policy_kl(
+                    before_log_prob, action_probe.get(('agents', 'sample_log_prob'))))
             for _ in range(0 if freeze_actor else parameters.num_epochs):
+                if sequence_data is not None:
+                    sequence_order = torch.randperm(sequence_data.shape[0], generator=gate_sequence_generator)
                 # print("[DEBUG] for _ in range(parameters.num_epochs):")
-                for _ in range(parameters.frames_per_batch // parameters.minibatch_size):
+                for minibatch_index in range(parameters.frames_per_batch // parameters.minibatch_size):
                     # sample a batch of data
-                    mini_batch_data, info = replay_buffer.sample(return_info=True)
+                    if sequence_data is not None:
+                        windows_per_batch = parameters.minibatch_size // parameters.nod_evidence_gate_sequence_length
+                        indices = sequence_order[
+                            minibatch_index * windows_per_batch:(minibatch_index + 1) * windows_per_batch
+                        ].to(sequence_data.device)
+                        mini_batch_data = sequence_data[indices].detach().clone()
+                    else:
+                        mini_batch_data, info = replay_buffer.sample(return_info=True)
 
                     loss_vals = loss_module(mini_batch_data)
 
@@ -977,9 +1094,21 @@ def mappo_cavs(parameters: Parameters):
                     assert not combined_loss.isnan().any()
                     assert not combined_loss.isinf().any()
 
-                    # PPO updates the Actor, message aggregator and task Critic.
+                    # PPO updates Actor, message aggregator, optional evidence
+                    # gate and task Critic; the NOD predictor remains separate.
                     optim.zero_grad()
                     combined_loss.backward()
+                    freeze_actor_body_gradients(actor_body_parameters, gate_only)
+                    if gate_parameters:
+                        squared_grad = sum(
+                            float(p.grad.detach().square().sum())
+                            for p in gate_parameters if p.grad is not None
+                        )
+                        gate_grad_norms.append(squared_grad ** 0.5)
+                        message_grad_norms.append(sum(
+                            float(p.grad.detach().square().sum())
+                            for p in message_parameters if p.grad is not None
+                        ) ** 0.5)
                     if barrier_metrics['barrier_active']:
                         task_advantage = mini_batch_data.get(('agents', 'barrier_task_advantage'))
                         barrier_actor_updates += int(bool((mini_batch_data.get(
@@ -1042,6 +1171,8 @@ def mappo_cavs(parameters: Parameters):
                     break
             if finetune:
                 finetune_actor_batches += int(ppo_updates > 0)
+                if gate_progress is not None:
+                    gate_progress.fill_(finetune_actor_batches)
                 barrier_metrics.update(finetune_ppo_updates=float(ppo_updates),
                                        finetune_kl_last=kl_last, finetune_kl_max=kl_max,
                                        finetune_kl_stopped=float(kl_stopped))
@@ -1063,8 +1194,9 @@ def mappo_cavs(parameters: Parameters):
                 if candidate_only
                 else safety_manager.finish_actor_update()
             )
-            # NOD learns directly from ordered physical pair features. PPO trains
-            # only the stateless message aggregator from cached online context.
+            # Supervised NOD uses ordered physical pair features. The optional
+            # PPO gate instead learns through scalar-opinion replay inside the
+            # Actor (one step or an ordered truncated recurrent window).
             nod_update_interval = max(
                 1, int(getattr(parameters, "nod_update_interval", 10))
             )
@@ -1090,6 +1222,54 @@ def mappo_cavs(parameters: Parameters):
                 parameters.nod_freeze_training
             )
             last_nod_metrics['candidate_only'] = float(candidate_only)
+            if gate_parameters:
+                last_nod_metrics.update(
+                    evidence_gate_ppo_updates=float(ppo_updates),
+                    actor_message_grad_norm_mean=(sum(message_grad_norms) / len(message_grad_norms)
+                                                  if message_grad_norms else 0.0),
+                    actor_message_parameter_delta_l2=sum(
+                        float((p.detach() - before).square().sum())
+                        for p, before in zip(message_parameters, message_before)
+                    ) ** 0.5,
+                    evidence_gate_grad_norm_mean=(sum(gate_grad_norms) / len(gate_grad_norms)
+                                                 if gate_grad_norms else 0.0),
+                    evidence_gate_parameter_delta_l2=sum(
+                        float((p.detach() - before).square().sum())
+                        for p, before in zip(gate_parameters, gate_before)
+                    ) ** 0.5,
+                    evidence_gate_only_phase=float(gate_only),
+                    control_weight_target_attention=float(parameters.nod_evidence_gate_target == "attention"),
+                    evidence_gate_training_batches=float(finetune_actor_batches),
+                    evidence_gate_replay_sequence_length=float(parameters.nod_evidence_gate_sequence_length),
+                    evidence_gate_preupdate_kl=gate_preupdate_kl,
+                    evidence_gate_body_parameter_delta_l2=sum(
+                        float((p.detach() - before).square().sum())
+                        for p, before in zip(actor_body_parameters, body_before)
+                    ) ** 0.5,
+                )
+                if gate_only:
+                    assert all(torch.equal(p.detach(), before)
+                               for p, before in zip(actor_body_parameters, body_before)), (
+                        "Gate-only optimization must preserve Actor and message weights"
+                    )
+                gate_context = tensordict_data.get(('agents', 'info', 'nod_evidence_gate_context'))
+                weight = tensordict_data.get(('agents', 'info', 'nod_evidence_weight'))
+                valid = gate_context[..., -1].bool()
+                if bool(valid.any()):
+                    last_nod_metrics.update(
+                        evidence_weight_mean=float(weight[valid].mean()),
+                        evidence_weight_min=float(weight[valid].min()),
+                        evidence_weight_max=float(weight[valid].max()),
+                        evidence_weight_risk_delta_abs=float(
+                            (weight[valid] - gate_context[..., -5][valid]).abs().mean()),
+                    )
+                    if parameters.nod_evidence_gate_target == "attention":
+                        last_nod_metrics.update(
+                            attention_rl_mean=float(weight[valid].mean()),
+                            attention_prior_mean=float(gate_context[..., -5][valid].mean()),
+                            attention_prior_delta_abs=float(
+                                (weight[valid] - gate_context[..., -5][valid]).abs().mean()),
+                        )
             nod_manager.reset_online_state()
             if learner_nod_manager is not None:
                 learner_nod_manager.reset_online_state()
@@ -1235,7 +1415,38 @@ def mappo_cavs(parameters: Parameters):
                 save_data.deadlock_metrics_list = deadlock_metrics_list
                 save_data.safety_value_metrics_list = safety_value_metrics_list
 
-                if episode_reward_mean > parameters.episode_reward_intermediate:
+                if parameters.training_checkpoint_preupdate:
+                    if scored_best:
+                        aligned_best_score = scored_selection['raw_reward']
+                        parameters.episode_reward_intermediate = round(aligned_best_score, 2)
+                        parameters.episode_reward_mean_current = parameters.episode_reward_intermediate
+                        parameters.model_name = f"reward{parameters.episode_reward_intermediate:.2f}"
+                        save_data.checkpoint_selection = dict(scored_selection)
+                        write_scored_checkpoint(
+                            parameters.where_to_save, parameters.model_name,
+                            scored_snapshot, save_data.to_dict(),
+                        )
+                        delete_files_with_lower_mean_reward(parameters)
+                    if scored_periodic:
+                        periodic_directory = os.path.join(parameters.where_to_save, 'iterations',
+                            f"iteration{scored_selection['scored_iteration']:04d}") + os.sep
+                        prefix = f"reward{scored_selection['raw_reward']:.2f}"
+                        periodic_data = save_data.to_dict()
+                        periodic_data['checkpoint_selection'] = dict(scored_selection)
+                        periodic_data['parameters'] = dict(periodic_data['parameters'],
+                            where_to_save=periodic_directory, model_name=prefix,
+                            episode_reward_mean_current=round(scored_selection['raw_reward'], 2))
+                        write_scored_checkpoint(periodic_directory, prefix,
+                                                scored_snapshot, periodic_data)
+                    # Preserve the chosen snapshot's provenance while extending
+                    # its diagnostic history, just as the legacy JSON does.
+                    if save_data.checkpoint_selection is not None:
+                        parameters.episode_reward_mean_current = parameters.episode_reward_intermediate
+                        parameters.model_name = f"reward{parameters.episode_reward_intermediate:.2f}"
+                        path = os.path.join(parameters.where_to_save, parameters.model_name + '_data.json')
+                        with open(path, 'w') as handle:
+                            json.dump(save_data.to_dict(), handle, indent=4)
+                elif episode_reward_mean > parameters.episode_reward_intermediate:
                     # Save the model if it improves the mean episode reward sufficiently enough
                     parameters.episode_reward_intermediate = episode_reward_mean
 

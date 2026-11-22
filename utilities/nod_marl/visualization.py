@@ -58,5 +58,27 @@ def opinion_alpha_lines(td, manager, *, agent_index=0, env_index=0, decision_tim
                 reason = "deadzone: fixed"
             else:
                 reason = "non-safe: fixed"
-        lines.append(f"A{agent_index + 1} -> A{j + 1}  z={z}  alpha={alpha}  [{reason}]")
+        suffix = ""
+        if getattr(p, "nod_evidence_gate_mode", "fixed") == "ppo":
+            gate = snapshot.get(('agents', 'info', 'nod_evidence_gate_context'), default=None)
+            weights = snapshot.get(('agents', 'info', 'nod_evidence_weight'), default=None)
+            ids = snapshot.get(('agents', 'info', 'nod_neighbor_indices'), default=None)
+            if gate is not None and weights is not None and ids is not None:
+                slots = (ids[0, agent_index].long() == j).nonzero().flatten()
+                if slots.numel():
+                    slot = int(slots[0])
+                    cached = gate[0, agent_index, slot]
+                    if bool(cached[-1]) and known:
+                        if getattr(p, "nod_evidence_gate_target", "evidence") == "attention":
+                            suffix = (f"  e={float(cached[-4]):+.3f}"
+                                      f"  A_RL={float(weights[0, agent_index, slot]):.3f}"
+                                      f"  A0={float(cached[-5]):.3f}")
+                        else:
+                            suffix = (f"  e={float(cached[-4]):+.3f}"
+                                      f"  beta={float(weights[0, agent_index, slot]):.3f}"
+                                      f"  A={float(cached[-5]):.3f}")
+            if not suffix:
+                suffix = ("  A_RL=N/A" if getattr(p, "nod_evidence_gate_target", "evidence") == "attention"
+                          else "  beta=N/A")
+        lines.append(f"A{agent_index + 1} -> A{j + 1}  z={z}  alpha={alpha}  [{reason}]" + suffix)
     return lines

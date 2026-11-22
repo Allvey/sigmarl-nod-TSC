@@ -2970,6 +2970,13 @@ class ScenarioRoadTraffic(BaseScenario):
                     B, nod_k_neighbors
                 ),
             }
+            if getattr(self.parameters, "nod_evidence_gate_mode", "fixed") == "ppo":
+                nod_actor_placeholders.update(
+                    nod_evidence_gate_context=base_obs.new_zeros(
+                        B, nod_k_neighbors, nod_context_dim + 3
+                    ),
+                    nod_evidence_weight=base_obs.new_zeros(B, nod_k_neighbors),
+                )
 
         # VMAS clones info before done()/auto-reset. Capture physical margins
         # here so terminal collision labels survive a subsequent reset.
