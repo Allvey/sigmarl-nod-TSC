@@ -1,31 +1,67 @@
 # Benchmark configurations
 
-The formal paper-metric comparison is run through
-`utilities/evaluation_tase26.py`. It reuses the same `Evaluation` class as the
-ITSC24 and ICRA25 scripts while adding matched seeds, official-checkpoint
-compatibility, and CSV/JSON export.
+## Four-method, five-metric evaluation
 
-For a new control branch, use `--model-paths` and `--legends` with matching
-numbers of entries, and a separate `--output-root`. The default three-method
-comparison remains unchanged. The four-method error-scale NOD comparison,
-including its training command, is recorded in
-[`EXPERIMENTS.md`](../../EXPERIMENTS.md#frozen-error-scale-nod-control-fine-tuning).
+Run all four scenarios with 32 parallel simulations per method, 1200 nominal
+steps, and environment seed 101:
 
-Run a short check with:
+```bash
+python utilities/evaluation_tase26.py
+```
+
+The methods, in plot and export order, are:
+
+| Method | Checkpoint directory |
+| --- | --- |
+| NOD-DGPPO (PPO beta) | `outputs/current/ablations/dgppo_nod_future_evidence_ppo_gate_sequence_control/` |
+| SigmaRL | `checkpoints/itsc24/M0 (our)/` |
+| MAPPO | `checkpoints/icra25/M2 (Baseline)/` |
+| XP-MARL | `checkpoints/icra25/M1 (XP-MARL)/` |
+
+Each directory uses its highest-reward saved policy. MAPPO here denotes the
+ICRA25 non-prioritized baseline; retain that checkpoint provenance in the paper.
+All vehicles use learned policies. Actions are deterministic and observation
+noise is disabled for every method during evaluation.
+
+The five metrics are collision rate, exit throughput, trajectory jerk RMS,
+relative average speed, and the original action-change smoothness. Collision
+plots retain total, vehicle-vehicle, and vehicle-boundary distributions. Collision
+rates count pre-transition time steps with any vehicle in contact, divided by
+recorded steps and multiplied by 100, separately for vehicle and road-boundary
+contacts. The total is the sum of these percentages. Smoothness is an action
+change measure, so lower values mean smoother actions. Centerline deviation
+and low-TTC exposure are disabled.
+
+Results, including PNG/PDF plots, `metrics_runs.csv`, `metrics_summary.json`,
+and `log.txt`, go to:
+
+```text
+outputs/benchmarks/paper_metrics_four_methods/<scenario>/steps_1200_envs_32_seed_101/
+```
+
+Scenarios are `CPM_entire`, `intersection_2`, `on_ramp_1`, and `roundabout_1`.
+Throughput is N/A for the full-network loop routes (`CPM_entire`). Existing
+three-method results keep their original paths and recorded checkpoint identities.
+
+For one scenario:
+
+```bash
+python utilities/evaluation_tase26.py --scenarios intersection_2
+```
+
+For a short check:
 
 ```bash
 python utilities/evaluation_tase26.py \
   --scenarios intersection_2 --num-simulations 2 --steps 200
 ```
 
-Run all four scenarios with 32 simulations per method using:
-
-```bash
-python utilities/evaluation_tase26.py
-```
+Use `--model-paths` and `--legends` with matching numbers of entries to compare
+other checkpoints, and `--output-root` to choose a separate results directory.
+The entry point reuses the `Evaluation` class from the ITSC24 and ICRA25 scripts.
 
 `sota_all_actor.json` defines the supplementary explicit-seed comparison among
-NOD-DGPPO, SigmaRL, and XP-MARL. It uses:
+NOD-DGPPO, SigmaRL, MAPPO, and XP-MARL. It uses:
 
 - the same scenario and agent count for every method;
 - paired environment seeds;
@@ -37,7 +73,7 @@ NOD-DGPPO, SigmaRL, and XP-MARL. It uses:
 
 `future_lower_control.json` uses the same evaluator and protocol for the two
 matched future-NOD control branches, the previous NOD-DGPPO checkpoint, and
-the two official baselines. Train both branches listed in `EXPERIMENTS.md`
+the three comparison baselines. Train both branches listed in `EXPERIMENTS.md`
 before running it. Keep the comparison under a separate
 `--output-root outputs/benchmarks/future_lower_control` so the established
 SOTA results remain intact.
@@ -46,14 +82,13 @@ It also includes final-checkpoint evaluations for both control branches and
 the follow-up gain-0.4 lower-bound branch. Existing run summaries can be
 retained with `--skip-existing` when adding the follow-up branch.
 
-The official comparison checkpoints are:
+The JSON benchmark configurations use the same three baseline identities as
+`evaluation_tase26.py`, but retain their own NOD control branches and explicit
+five-seed protocol. They do not replace the five-metric entry point above.
+Historical results retain the checkpoint recorded in their CSV/JSON metadata;
+changing a configuration does not relabel previous measurements.
 
-```text
-checkpoints/itsc24/M0 (our)/          SigmaRL
-checkpoints/icra25/M1 (XP-MARL)/      XP-MARL
-```
-
-They are downloaded from the upstream SigmaRL assets
+These checkpoints are included in the upstream SigmaRL assets
 ([ITSC24 package](https://github.com/bassamlab/assets/blob/main/sigmarl/checkpoints/itsc24.zip),
 [ICRA25 package](https://github.com/bassamlab/assets/blob/main/sigmarl/checkpoints/icra25.zip)).
 

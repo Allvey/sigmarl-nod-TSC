@@ -80,10 +80,13 @@ After training, run `/main_testing.py` to test the current model, or pass
 [EXPERIMENTS.md](EXPERIMENTS.md) for active experiments and
 [docs/README.md](docs/README.md) for the documentation index.
 
-For the matched all-Actor comparison with the official SigmaRL and XP-MARL
+For the matched all-Actor comparison of NOD-DGPPO, SigmaRL (ITSC24 M0),
+MAPPO (ICRA25 M2 baseline), and XP-MARL (ICRA25 M1)
 checkpoints, first run `python -m scripts.prepare_sota_checkpoints`, then run
 `python utilities/evaluation_tase26.py`. This formal entry point shares the
-paper metrics used by the ITSC24 and ICRA25 evaluation scripts. The complete
+paper metrics used by the ITSC24 and ICRA25 evaluation scripts and reports
+collision rate, throughput, trajectory jerk RMS, average speed, and smoothness.
+Results go to `outputs/benchmarks/paper_metrics_four_methods/`. The complete
 protocol and output paths are documented in
 [configs/benchmarks/README.md](configs/benchmarks/README.md).
 

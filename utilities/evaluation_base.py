@@ -43,6 +43,7 @@ plt.style.use(
 import time
 import json
 import csv
+import math
 from pathlib import Path
 
 from torchrl.envs.utils import ExplorationType, set_exploration_type
@@ -58,6 +59,103 @@ from utilities.constants import SCENARIOS, AGENTS
 
 from utilities.colors import Color, colors
 from utilities.sota_evaluation import select_best_checkpoint
+
+
+def _compute_low_ttc_exposure_percent(positions, velocities, headings, threshold_s):
+    """Return the percentage of frames with a low-TTC pair in each simulation.
+
+    Project each pair of vehicle rectangles onto their four separating axes.
+    At fixed headings and velocities, the first common time in all four
+    projection-overlap intervals is the pair's TTC in seconds.
+    """
+    num_agents = positions.shape[-2]
+    if num_agents < 2:
+        return positions.new_zeros(positions.shape[0])
+
+    first, second = torch.triu_indices(
+        num_agents, num_agents, offset=1, device=positions.device
+    )
+    flat_positions = positions.reshape(-1, num_agents, 2)
+    flat_velocities = velocities.reshape(-1, num_agents, 2)
+    flat_headings = headings.reshape(-1, num_agents)
+    half_extents = positions.new_tensor((AGENTS["length"] / 2, AGENTS["width"] / 2))
+    exposed = torch.zeros(
+        flat_positions.shape[0], dtype=torch.bool, device=positions.device
+    )
+
+    # Bound the memory used by pairwise projections independently of rollout length.
+    for start in range(0, flat_positions.shape[0], 512):
+        frames = slice(start, start + 512)
+        frame_headings = flat_headings[frames]
+        cos_heading, sin_heading = frame_headings.cos(), frame_headings.sin()
+        forward = torch.stack((cos_heading, sin_heading), dim=-1)
+        lateral = torch.stack((-sin_heading, cos_heading), dim=-1)
+        axes = torch.stack((forward, lateral), dim=-2)
+        first_axes, second_axes = axes[:, first], axes[:, second]
+        pair_axes = torch.cat((first_axes, second_axes), dim=-2)
+        projected_first = (pair_axes @ first_axes.transpose(-2, -1)).abs()
+        projected_second = (pair_axes @ second_axes.transpose(-2, -1)).abs()
+        radius = (projected_first + projected_second) @ half_extents
+
+        relative_pos = flat_positions[frames, second] - flat_positions[frames, first]
+        relative_vel = flat_velocities[frames, second] - flat_velocities[frames, first]
+        offset = (pair_axes @ relative_pos.unsqueeze(-1)).squeeze(-1)
+        speed = (pair_axes @ relative_vel.unsqueeze(-1)).squeeze(-1)
+
+        stationary = speed.abs() <= 1e-8
+        divisor = speed.masked_fill(stationary, 1.0)
+        t1 = (-radius - offset) / divisor
+        t2 = (radius - offset) / divisor
+        enter = torch.minimum(t1, t2).masked_fill(stationary, -torch.inf).amax(dim=-1)
+        leave = torch.maximum(t1, t2).masked_fill(stationary, torch.inf).amin(dim=-1)
+        ttc = enter.clamp_min(0)
+        separated = (stationary & (offset.abs() > radius)).any(dim=-1)
+        exposed[frames] = (~separated & (ttc <= leave) & (ttc < threshold_s)).any(dim=-1)
+
+    return exposed.reshape(positions.shape[:2]).float().mean(dim=1) * 100.0
+
+
+def _compute_trajectory_jerk_rms(velocities, generations, dt):
+    """Return RMS world-frame jerk magnitude in m/s³ per environment.
+
+    Pool valid vehicle-time samples. All three velocity snapshots must belong to
+    the same generation, excluding both individual and whole-environment resets.
+    """
+    if velocities.shape[1] < 3:
+        return velocities.new_full((velocities.shape[0],), float("nan"))
+
+    generations = generations.reshape(velocities.shape[:-1])
+    same_vehicle = generations[:, 1:] == generations[:, :-1]
+    valid = same_vehicle[:, 1:] & same_vehicle[:, :-1]
+    jerk = velocities.diff(n=2, dim=1) / dt**2
+    squared_magnitude = jerk.square().sum(dim=-1).masked_fill(~valid, 0)
+    counts = valid.sum(dim=(1, 2))
+    rms = (squared_magnitude.sum(dim=(1, 2)) / counts.clamp_min(1)).sqrt()
+    return rms.masked_fill(counts == 0, float("nan"))
+
+
+def _compute_exit_throughput(info, dt):
+    """Successful route exits per simulated second, independently per environment.
+
+    Use pre-reset event snapshots rather than counting respawns. Loop routes have
+    no comparable route-exit throughput and are reported as unavailable.
+    """
+    generations = info["nod_ego_generation"]
+    shape = generations.shape[:3]
+    generations = generations.reshape(shape)
+    loops = info["testing_route_is_loop"].reshape(shape).bool()
+    exits = info["testing_exit_reached"].reshape(shape).bool()
+    exits = exits & ~(
+        loops
+        | info["is_collision_with_agents"].reshape(shape).bool()
+        | info["testing_road_contact"].reshape(shape).bool()
+        | info["testing_entry_contact"].reshape(shape).bool()
+    )
+    new_exits = exits.clone()
+    same_generation = generations[:, 1:] == generations[:, :-1]
+    new_exits[:, 1:] &= ~(exits[:, :-1] & same_generation)
+    throughput = new_exits.sum(dim=(1, 2)).float() / (shape[1] * dt)
+    return throughput.masked_fill(loops.flatten(start_dim=1).any(dim=1), float("nan"))
 
 
 class TimedPolicy:
@@ -184,17 +282,20 @@ class Evaluation:
         self.reuse_cached_rollouts = kwargs.pop("reuse_cached_rollouts", True)
         self.save_rollout_cache = kwargs.pop("save_rollout_cache", True)
         self.export_machine_readable = kwargs.pop("export_machine_readable", False)
+        self.ttc_threshold_seconds = kwargs.pop("ttc_threshold_seconds", None)
+        self.measure_trajectory_jerk = kwargs.pop("measure_trajectory_jerk", False)
+        self.measure_centerline_deviation = kwargs.pop("measure_centerline_deviation", True)
+        self.measure_throughput = kwargs.pop("measure_throughput", False)
 
         self.is_render = kwargs.pop("is_render", True)
         self.is_save_simulation_video = kwargs.pop("is_save_simulation_video", False)
         self.video_names = kwargs.pop("video_names", None)
 
-        self.idx_our = next(
-            (i for i, path in enumerate(self.model_paths) if "our" in path), -1
-        )  # Index of our model
-
-        if self.idx_our in {-1, None}:
-            self.idx_our = kwargs.pop("idx_our", 0)
+        self.idx_our = kwargs.pop("idx_our", None)
+        if self.idx_our is None:
+            # The reference method is first unless explicitly selected. An
+            # upstream baseline directory may itself contain the word "our".
+            self.idx_our = 0
 
         print(f"Index of our model: {self.idx_our}")
 
@@ -285,6 +386,25 @@ class Evaluation:
         """
         out_td = self._get_simulation_outputs()
 
+        if self.measure_throughput:
+            self.vehicle_throughput[self.model_idx, :] = _compute_exit_throughput(
+                out_td["next", "agents", "info"], self.parameters.dt
+            )
+        if self.ttc_threshold_seconds is not None:
+            info = out_td["next", "agents", "info"]
+            headings = info["rot"] * math.tau  # RoadTraffic normalizes yaw by 2π.
+            self.low_ttc_exposure[self.model_idx, :] = _compute_low_ttc_exposure_percent(
+                info["nod_world_pos"],
+                info["nod_world_vel"],
+                headings,
+                self.ttc_threshold_seconds,
+            )
+        if self.measure_trajectory_jerk:
+            info = out_td["next", "agents", "info"]
+            self.trajectory_jerk_rms[self.model_idx, :] = _compute_trajectory_jerk_rms(
+                info["nod_world_vel"], info["nod_ego_generation"], self.parameters.dt
+            )
+
         positions = out_td["agents", "info", "pos"]
         velocities = out_td["agents", "info", "vel"]
         is_collision_with_agents = out_td[
@@ -293,7 +413,6 @@ class Evaluation:
         is_collision_with_lanelets = out_td[
             "agents", "info", "is_collision_with_lanelets"
         ].bool()
-        distance_ref = out_td["agents", "info", "distance_ref"]
 
         is_collide = is_collision_with_agents | is_collision_with_lanelets
 
@@ -322,9 +441,11 @@ class Evaluation:
         self.collision_rate_with_lanelets[self.model_idx, :] = (
             is_collision_with_lanelets.squeeze(-1).any(dim=-1).sum(dim=-1) / num_steps
         )
-        self.distance_ref_average[self.model_idx, :] = distance_ref.squeeze(-1).mean(
-            dim=(-2, -1)
-        )
+        if self.measure_centerline_deviation:
+            distance_ref = out_td["agents", "info", "distance_ref"]
+            self.distance_ref_average[self.model_idx, :] = distance_ref.squeeze(-1).mean(
+                dim=(-2, -1)
+            )
 
         actions = out_td["agents", "action"]
         u_lon = actions[..., 0]
@@ -415,7 +536,7 @@ class Evaluation:
                         policy=rollout_policy,
                         priority_module=priority_module,
                         callback=(lambda env, _: env.render(mode="human"))
-                        if self.parameters.num_vmas_envs == 1
+                        if self.is_render
                         else None,  # mode should be one of {"human", "rgb_array"}
                         auto_cast_to_device=True,
                         break_when_any_done=False,
@@ -510,8 +631,7 @@ class Evaluation:
         ## Fig 1 - Episode reward
         ###############################
         data_np = [reward.cpu().numpy() for reward in self.episode_reward]
-        plt.clf()
-        plt.figure(figsize=self.fig_sizes["episode_reward"])
+        fig = plt.figure(figsize=self.fig_sizes["episode_reward"])
 
         for i, rewards in enumerate(data_np):
             # Original data with transparency
@@ -576,7 +696,7 @@ class Evaluation:
                 colored(f"{path_save_eval_fig}", "blue"),
             )
 
-        plt.clf()
+        plt.close(fig)
 
         ###############################
         ## Fig 2 - collision rate [%]
@@ -590,124 +710,36 @@ class Evaluation:
                 fig_name="collision_rate",
             )
         else:
-            plt.clf()
-            fig, ax = plt.subplots(figsize=self.fig_sizes["collision_rate"])
-            data_np = self.collision_rate_sum.numpy()
-            data_with_agents_np = self.collision_rate_with_agents.numpy()
-            data_with_lanelets_np = self.collision_rate_with_lanelets.numpy()
-
-            # Positions of the violin plots (adjust as needed to avoid overlap)
-            positions = np.arange(1, self.num_models + 1)
-            offset = 0.2  # Offset for positioning the violins side by side
-
-            # Plot a horizontal line indicating the median of our model
-            median_our = np.median(data_np[self.idx_our])
-            max_our = np.max(data_np[self.idx_our])
-            plt.axhline(y=median_our, color="black", linestyle="--", alpha=0.3)
-            ax.text(
-                self.idx_our + 1,
-                max_our,
-                f"Our: {median_our:.2f}$\%$",
-                ha="center",
-                va="bottom",
-                fontsize="small",
-                color="grey",
+            self._plot_collision_breakdown(
+                self.collision_rate_sum,
+                self.collision_rate_with_agents,
+                self.collision_rate_with_lanelets,
+                y_label=r"Collision rate [$\%$]",
+                fig_name="collision_rate",
+                y_limits=self.y_limits["collision_rate"],
             )
-
-            # Plot each dataset with different colors
-            parts1 = ax.violinplot(
-                dataset=data_np.T,
-                positions=positions - offset,
-                showmeans=False,
-                showmedians=True,
-                widths=0.2,
-            )
-            parts2 = ax.violinplot(
-                dataset=data_with_agents_np.T,
-                positions=positions,
-                showmeans=False,
-                showmedians=True,
-                widths=0.2,
-            )
-            parts3 = ax.violinplot(
-                dataset=data_with_lanelets_np.T,
-                positions=positions + offset,
-                showmeans=False,
-                showmedians=True,
-                widths=0.2,
-            )
-
-            # Set colors for each violin plot
-            self.custom_violinplot_color(parts1, Color.red100, Color.black100, 0.5)
-            self.custom_violinplot_color(parts2, Color.blue100, Color.black100, 0.15)
-            self.custom_violinplot_color(parts3, Color.green100, Color.black100, 0.15)
-
-            # Setting ticks and labels
-            ax.set_xticks(np.arange(len(self.x_ticks)))
-            ax.set_xticklabels(
-                self.x_ticks,
-                rotation=self.x_tick_label_rotation,
-                ha="right",
-                fontsize="small",
-            )
-            ax.set_ylim(self.y_limits["collision_rate"])
-            ax.set_ylabel(r"Collision rate [$\%$]")
-            # ax.set_ylim([0, 2.0]) # [%]
-            ax.yaxis.set_major_formatter(
-                ticker.FormatStrFormatter("%.2f")
-            )  # Set y-axis tick labels to have two digits after the comma
-            ax.xaxis.set_minor_locator(
-                ticker.NullLocator()
-            )  # Make minor x-ticks invisible
-            ax.grid(True, which="major", axis="x", linestyle="--", linewidth=0.1)
-            ax.grid(True, which="both", axis="y", linestyle="--", linewidth=0.1)
-
-            # # Add text to shown the median of M1
-            # median_M1 = np.median(data_np[0])
-            # ax.text(positions[0], 0.2, f'Median\n(total):\n{median_M1:.2f}$\%$', ha='center', va='bottom', fontsize='small', color='grey')
-
-            # Adding legend
-            ax.legend(
-                [parts1["bodies"][0], parts2["bodies"][0], parts3["bodies"][0]],
-                ["Total", "Agent-agent", "Agent-boundary"],
-                loc="upper right",
-                fontsize=8,
-            )
-
-            plt.tight_layout()
-            # Save figure
-            if self.parameters.is_save_eval_results:
-                path_save_eval_fig = f"{self.where_to_save_eva_results}/{self.timestamp}_{self.parameters.scenario_type}_collision_rate.pdf"
-                plt.savefig(
-                    path_save_eval_fig,
-                    format="pdf",
-                    bbox_inches="tight",
-                    pad_inches=0.01,
-                    dpi=300,
-                )
-                path_save_eval_fig = f"{self.where_to_save_eva_results}/{self.timestamp}_{self.parameters.scenario_type}_collision_rate.png"
-                plt.savefig(
-                    path_save_eval_fig,
-                    format="png",
-                    bbox_inches="tight",
-                    pad_inches=0.01,
-                    dpi=600,
-                )
-                print(
-                    colored(f"[INFO] A fig has been saved under", "black"),
-                    colored(f"{path_save_eval_fig}", "blue"),
-                )
 
         ###############################
         ## Fig 3 - relative centerline deviation [%]
         ###############################
-        self._boxplot(
-            figsize=self.fig_sizes["centerline_deviation"],
-            data=self.distance_ref_average,
-            y_limits=self.y_limits["centerline_deviation"],
-            y_label=r"Relative centerline deviation [$\%$]",
-            fig_name="deviation_average",
-        )
+        if self.measure_centerline_deviation:
+            self._boxplot(
+                figsize=self.fig_sizes["centerline_deviation"],
+                data=self.distance_ref_average,
+                y_limits=self.y_limits["centerline_deviation"],
+                y_label=r"Relative centerline deviation [$\%$]",
+                fig_name="deviation_average",
+            )
+
+        if self.measure_throughput:
+            self._boxplot(
+                figsize=self.fig_sizes.get("throughput", self.fig_sizes["average_speed"]),
+                data=self.vehicle_throughput.detach().cpu(),
+                y_limits=self.y_limits.get("throughput", [0, None]),
+                y_label=r"Exit throughput [vehicles/s] $\uparrow$",
+                fig_name="vehicle_throughput",
+                value_unit=" vehicles/s",
+            )
 
         ###############################
         ## Fig 4 - relative average velocity [%]
@@ -724,70 +756,157 @@ class Evaluation:
             figsize=self.fig_sizes["smoothness"],
             data=self.smoothness,
             y_limits=self.y_limits["smoothness"],
-            y_label=r"Smoothness [$\%$]",
+            y_label=r"Action change [$\%$] $\downarrow$",
             fig_name="smoothness",
         )
 
-    def _boxplot(self, figsize, data, y_label, fig_name, y_limits: None):
-        plt.clf()
+        if self.ttc_threshold_seconds is not None:
+            self._plot_low_ttc_exposure()
+        if self.measure_trajectory_jerk:
+            self._boxplot(
+                figsize=self.fig_sizes["smoothness"],
+                data=self.trajectory_jerk_rms.detach().cpu(),
+                y_limits=[0, None],
+                y_label=r"Trajectory jerk RMS [m/s$^3$] $\downarrow$",
+                fig_name="trajectory_jerk_rms",
+                value_unit=r" m/s$^3$",
+            )
+
+    def _plot_low_ttc_exposure(self):
+        self._boxplot(
+            figsize=self.fig_sizes["collision_rate"],
+            data=self.low_ttc_exposure.detach().cpu(),
+            y_limits=[0, 100],
+            y_label=rf"TTC $< {self.ttc_threshold_seconds:g}$ s exposure [$\%$] $\downarrow$",
+            fig_name="low_ttc_exposure",
+        )
+
+    def _boxplot(self, figsize, data, y_label, fig_name, y_limits, *, value_unit=r"$\%$"):
         fig, ax = plt.subplots(figsize=figsize)
 
-        data_np = data.numpy()
+        samples = [row[np.isfinite(row)] for row in data.numpy()]
+        positions = np.arange(1, self.num_models + 1)
+        has_data = np.array([row.size > 0 for row in samples])
 
         # Plot a horizontal line indicating the median of our model
-        median_our = np.median(data_np[self.idx_our])
-        max_our = np.max(data_np[self.idx_our])
-        plt.axhline(y=median_our, color="black", linestyle="--", alpha=0.3)
-        ax.text(
-            self.idx_our + 1,
-            max_our,
-            f"Our: {median_our:.2f}$\%$",
-            ha="center",
-            va="bottom",
-            fontsize="small",
-            color="grey",
-        )
+        if has_data[self.idx_our]:
+            our_samples = samples[self.idx_our]
+            median_our = np.median(our_samples)
+            ax.axhline(y=median_our, color="black", linestyle="--", alpha=0.3)
+            ax.text(
+                positions[self.idx_our],
+                our_samples.max(),
+                f"Our: {median_our:.2f}{value_unit}",
+                ha="center",
+                va="bottom",
+                fontsize="small",
+                color="grey",
+            )
 
-        ax.violinplot(dataset=data_np.T, showmeans=False, showmedians=True)
-        ax.set_xticks(np.arange(len(self.x_ticks)))
-        ax.set_xticklabels(
-            self.x_ticks,
-            rotation=self.x_tick_label_rotation,
-            ha="right",
-            fontsize="small",
-        )
+        if has_data.any():
+            ax.violinplot(
+                dataset=[row for row in samples if row.size],
+                positions=positions[has_data],
+                showmeans=False,
+                showmedians=True,
+            )
+        for position in positions[~has_data]:
+            ax.text(position, 0.5, "N/A", transform=ax.get_xaxis_transform(), ha="center")
+        self._configure_metric_xaxis(ax)
         ax.set_ylabel(y_label)
 
         if y_limits:
-            ax.set_ylim(y_limits)
+            bottom, top = y_limits
+            if top is None:
+                auto_bottom, auto_top = ax.get_ylim()
+                lower = auto_bottom if bottom is None else bottom
+                top = auto_top + 0.15 * (auto_top - lower)
+            ax.set_ylim(bottom=bottom, top=top)
 
         ax.xaxis.set_minor_locator(ticker.NullLocator())  # Make minor x-ticks invisible
         ax.grid(True, which="major", axis="x", linestyle="--", linewidth=0.1)
         ax.grid(True, which="both", axis="y", linestyle="--", linewidth=0.1)
 
-        # Save figure
         plt.tight_layout()
-        if self.parameters.is_save_eval_results:
-            path_save_eval_fig = f"{self.where_to_save_eva_results}/{self.timestamp}_{self.parameters.scenario_type}_{fig_name}.pdf"
-            plt.savefig(
-                path_save_eval_fig,
-                format="pdf",
-                bbox_inches="tight",
-                pad_inches=0.01,
-                dpi=300,
+        if getattr(self.parameters, "is_save_eval_results", True):
+            self._save_metric_figure(fig, fig_name)
+        plt.close(fig)
+
+    def _plot_collision_breakdown(
+        self, total, with_agents, with_lanelets, *, y_label, fig_name,
+        y_limits, value_unit=r"$\%$",
+    ):
+        """Render the shared total/vehicle/boundary collision distributions."""
+        fig, ax = plt.subplots(figsize=self.fig_sizes["collision_rate"])
+        positions = np.arange(1, self.num_models + 1)
+        datasets = [data.detach().cpu().numpy() for data in (total, with_agents, with_lanelets)]
+        our_samples = datasets[0][self.idx_our]
+        our_samples = our_samples[np.isfinite(our_samples)]
+        if our_samples.size:
+            ax.axhline(y=np.median(our_samples), color="black", linestyle="--", alpha=0.3)
+            ax.text(
+                positions[self.idx_our], our_samples.max(),
+                f"Our: {np.median(our_samples):.2f}{value_unit}",
+                ha="center", va="bottom", fontsize="small", color="grey",
             )
-            path_save_eval_fig = f"{self.where_to_save_eva_results}/{self.timestamp}_{self.parameters.scenario_type}_{fig_name}.png"
-            plt.savefig(
-                path_save_eval_fig,
-                format="png",
-                bbox_inches="tight",
-                pad_inches=0.01,
-                dpi=600,
+        legend_handles = []
+        for data, offset, color, alpha in zip(
+            datasets, (-0.2, 0, 0.2),
+            (Color.red100, Color.blue100, Color.green100), (0.5, 0.15, 0.15),
+        ):
+            samples = [row[np.isfinite(row)] for row in data]
+            has_data = np.array([row.size > 0 for row in samples])
+            handle = matplotlib.patches.Patch(facecolor=color, alpha=alpha)
+            if has_data.any():
+                parts = ax.violinplot(
+                    dataset=[row for row in samples if row.size],
+                    positions=positions[has_data] + offset,
+                    showmeans=False, showmedians=True, widths=0.2,
+                )
+                self.custom_violinplot_color(parts, color, Color.black100, alpha)
+                handle = parts["bodies"][0]
+            legend_handles.append(handle)
+        for position, samples in zip(positions, datasets[0]):
+            if not np.isfinite(samples).any():
+                ax.text(position, 0.5, "N/A", transform=ax.get_xaxis_transform(), ha="center")
+        self._configure_metric_xaxis(ax)
+        bottom, top = y_limits
+        if top is None:
+            auto_bottom, auto_top = ax.get_ylim()
+            lower = auto_bottom if bottom is None else bottom
+            top = auto_top + 0.15 * (auto_top - lower)
+        ax.set_ylim(bottom=bottom, top=top)
+        ax.set_ylabel(y_label)
+        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter("%.2f"))
+        ax.xaxis.set_minor_locator(ticker.NullLocator())
+        ax.grid(True, which="major", axis="x", linestyle="--", linewidth=0.1)
+        ax.grid(True, which="both", axis="y", linestyle="--", linewidth=0.1)
+        ax.legend(
+            legend_handles, ["Total", "Agent-agent", "Agent-boundary"],
+            loc="upper right", fontsize=8,
+        )
+        plt.tight_layout()
+        if getattr(self.parameters, "is_save_eval_results", True):
+            self._save_metric_figure(fig, fig_name)
+        plt.close(fig)
+
+    def _configure_metric_xaxis(self, ax):
+        """Use the same one-based coordinates as all metric distributions."""
+        ax.set_xticks(np.arange(1, self.num_models + 1))
+        ax.set_xticklabels(
+            self.x_ticks, rotation=self.x_tick_label_rotation,
+            ha="center", fontsize="small",
+        )
+        ax.set_xlim(0.5, self.num_models + 0.5)
+
+    def _save_metric_figure(self, fig, fig_name):
+        for extension, dpi in (("pdf", 300), ("png", 600)):
+            path = (
+                f"{self.where_to_save_eva_results}/{self.timestamp}_"
+                f"{self.parameters.scenario_type}_{fig_name}.{extension}"
             )
-            print(
-                colored(f"[INFO] A fig has been saved under", "black"),
-                colored(f"{path_save_eval_fig}", "blue"),
-            )
+            fig.savefig(path, format=extension, bbox_inches="tight", pad_inches=0.01, dpi=dpi)
+        print(colored(f"[INFO] A fig has been saved under {path}", "blue"))
 
     def _init_eva_matrices(self):
         """
@@ -808,11 +927,10 @@ class Evaluation:
             device=self.parameters.device,
             dtype=torch.float32,
         )
-        self.distance_ref_average = torch.zeros(
-            (self.num_models, self.parameters.num_vmas_envs),
-            device=self.parameters.device,
-            dtype=torch.float32,
-        )
+        if self.measure_centerline_deviation:
+            self.distance_ref_average = torch.zeros_like(self.average_speed)
+        if self.measure_throughput:
+            self.vehicle_throughput = torch.full_like(self.average_speed, float("nan"))
         self.smoothness = torch.zeros(
             (self.num_models, self.parameters.num_vmas_envs),
             device=self.parameters.device,
@@ -828,6 +946,10 @@ class Evaluation:
             device=self.parameters.device,
             dtype=torch.float32,
         )
+        if self.ttc_threshold_seconds is not None:
+            self.low_ttc_exposure = torch.zeros_like(self.average_speed)
+        if self.measure_trajectory_jerk:
+            self.trajectory_jerk_rms = torch.full_like(self.average_speed, float("nan"))
         # Checkpoints may have partial histories or different training budgets.
         self.episode_reward = [torch.empty(0) for _ in range(self.num_models)]
         self.policy_inference_total_s = torch.full(
@@ -898,13 +1020,23 @@ class Evaluation:
             "agent_agent_collision_rate_percent": self.collision_rate_with_agents,
             "agent_lanelet_collision_rate_percent": self.collision_rate_with_lanelets,
             "total_collision_rate_percent": self.collision_rate_sum,
-            "centerline_deviation_percent": self.distance_ref_average,
             "average_speed_percent": self.average_speed,
             "average_speed_penalized_percent": self.average_speed_penalized,
             "action_change_percent": self.smoothness,
             "action_change_penalized_percent": self.smoothness_penalized,
             "longitudinal_action_change_percent": self.smoothness_lon,
             "lateral_action_change_percent": self.smoothness_lat,
+        }
+        if self.measure_centerline_deviation:
+            metric_tensors["centerline_deviation_percent"] = self.distance_ref_average
+        if self.measure_throughput:
+            metric_tensors["throughput_vehicles_per_second"] = self.vehicle_throughput
+        if self.ttc_threshold_seconds is not None:
+            metric_tensors["low_ttc_exposure_percent"] = self.low_ttc_exposure
+        if self.measure_trajectory_jerk:
+            metric_tensors["trajectory_jerk_rms_m_per_s3"] = self.trajectory_jerk_rms
+        metric_samples = {
+            name: values.detach().cpu().float() for name, values in metric_tensors.items()
         }
         rows = []
         for model_index, label in enumerate(self.legends):
@@ -916,12 +1048,9 @@ class Evaluation:
                     "checkpoint": self.selected_checkpoint_prefixes[model_index],
                     "simulation_index": simulation_index,
                 }
-                row.update(
-                    {
-                        name: float(values[model_index, simulation_index].item())
-                        for name, values in metric_tensors.items()
-                    }
-                )
+                for name, values in metric_samples.items():
+                    sample = values[model_index, simulation_index].item()
+                    row[name] = sample if math.isfinite(sample) else None
                 rows.append(row)
 
         csv_path = output_dir / "metrics_runs.csv"
@@ -933,14 +1062,20 @@ class Evaluation:
         aggregate = []
         for model_index, label in enumerate(self.legends):
             metrics = {}
-            for name, values in metric_tensors.items():
-                samples = values[model_index].detach().cpu().float()
-                metrics[name] = {
-                    "mean": float(samples.mean().item()),
-                    "std": float(samples.std(unbiased=False).item()),
-                    "min": float(samples.min().item()),
-                    "max": float(samples.max().item()),
-                }
+            for name, values in metric_samples.items():
+                samples = values[model_index]
+                valid_samples = samples[torch.isfinite(samples)]
+                metric = dict.fromkeys(("mean", "std", "min", "max"))
+                if valid_samples.numel():
+                    metric.update(
+                        mean=valid_samples.mean().item(),
+                        std=valid_samples.std(unbiased=False).item(),
+                        min=valid_samples.min().item(),
+                        max=valid_samples.max().item(),
+                    )
+                if valid_samples.numel() != samples.numel():
+                    metric["num_valid_simulations"] = valid_samples.numel()
+                metrics[name] = metric
             aggregate.append(
                 {
                     "model_index": model_index,
@@ -963,6 +1098,13 @@ class Evaluation:
             },
             "models": aggregate,
         }
+        if self.ttc_threshold_seconds is not None:
+            result["protocol"]["ttc_threshold_seconds"] = self.ttc_threshold_seconds
+        if self.measure_throughput:
+            result["protocol"]["throughput_definition"] = (
+                "Successful route-exit arrivals / actual recorded environment seconds; "
+                "collision and entry resets excluded; null for environments containing loop routes"
+            )
         json_path = output_dir / "metrics_summary.json"
         with json_path.open("w", encoding="utf-8") as file:
             json.dump(result, file, indent=2)
@@ -976,9 +1118,10 @@ class Evaluation:
         """
         if is_relative_values:
             # Use relative values
-            self.distance_ref_average = (
-                self.distance_ref_average / self.agent_width * 100
-            )
+            if self.measure_centerline_deviation:
+                self.distance_ref_average = (
+                    self.distance_ref_average / self.agent_width * 100
+                )
             self.average_speed = self.average_speed / self.max_speed * 100
 
         self.collision_rate_with_agents = self.collision_rate_with_agents * 100
@@ -994,7 +1137,8 @@ class Evaluation:
         self.CR_total_avg = self.collision_rate_sum.mean(dim=-1)
 
         # Relative centerline deviation [%]
-        self.CD_avg = self.distance_ref_average.mean(dim=-1)
+        if self.measure_centerline_deviation:
+            self.CD_avg = self.distance_ref_average.mean(dim=-1)
 
         # Relative average speed [%]
         self.AS_avg = self.average_speed.mean(dim=-1)
@@ -1044,17 +1188,35 @@ class Evaluation:
         def reciprocal_or_zero(value):
             return torch.where(value.abs() > 1e-8, value.reciprocal(), 0.0)
 
-        w1 = reciprocal_or_zero(self.CR_total_avg.mean())
-        w2 = reciprocal_or_zero(self.CD_avg.mean())
-        w3 = reciprocal_or_zero(self.AS_penalized_avg.mean())
-        # composite score = - w1 * CR_total_avg - w2 * CD_avg + w3 * AS_avg
-        self.composite_score = (
-            -w1 * self.CR_total_avg - w2 * self.CD_avg + w3 * self.AS_penalized_avg
-        )
-
-        print(f"composite_score: {self.composite_score}")
+        if self.measure_centerline_deviation:
+            w1 = reciprocal_or_zero(self.CR_total_avg.mean())
+            w2 = reciprocal_or_zero(self.CD_avg.mean())
+            w3 = reciprocal_or_zero(self.AS_penalized_avg.mean())
+            self.composite_score = (
+                -w1 * self.CR_total_avg - w2 * self.CD_avg + w3 * self.AS_penalized_avg
+            )
+            print(f"composite_score: {self.composite_score}")
 
         self._log()
+
+    def _format_low_ttc_log(self):
+        return self._format_metric_log(
+            f"Low-TTC exposure [%] (TTC < {self.ttc_threshold_seconds:g} s)",
+            self.low_ttc_exposure,
+        )
+
+    @staticmethod
+    def _format_metric_log(label, data):
+        samples = [row[np.isfinite(row)] for row in data.detach().cpu().numpy()]
+        stats = []
+        for name, reducer in (
+            ("mean", np.mean), ("std", np.std), ("min", np.min), ("max", np.max)
+        ):
+            formatted = ", ".join(
+                f"{reducer(row):.2f}" if row.size else "N/A" for row in samples
+            )
+            stats.append(f"{name}={formatted}")
+        return f"[LOG] {label}: " + ", ".join(stats)
 
     def _log(self):
         CR_AA_std = self.collision_rate_with_agents.std(dim=-1, unbiased=False)
@@ -1066,10 +1228,6 @@ class Evaluation:
         CR_total_std = self.collision_rate_sum.std(dim=-1, unbiased=False)
         CR_total_min = self.collision_rate_sum.min(dim=-1).values
         CR_total_max = self.collision_rate_sum.max(dim=-1).values
-
-        CD_std = self.distance_ref_average.std(dim=-1, unbiased=False)
-        CD_min = self.distance_ref_average.min(dim=-1).values
-        CD_max = self.distance_ref_average.max(dim=-1).values
 
         AS_std = self.average_speed.std(dim=-1, unbiased=False)
         AS_min = self.average_speed.min(dim=-1).values
@@ -1114,13 +1272,11 @@ class Evaluation:
             f"min={self.format_array(CR_total_min.numpy())}, "
             f"max={self.format_array(CR_total_max.numpy())}"
         )
-        log_CD = (
-            "[LOG] Relative centerline deviation [%]: "
-            f"mean={self.format_array(self.CD_avg.numpy())}, "
-            f"std={self.format_array(CD_std.numpy())}, "
-            f"min={self.format_array(CD_min.numpy())}, "
-            f"max={self.format_array(CD_max.numpy())}"
-        )
+        log_CD = None
+        if self.measure_centerline_deviation:
+            log_CD = self._format_metric_log(
+                "Relative centerline deviation [%]", self.distance_ref_average
+            )
         log_AS = (
             "[LOG] Relative average speed [%]: "
             f"mean={self.format_array(self.AS_avg.numpy())}, "
@@ -1175,9 +1331,11 @@ class Evaluation:
             f"std={self.format_array(SM_lat_penalized_std.numpy())}"
         )
 
-        log_CS = (
-            f"[LOG] Composite scores: {self.format_array(self.composite_score.numpy())}"
-        )
+        log_CS = None
+        if self.measure_centerline_deviation:
+            log_CS = (
+                f"[LOG] Composite scores: {self.format_array(self.composite_score.numpy())}"
+            )
         if hasattr(self, "policy_inference_total_s") and torch.isfinite(
             self.policy_inference_total_s
         ).any():
@@ -1200,9 +1358,26 @@ class Evaluation:
         cprint(log_CR_total, "black")
         cprint(log_CR_AA, "black")
         cprint(log_CR_AL, "black")
-        cprint(log_CD, "black")
+        log_TTC = None
+        if self.ttc_threshold_seconds is not None:
+            log_TTC = self._format_low_ttc_log()
+            cprint(log_TTC, "black")
+        if log_CD is not None:
+            cprint(log_CD, "black")
+        log_throughput = None
+        if self.measure_throughput:
+            log_throughput = self._format_metric_log(
+                "Vehicle throughput [vehicles/s]", self.vehicle_throughput
+            )
+            cprint(log_throughput, "black")
         cprint(log_AS, "black")
         cprint(log_AS_penalized, "black")
+        log_jerk = None
+        if self.measure_trajectory_jerk:
+            log_jerk = self._format_metric_log(
+                "Trajectory jerk RMS [m/s^3]", self.trajectory_jerk_rms
+            )
+            cprint(log_jerk, "black")
         cprint(log_SM, "black")
         cprint(log_SM_penalized, "black")
         cprint(log_SM_lon, "black")
@@ -1210,7 +1385,8 @@ class Evaluation:
         cprint(log_SM_lat, "black")
         cprint(log_SM_lat_penalized, "black")
         cprint(log_policy_time, "black")
-        cprint(log_CS)
+        if log_CS is not None:
+            cprint(log_CS)
 
         # Save the evaluation results to a txt file
         with open(self.where_to_save_logging, "a") as file:
@@ -1218,9 +1394,16 @@ class Evaluation:
             file.write(f"{log_CR_AA}\n")
             file.write(f"{log_CR_AL}\n")
             file.write(f"{log_CR_total}\n")
-            file.write(f"{log_CD}\n")
+            if log_TTC is not None:
+                file.write(f"{log_TTC}\n")
+            if log_CD is not None:
+                file.write(f"{log_CD}\n")
+            if log_throughput is not None:
+                file.write(f"{log_throughput}\n")
             file.write(f"{log_AS}\n")
             file.write(f"{log_AS_penalized}\n")
+            if log_jerk is not None:
+                file.write(f"{log_jerk}\n")
             file.write(f"{log_SM}\n")
             file.write(f"{log_SM_penalized}\n")
             file.write(f"{log_SM_lon}\n")
@@ -1228,7 +1411,8 @@ class Evaluation:
             file.write(f"{log_SM_lat}\n")
             file.write(f"{log_SM_lat_penalized}\n")
             file.write(f"{log_policy_time}\n")
-            file.write(f"{log_CS}\n")
+            if log_CS is not None:
+                file.write(f"{log_CS}\n")
             file.write("=========================================")
             file.write("\n")
 

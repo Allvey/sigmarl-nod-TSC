@@ -3080,6 +3080,9 @@ class ScenarioRoadTraffic(BaseScenario):
             ], -1)
             info["safety_challenging_start"] = self.safety_start_buffer.active[:, None].clone()
         if self.parameters.is_testing_mode:
+            info['testing_exit_reached'] = self.collisions.with_exit_segments[:, agent_index].clone()
+            info['testing_route_is_loop'] = self.ref_paths_agent_related.is_loop[:, agent_index].clone()
+            info['testing_entry_contact'] = self.collisions.with_entry_segments[:, agent_index].clone()
             # Preserve per-vehicle terminal contacts before auto-respawn. The
             # older is_collision_with_lanelets field is an environment aggregate.
             info['testing_road_contact'] = self.collisions.with_lanelets[:, agent_index].clone()

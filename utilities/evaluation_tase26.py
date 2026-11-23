@@ -1,4 +1,4 @@
-"""Matched paper-metric evaluation of NOD-DGPPO, SigmaRL, and XP-MARL."""
+"""Matched five-metric evaluation of NOD-DGPPO, SigmaRL, MAPPO, and XP-MARL."""
 from __future__ import annotations
 
 import argparse
@@ -18,11 +18,12 @@ from utilities.evaluation_base import Evaluation
 
 ROOT = Path(project_root)
 MODEL_PATHS = [
-    "outputs/current/dgppo_nod_gain1_control_finetune/",
+    "outputs/current/ablations/dgppo_nod_future_evidence_ppo_gate_sequence_control/",
     "checkpoints/itsc24/M0 (our)/",
+    "checkpoints/icra25/M2 (Baseline)/",
     "checkpoints/icra25/M1 (XP-MARL)/",
 ]
-LEGENDS = ["NOD-DGPPO", "SigmaRL", "XP-MARL"]
+LEGENDS = ["NOD-DGPPO (PPO beta)", "SigmaRL", "MAPPO", "XP-MARL"]
 DEFAULT_SCENARIOS = ["CPM_entire", "intersection_2", "on_ramp_1", "roundabout_1"]
 
 
@@ -34,7 +35,7 @@ def main() -> None:
     )
     parser.add_argument("--legends", nargs="+", default=LEGENDS)
     parser.add_argument(
-        "--output-root", default="outputs/benchmarks/paper_metrics",
+        "--output-root", default="outputs/benchmarks/paper_metrics_four_methods",
         help="Separate result root for a new comparison, relative to the project root or absolute.",
     )
     parser.add_argument(
@@ -75,16 +76,19 @@ def main() -> None:
     fig_sizes = {
         "episode_reward": (3.8, 4.2),
         "collision_rate": (3.5, 2.0),
-        "centerline_deviation": (3.5, 2.0),
+        "throughput": (3.5, 2.0),
         "average_speed": (3.5, 2.0),
         "smoothness": (3.5, 2.0),
     }
+    if len(args.model_paths) > 3:
+        for metric in ("collision_rate", "throughput", "average_speed", "smoothness"):
+            fig_sizes[metric] = (4.8, 2.4)
     y_limits = {
         "episode_reward": [-1, 8],
-        "collision_rate": [0, 3],
-        "centerline_deviation": [0, 100],
+        "collision_rate": [0, None],
+        "throughput": [0, None],
         "average_speed": [0, 100],
-        "smoothness": [0, 100],
+        "smoothness": [0, None],
     }
     model_paths = [str((ROOT / path).resolve()) + os.sep for path in args.model_paths]
     output_root = (ROOT / args.output_root).resolve()
@@ -125,6 +129,10 @@ def main() -> None:
             reuse_cached_rollouts=False,
             save_rollout_cache=False,
             export_machine_readable=True,
+            measure_centerline_deviation=False,
+            ttc_threshold_seconds=None,
+            measure_throughput=True,
+            measure_trajectory_jerk=True,
         )
         evaluator.run_evaluation()
 
