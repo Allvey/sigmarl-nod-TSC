@@ -44,6 +44,8 @@ import time
 import json
 import csv
 import math
+import tempfile
+from types import SimpleNamespace
 from pathlib import Path
 
 from torchrl.envs.utils import ExplorationType, set_exploration_type
@@ -59,6 +61,7 @@ from utilities.constants import SCENARIOS, AGENTS
 
 from utilities.colors import Color, colors
 from utilities.sota_evaluation import select_best_checkpoint
+from baselines.original_sigmarl.runtime import BACKENDS, launch_worker, resolve_backend
 
 
 def _compute_low_ttc_exposure_percent(positions, velocities, headings, threshold_s):
@@ -140,14 +143,16 @@ def _compute_exit_throughput(info, dt):
     Use pre-reset event snapshots rather than counting respawns. Loop routes have
     no comparable route-exit throughput and are reported as unavailable.
     """
-    generations = info["nod_ego_generation"]
+    generations = info.get("evaluation_generation", None)
+    if generations is None:
+        generations = info["nod_ego_generation"]
     shape = generations.shape[:3]
     generations = generations.reshape(shape)
     loops = info["testing_route_is_loop"].reshape(shape).bool()
     exits = info["testing_exit_reached"].reshape(shape).bool()
     exits = exits & ~(
         loops
-        | info["is_collision_with_agents"].reshape(shape).bool()
+        | info.get("evaluation_vehicle_contact", info["is_collision_with_agents"]).reshape(shape).bool()
         | info["testing_road_contact"].reshape(shape).bool()
         | info["testing_entry_contact"].reshape(shape).bool()
     )
@@ -304,6 +309,13 @@ class Evaluation:
         self.saved_data = None
 
         self.num_models = len(self.model_paths)
+        self.model_backends = kwargs.pop("model_backends", ["current"] * self.num_models)
+        if len(self.model_backends) != self.num_models or any(
+            backend not in BACKENDS for backend in self.model_backends
+        ):
+            raise ValueError("model_backends must match model_paths and use known runtimes")
+        self.resolved_model_backends = list(self.model_backends)
+        self.runtime_provenance = [{} for _ in self.model_paths]
 
         self.x_ticks = kwargs.pop(
             "x_ticks", [f"$M_{{{idx}}}$" for idx in range(0, self.num_models)]
@@ -328,6 +340,10 @@ class Evaluation:
         self.saved_data = SaveData.from_dict(data)
         self.parameters = self.saved_data.parameters
         raw_parameters = data.get("parameters", data)
+        self.resolved_model_backends[self.model_i] = resolve_backend(
+            self.model_backends[self.model_i], raw_parameters
+        )
+        self.selected_checkpoint_metadata = path_to_json_file
         if "is_using_nod_opinion" not in raw_parameters:
             self.parameters.is_using_nod_opinion = False
             self.parameters.is_using_nod_actor = False
@@ -392,17 +408,21 @@ class Evaluation:
             )
         if self.ttc_threshold_seconds is not None:
             info = out_td["next", "agents", "info"]
-            headings = info["rot"] * math.tau  # RoadTraffic normalizes yaw by 2π.
+            headings = info.get("evaluation_world_rot", None)
+            if headings is None:
+                headings = info["rot"] * math.tau  # RoadTraffic normalizes yaw by 2π.
             self.low_ttc_exposure[self.model_idx, :] = _compute_low_ttc_exposure_percent(
-                info["nod_world_pos"],
-                info["nod_world_vel"],
+                info["evaluation_world_pos"] if "evaluation_world_pos" in info.keys() else info["nod_world_pos"],
+                info["evaluation_world_vel"] if "evaluation_world_vel" in info.keys() else info["nod_world_vel"],
                 headings,
                 self.ttc_threshold_seconds,
             )
         if self.measure_trajectory_jerk:
             info = out_td["next", "agents", "info"]
             self.trajectory_jerk_rms[self.model_idx, :] = _compute_trajectory_jerk_rms(
-                info["nod_world_vel"], info["nod_ego_generation"], self.parameters.dt
+                info["evaluation_world_vel"] if "evaluation_world_vel" in info.keys() else info["nod_world_vel"],
+                info["evaluation_generation"] if "evaluation_generation" in info.keys() else info["nod_ego_generation"],
+                self.parameters.dt,
             )
 
         positions = out_td["agents", "info", "pos"]
@@ -467,6 +487,12 @@ class Evaluation:
         self.smoothness_lat[self.model_idx, :] = smoothness_lat_score
 
     def _get_simulation_outputs(self):
+        backend = self.resolved_model_backends[self.model_i]
+        if backend != "current":
+            return self._get_original_baseline_outputs(backend)
+        self.runtime_provenance[self.model_i] = {
+            "runtime_backend": "current", "trainer": "utilities.mappo_cavs",
+        }
         # Load the model with the highest reward
         self.parameters.episode_reward_mean_current = (
             find_the_highest_reward_among_all_models(self.model_i_path)
@@ -491,6 +517,10 @@ class Evaluation:
             out_td = torch.load(path_eval_out_td)
         else:
             env, policy, priority_module, _ = mappo_cavs(parameters=self.parameters)
+            if self.evaluation_seed is not None:
+                # Apply the same protocol as the isolated upstream workers;
+                # environment checks and network construction consume RNG state.
+                env.set_seed(int(self.evaluation_seed))
             rollout_policy = (
                 TimedPolicy(policy)
                 if self.is_measure_policy_inference_time
@@ -564,6 +594,47 @@ class Evaluation:
             #     )
             # )
 
+        return out_td
+
+    def _get_original_baseline_outputs(self, backend):
+        """Collect in a separate upstream process; reuse only metric/plot code."""
+        method = "xp_marl" if backend == "xpmarl_1_2_0" else "sigmarl"
+        with tempfile.TemporaryDirectory(prefix="sigmarl_original_") as temporary:
+            output = Path(temporary) / "rollout.pth"
+            provenance = Path(temporary) / "runtime.json"
+            args = [
+                "rollout", "--method", method,
+                "--metadata", str(self.selected_checkpoint_metadata.resolve()),
+                "--output", str(output), "--provenance-output", str(provenance),
+                "--scenario", self.scenario_type,
+                "--num-agents", str(self.num_agents),
+                "--num-envs", str(self.parameters.num_vmas_envs),
+                "--steps", str(self.simulation_steps),
+                "--observation-noise", (
+                    "checkpoint" if self.observation_noise is None
+                    else "on" if self.observation_noise else "off"
+                ),
+            ]
+            if self.evaluation_seed is not None:
+                args += ["--seed", str(self.evaluation_seed)]
+            if self.deterministic_actions:
+                args.append("--deterministic")
+            if self.is_measure_policy_inference_time:
+                args.append("--measure-inference-time")
+            if self.is_render:
+                args.append("--render")
+            if self.is_save_simulation_video:
+                video = Path(self.where_to_save_eva_results) / (self.video_names[self.model_i] + ".mp4")
+                args += ["--video-output", str(video.resolve())]
+            launch_worker(args)
+            out_td = torch.load(output, map_location=self.parameters.device)
+            record = json.loads(provenance.read_text())
+        self.runtime_provenance[self.model_i] = record
+        if self.is_measure_policy_inference_time:
+            latencies = record.pop("policy_latencies_s")
+            self._record_policy_inference_time(SimpleNamespace(
+                latencies_s=latencies, total_time_s=sum(latencies), num_calls=len(latencies),
+            ))
         return out_td
 
     def _record_policy_inference_time(self, timed_policy):
@@ -1046,6 +1117,7 @@ class Evaluation:
                     "label": label,
                     "model_path": os.path.abspath(self.model_paths[model_index]),
                     "checkpoint": self.selected_checkpoint_prefixes[model_index],
+                    "runtime_backend": self.resolved_model_backends[model_index],
                     "simulation_index": simulation_index,
                 }
                 for name, values in metric_samples.items():
@@ -1082,6 +1154,8 @@ class Evaluation:
                     "label": label,
                     "model_path": os.path.abspath(self.model_paths[model_index]),
                     "checkpoint": self.selected_checkpoint_prefixes[model_index],
+                    "runtime": self.runtime_provenance[model_index],
+                    "runtime_backend": self.resolved_model_backends[model_index],
                     "metrics": metrics,
                 }
             )
@@ -1092,6 +1166,7 @@ class Evaluation:
                 "simulation_steps": self.simulation_steps,
                 "num_simulations_per_model": self.parameters.num_vmas_envs,
                 "evaluation_seed": self.evaluation_seed,
+                "seed_application": "after_model_construction_before_rollout",
                 "deterministic_actions": self.deterministic_actions,
                 "observation_noise_override": self.observation_noise,
                 "reuse_cached_rollouts": self.reuse_cached_rollouts,

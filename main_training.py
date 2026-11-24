@@ -1,11 +1,33 @@
-from utilities.mappo_cavs import mappo_cavs
-from utilities.helper_training import Parameters
 import argparse
+from pathlib import Path
+import sys
 
 config_file = "configs/current/config_dgppo_nod_gain1_control_finetune.json"
 parser = argparse.ArgumentParser(description="Train with a selected method configuration.")
-parser.add_argument("--config", default=config_file, help="Training configuration JSON file")
-config_file = parser.parse_args().config
+parser.add_argument("--config", help="Training configuration JSON file")
+parser.add_argument("--method", choices=("nod", "sigmarl", "xp_marl"), default="nod",
+                    help="SigmaRL/XP-MARL run the isolated official 1.2.0 implementation")
+args = parser.parse_args()
+original_profiles = {
+    Path("configs/baselines/sigmarl_original.json").resolve(): "sigmarl",
+    Path("configs/baselines/xp_marl_original.json").resolve(): "xp_marl",
+}
+profile_method = original_profiles.get(Path(args.config).resolve()) if args.config else None
+if profile_method and args.method not in ("nod", profile_method):
+    parser.error("--method disagrees with the selected original baseline profile")
+method = profile_method or args.method
+if method != "nod":
+    from baselines.original_sigmarl.runtime import PROJECT_ROOT, launch_worker
+    config = Path(args.config or ("configs/baselines/" + method + "_original.json"))
+    if not config.is_absolute():
+        config = PROJECT_ROOT / config
+    launch_worker(["train", "--method", method, "--config", str(config.resolve())])
+    sys.exit(0)
+
+from utilities.mappo_cavs import mappo_cavs
+from utilities.helper_training import Parameters
+
+config_file = args.config or config_file
 parameters = Parameters.from_json(config_file)
 print(f"[INFO] Config: {config_file}; safety mode: {parameters.safety_control_mode}; output: {parameters.where_to_save}")
 print(f"[INFO] PPO profile: {parameters.ppo_training_profile}; epochs={parameters.num_epochs}; "

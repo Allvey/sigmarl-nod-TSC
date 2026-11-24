@@ -1,7 +1,8 @@
-"""Matched five-metric evaluation of NOD-DGPPO, SigmaRL, MAPPO, and XP-MARL."""
+"""Matched five-metric evaluation of NOD-DGPPO, original SigmaRL, and XP-MARL."""
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -14,28 +15,41 @@ if project_root not in sys.path:
 
 from utilities.constants import SCENARIOS
 from utilities.evaluation_base import Evaluation
+from baselines.original_sigmarl.runtime import BACKENDS
 
 
 ROOT = Path(project_root)
 MODEL_PATHS = [
     "outputs/current/ablations/dgppo_nod_future_evidence_ppo_gate_sequence_control/",
+    "checkpoints/sigmarl_original/config_v1_2_0/",
+    "checkpoints/xp_marl_original/config_v1_2_0/",
+]
+RELEASED_MODEL_PATHS = [
+    MODEL_PATHS[0],
     "checkpoints/itsc24/M0 (our)/",
-    "checkpoints/icra25/M2 (Baseline)/",
     "checkpoints/icra25/M1 (XP-MARL)/",
 ]
-LEGENDS = ["NOD-DGPPO (PPO beta)", "SigmaRL", "MAPPO", "XP-MARL"]
+LEGENDS = ["NOD-DGPPO (PPO beta)", "SigmaRL", "XP-MARL"]
 DEFAULT_SCENARIOS = ["CPM_entire", "intersection_2", "on_ramp_1", "roundabout_1"]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--model-paths", nargs="+", default=MODEL_PATHS,
-        help="Model directories, in the same order as --legends; defaults to the established comparison.",
+        "--model-paths", nargs="+",
+        help="Optional model directories, in the same order as --legends; default compares the three methods.",
     )
     parser.add_argument("--legends", nargs="+", default=LEGENDS)
     parser.add_argument(
-        "--output-root", default="outputs/benchmarks/paper_metrics_four_methods",
+        "--model-backends", nargs="+", choices=BACKENDS,
+        help="One runtime per model; default auto uses upstream for original metadata and current for NOD.",
+    )
+    parser.add_argument(
+        "--baseline-checkpoints", choices=("released", "retrained"), default="retrained",
+        help="Use published checkpoints or outputs selected by the official-root-config training profiles.",
+    )
+    parser.add_argument(
+        "--output-root",
         help="Separate result root for a new comparison, relative to the project root or absolute.",
     )
     parser.add_argument(
@@ -55,6 +69,20 @@ def main() -> None:
     )
     parser.add_argument("--measure-inference-time", action="store_true")
     args = parser.parse_args()
+    use_default_models = args.model_paths is None
+    args.output_root = args.output_root or (
+        "outputs/benchmarks/paper_metrics_original_baselines/" + args.baseline_checkpoints
+        + ("/config_v1_2_0" if args.baseline_checkpoints == "retrained" else "")
+        + ("/three_methods" if use_default_models else "/custom_methods")
+    )
+    if use_default_models:
+        if args.baseline_checkpoints == "released":
+            args.model_paths = list(RELEASED_MODEL_PATHS)
+        else:
+            args.model_paths = list(MODEL_PATHS)
+            for index, method in ((1, "sigmarl"), (2, "xp_marl")):
+                profile = ROOT / "configs/baselines" / (method + "_original.json")
+                args.model_paths[index] = json.loads(profile.read_text())["where_to_save"]
     if args.num_simulations < 1:
         parser.error("--num-simulations must be positive")
     if args.steps < 2:
@@ -65,6 +93,8 @@ def main() -> None:
         parser.error("--model-paths and --legends must have the same number of entries")
     if len(set(args.legends)) != len(args.legends):
         parser.error("--legends must be unique")
+    if args.model_backends is not None and len(args.model_backends) != len(args.model_paths):
+        parser.error("--model-backends must have one entry per --model-paths")
 
     for relative_path in args.model_paths:
         if not (ROOT / relative_path).is_dir():
@@ -105,6 +135,7 @@ def main() -> None:
         evaluator = Evaluation(
             scenario_type=scenario,
             model_paths=model_paths,
+            model_backends=args.model_backends or ["auto"] * len(model_paths),
             fitst_model_index=0,
             idx_our=0,
             num_agents=SCENARIOS[scenario]["n_agents"],

@@ -2,7 +2,9 @@ import csv
 import json
 from types import SimpleNamespace
 
+import pytest
 import torch
+from tensordict import TensorDict
 
 from utilities.evaluation_base import Evaluation, _compute_exit_throughput
 
@@ -38,6 +40,56 @@ def test_throughput_counts_exits_once_per_generation_and_excludes_reset_contacts
 
 def test_throughput_reports_zero_for_open_routes_without_exits():
     torch.testing.assert_close(_compute_exit_throughput(_exit_info(), 0.1), torch.zeros(2))
+
+
+@pytest.mark.parametrize("original_fields", [False, True])
+@pytest.mark.parametrize("enable_ttc", [False, True])
+def test_metric_collection_accepts_real_tensordict(original_fields, enable_ttc, monkeypatch):
+    evaluator = Evaluation(
+        model_paths=["/unused/"], legends=["Test"], render_titles=["Test"],
+        scenario_type="intersection_2", measure_centerline_deviation=False,
+        measure_throughput=True, measure_trajectory_jerk=True,
+        ttc_threshold_seconds=2.0 if enable_ttc else None,
+    )
+    evaluator.parameters = SimpleNamespace(num_vmas_envs=1, device="cpu", dt=0.1)
+    evaluator._init_eva_matrices()
+    shape = (1, 5, 2, 1)
+    positions = torch.zeros(1, 5, 2, 2)
+    positions[..., 1, 0] = 10  # Separated vehicles with identical velocities.
+    velocities = torch.zeros_like(positions)
+    velocities[..., 0] = (torch.arange(5) * 0.1).square().reshape(1, 5, 1)
+    fields = {
+        "testing_route_is_loop": torch.zeros(shape, dtype=torch.bool),
+        "testing_exit_reached": torch.zeros(shape, dtype=torch.bool),
+        "testing_road_contact": torch.zeros(shape, dtype=torch.bool),
+        "testing_entry_contact": torch.zeros(shape, dtype=torch.bool),
+        "is_collision_with_agents": torch.zeros(shape, dtype=torch.bool),
+        "is_collision_with_lanelets": torch.zeros(shape, dtype=torch.bool),
+        "pos": positions, "vel": velocities, "rot": torch.zeros(shape),
+        "nod_world_pos": positions.clone(), "nod_world_vel": velocities.clone(),
+        "nod_ego_generation": torch.zeros(shape, dtype=torch.long),
+    }
+    if original_fields:
+        fields.update(evaluation_world_pos=positions, evaluation_world_vel=velocities,
+                      evaluation_world_rot=torch.zeros(shape),
+                      evaluation_generation=torch.zeros(shape, dtype=torch.long))
+        # The original-backend fields must take precedence over legacy fallbacks.
+        fields["nod_world_vel"] = torch.zeros_like(velocities)
+        fields["nod_ego_generation"] = torch.arange(5).reshape(1, 5, 1, 1).expand(shape)
+    info = TensorDict(fields, batch_size=(1, 5, 2))
+    rollout = TensorDict({
+        "agents": TensorDict({"info": info.clone(), "action": torch.zeros_like(positions)},
+                             batch_size=(1, 5, 2)),
+        "next": TensorDict({"agents": TensorDict({"info": info}, batch_size=(1, 5, 2))},
+                           batch_size=(1, 5)),
+    }, batch_size=(1, 5))
+    monkeypatch.setattr(evaluator, "_get_simulation_outputs", lambda: rollout)
+    evaluator.model_idx = 0
+    evaluator._evaluate_model_i()
+    torch.testing.assert_close(evaluator.trajectory_jerk_rms[0], torch.tensor([2.0]))
+    torch.testing.assert_close(evaluator.vehicle_throughput[0], torch.tensor([0.0]))
+    if enable_ttc:
+        torch.testing.assert_close(evaluator.low_ttc_exposure[0], torch.tensor([0.0]))
 
 
 def test_disabled_metrics_are_absent_from_collection_log_export_and_plots(tmp_path, monkeypatch):

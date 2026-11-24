@@ -73,6 +73,10 @@ Run `/main_training.py`; it now defaults to the current NOD-DGPPO configuration 
 experiment. During training, all intermediate models that improve the saved
 performance are retained.
 
+To train the complete NOD method from random initialization, follow
+[the four-stage from-scratch guide](docs/current/NOD_FROM_SCRATCH.md). The default
+training profile and older `scratch_candidate` profiles still depend on prior weights.
+
 `/scenarios/road_traffic.py` defines the RL environment, such as observation function and reward function. Besides, it provides an interactive interface, which also visualizes the environment. To open the interface, simply run this file. You can use `arrow keys` to control agents and use the `tab key` to switch between agents. Adjust the parameter `scenario_type` to choose a scenario. All available scenarios are listed in the variable `SCENARIOS` in `utilities/constants.py`. It is recommended to use the virtual visualization to check if the environment is as expected before training.
 ### Testing
 After training, run `/main_testing.py` to test the current model, or pass
@@ -80,13 +84,24 @@ After training, run `/main_testing.py` to test the current model, or pass
 [EXPERIMENTS.md](EXPERIMENTS.md) for active experiments and
 [docs/README.md](docs/README.md) for the documentation index.
 
-For the matched all-Actor comparison of NOD-DGPPO, SigmaRL (ITSC24 M0),
-MAPPO (ICRA25 M2 baseline), and XP-MARL (ICRA25 M1)
-checkpoints, first run `python -m scripts.prepare_sota_checkpoints`, then run
-`python utilities/evaluation_tase26.py`. This formal entry point shares the
+For the matched all-Actor comparison of NOD-DGPPO, SigmaRL, and XP-MARL, run
+`python utilities/evaluation_tase26.py` after training the two baselines below.
+The default comparison uses the new original-config training outputs and does
+not include MAPPO. This formal entry point shares the
 paper metrics used by the ITSC24 and ICRA25 evaluation scripts and reports
 collision rate, throughput, trajectory jerk RMS, average speed, and smoothness.
-Results go to `outputs/benchmarks/paper_metrics_four_methods/`. The complete
+SigmaRL and XP-MARL now execute the vendored official 1.2.0 runtime in isolated
+processes. Results go to
+`outputs/benchmarks/paper_metrics_original_baselines/retrained/config_v1_2_0/three_methods/`.
+Train them inside this project with `python main_training.py --method sigmarl`
+and `python main_training.py --method xp_marl`. Both use the official 1.2.0 root
+`config.json` with noise off; XP-MARL differs only in the two priority settings.
+New weights use `checkpoints/{method}_original/config_v1_2_0/`, preserving prior
+training outputs. Then evaluate their new weights
+with `python utilities/evaluation_tase26.py` (`--baseline-checkpoints retrained`
+is the default). Use `--scenarios intersection_2` for just the intersection, or
+`--baseline-checkpoints released` to explicitly select the historical published pair.
+See [the original baseline guide](docs/current/ORIGINAL_BASELINES.md). The complete
 protocol and output paths are documented in
 [configs/benchmarks/README.md](configs/benchmarks/README.md).
 
@@ -98,10 +113,15 @@ outputs, or technical notes in the repository root.
 
 ```text
 configs/
+  baselines/     official SigmaRL and XP-MARL training profiles
   current/       selected NOD-DGPPO training configurations
   ablations/     matched ablation configurations
   benchmarks/    matched SigmaRL, XP-MARL, and NOD-DGPPO comparisons
   archive/       earlier DGPPO, NOD, and staged configurations
+
+baselines/original_sigmarl/
+  upstream/      untouched official 1.2.0 source, maps, and license
+  worker.py      isolated original training/evaluation process
 
 outputs/
   current/       selected model and current ablation results

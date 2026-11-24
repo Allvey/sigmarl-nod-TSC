@@ -1,5 +1,15 @@
 # SigmaRL and XP-MARL benchmark
 
+> Current implementation: [Original baselines](ORIGINAL_BASELINES.md) describes
+> the in-project official 1.2.0 runtime and the formal five-metric comparison.
+> `evaluation_tase26.py` now dispatches original baselines to isolated upstream
+> processes. Its default comparison is now NOD-DGPPO, SigmaRL and XP-MARL,
+> using the official-root-config retraining outputs. Results are under
+> `outputs/benchmarks/paper_metrics_original_baselines/retrained/config_v1_2_0/three_methods/`.
+> Published weights require the explicit `--baseline-checkpoints released` option.
+> The sections below retain the earlier diagnostic protocol and metric history;
+> their shared-runtime descriptions and old formal-output paths are historical.
+
 ## Scope
 
 The first SOTA comparison evaluates three learned controllers:

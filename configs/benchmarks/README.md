@@ -1,6 +1,28 @@
 # Benchmark configurations
 
-## Four-method, five-metric evaluation
+## Three-method, five-metric evaluation
+
+The formal entry point now runs original-format baseline checkpoints through
+the official 1.2.0 implementation vendored inside this project. NOD checkpoints
+continue to use this project's current runtime. See
+[the original baseline guide](../../docs/current/ORIGINAL_BASELINES.md).
+
+To train original SigmaRL and XP-MARL and evaluate their new weights:
+
+```bash
+python main_training.py --method sigmarl
+python main_training.py --method xp_marl
+python utilities/evaluation_tase26.py
+```
+
+Training uses the official 1.2.0 root `config.json` for both methods, with noise
+off; XP-MARL differs only in its two priority settings. New weights go to
+`checkpoints/sigmarl_original/config_v1_2_0/` and
+`checkpoints/xp_marl_original/config_v1_2_0/`. Earlier parent-directory outputs
+remain historical and are not selected by `--baseline-checkpoints retrained`.
+The default evaluation below uses these newly trained weights. Released weights
+are used only when explicitly passing `--baseline-checkpoints released`;
+both choices execute the original baseline runtime.
 
 Run all four scenarios with 32 parallel simulations per method, 1200 nominal
 steps, and environment seed 101:
@@ -14,12 +36,11 @@ The methods, in plot and export order, are:
 | Method | Checkpoint directory |
 | --- | --- |
 | NOD-DGPPO (PPO beta) | `outputs/current/ablations/dgppo_nod_future_evidence_ppo_gate_sequence_control/` |
-| SigmaRL | `checkpoints/itsc24/M0 (our)/` |
-| MAPPO | `checkpoints/icra25/M2 (Baseline)/` |
-| XP-MARL | `checkpoints/icra25/M1 (XP-MARL)/` |
+| SigmaRL | `checkpoints/sigmarl_original/config_v1_2_0/` |
+| XP-MARL | `checkpoints/xp_marl_original/config_v1_2_0/` |
 
-Each directory uses its highest-reward saved policy. MAPPO here denotes the
-ICRA25 non-prioritized baseline; retain that checkpoint provenance in the paper.
+Each directory uses its highest-reward saved policy. The default comparison
+contains these three methods only; MAPPO is not included.
 All vehicles use learned policies. Actions are deterministic and observation
 noise is disabled for every method during evaluation.
 
@@ -36,8 +57,15 @@ Results, including PNG/PDF plots, `metrics_runs.csv`, `metrics_summary.json`,
 and `log.txt`, go to:
 
 ```text
-outputs/benchmarks/paper_metrics_four_methods/<scenario>/steps_1200_envs_32_seed_101/
+outputs/benchmarks/paper_metrics_original_baselines/retrained/config_v1_2_0/three_methods/<scenario>/steps_1200_envs_32_seed_101/
 ```
+
+The default `--baseline-checkpoints retrained` reads each training profile's
+`where_to_save`. `--baseline-checkpoints released` uses the older published
+SigmaRL/XP-MARL pair and a separate `released/three_methods/` result directory.
+Explicit `--model-paths` are respected in either mode; without `--output-root`,
+custom comparisons use a `custom_methods/` suffix instead of `three_methods/`.
+CSV/JSON exports include the actual runtime backend and upstream commit.
 
 Scenarios are `CPM_entire`, `intersection_2`, `on_ramp_1`, and `roundabout_1`.
 Throughput is N/A for the full-network loop routes (`CPM_entire`). Existing
@@ -70,6 +98,9 @@ NOD-DGPPO, SigmaRL, MAPPO, and XP-MARL. It uses:
 - observation noise disabled for every method;
 - the highest-reward intermediate checkpoint in each model directory;
 - learned policies for every vehicle (no rule vehicles).
+
+This historical supplementary diagnostic still uses the modified project's
+runtime. Use `evaluation_tase26.py` for the new original-runtime comparison.
 
 `future_lower_control.json` uses the same evaluator and protocol for the two
 matched future-NOD control branches, the previous NOD-DGPPO checkpoint, and

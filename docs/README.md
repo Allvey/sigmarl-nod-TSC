@@ -26,6 +26,11 @@ method, reusable repository details, or an earlier experiment.
   rule-vehicle visualization setup and output files.
 - [`RULE_VEHICLE_COORDINATION.md`](current/RULE_VEHICLE_COORDINATION.md): current
   centralized coordination used only by rule vehicles during testing.
+- [`ORIGINAL_BASELINES.md`](current/ORIGINAL_BASELINES.md): in-project official
+  SigmaRL/XP-MARL 1.2.0 implementation, official root-config training with only
+  priority toggles differing, provenance and matched five-metric evaluation.
+- [`NOD_FROM_SCRATCH.md`](current/NOD_FROM_SCRATCH.md): complete four-stage NOD
+  training from random initialization, independent outputs, budget and evaluation commands.
 - [`SOTA_BENCHMARK.md`](current/SOTA_BENCHMARK.md): matched all-Actor protocol,
   official SigmaRL and XP-MARL checkpoints, commands, metrics, and outputs.
 - [`FUTURE_RISK_MITIGATION_OPINION_TECHNICAL_REPORT.md`](current/FUTURE_RISK_MITIGATION_OPINION_TECHNICAL_REPORT.md):
