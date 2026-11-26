@@ -365,6 +365,12 @@ class SafetyValueManager:
             if parameters.dgppo_task_mode == "additive":
                 self.barrier_contract.update(dgppo_task_mode="additive",
                                              advantage="full_task_minus_risk_rate")
+            if parameters.dgppo_task_mode == "progressive":
+                self.barrier_contract.update(
+                    dgppo_task_mode="progressive",
+                    progressive_scale=parameters.dgppo_progressive_scale,
+                    advantage="relative_violation_gates_positive_task_preserves_negative",
+                    progressive_unsafe="current_or_next_physical_or_value_boundary")
             if parameters.ppo_training_profile == "original":
                 self.barrier_contract.update(
                     normalization="raw_task_GAE_including_warmup", ppo_training_profile="original",
@@ -406,6 +412,11 @@ class SafetyValueManager:
                         opinion_deadzone=parameters.dgppo_opinion_deadzone,
                         deadzone_fallback="fixed_alpha",
                     )
+                if (parameters.dgppo_alpha_source == "opinion"
+                        and parameters.dgppo_opinion_deadzone_mode == "continuous"):
+                    self.barrier_contract.update(
+                        opinion_deadzone_mode="continuous",
+                        opinion_alpha_rule="base_plus_span_clipped_gain_rescaled_deadzone_z_when_safe")
         if parameters.safety_training_mode == 'finetune':
             self.barrier_contract.update(safety_training_mode='finetune',
                                          actor_warmup='frozen_until_value_fit_batches',

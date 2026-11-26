@@ -1,0 +1,25 @@
+{
+  "scenario": "bottleneck_1",
+  "vehicles": {},
+  "mode": "fraction",
+  "requested_fraction": 0.0,
+  "actual_fraction": 0.0,
+  "profile_weights": {
+    "yielding": 0.25,
+    "moderate": 0.5,
+    "non_yielding": 0.25
+  },
+  "profile_counts": {
+    "yielding": 0,
+    "moderate": 0,
+    "non_yielding": 0
+  },
+  "assignment_seed": 123,
+  "reserved_actor_index": 0,
+  "controller_version": "coordinated_rules_v7",
+  "cruise_speed": 1.0,
+  "lateral_accel_limit": 1.8,
+  "non_yielding_emergency_ttc": 0.45,
+  "seed": 101,
+  "checkpoint": "reward5.83"
+}

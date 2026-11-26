@@ -1,0 +1,12 @@
+{
+  "scenario": "on_ramp_2_multilane",
+  "n_agents": 10,
+  "model_path": "/Users/zhangxiaotong/Code/sigmarl-nod-TSC/checkpoints/nod_error_scale_repeat/seed5080868027432654403/02_control",
+  "checkpoint": "reward7.38",
+  "environment_seed": 101,
+  "max_steps": 1200,
+  "rule_fraction": 0.0,
+  "rule_vehicles": {},
+  "deterministic_actions": true,
+  "observation_noise": false
+}

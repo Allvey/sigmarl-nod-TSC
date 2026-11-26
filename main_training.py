@@ -40,6 +40,9 @@ if parameters.safety_control_mode == "dgppo":
           f"road safe/recovery={parameters.dgppo_road_alpha_safe}/"
           f"{parameters.dgppo_road_alpha_recovery}; opinion gain={parameters.dgppo_alpha_gain}; "
           f"deadzone={parameters.dgppo_opinion_deadzone}")
+    print(f"[INFO] Safety gate: {parameters.dgppo_task_mode}; "
+          f"progressive scale={parameters.dgppo_progressive_scale}; "
+          f"deadzone mapping={parameters.dgppo_opinion_deadzone_mode}")
 print(f"[INFO] Actor opinion input: {parameters.nod_actor_opinion_mode}")
 if parameters.is_using_nod_opinion:
     print(f"[INFO] NOD evidence: {parameters.nod_evidence_mode}, "

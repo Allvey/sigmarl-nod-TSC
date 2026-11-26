@@ -12,14 +12,21 @@ from .barrier import aligned_opinions, aligned_future_lower_bounds
 
 
 @torch.no_grad()
-def opinion_alpha(td, current, value, *, alpha, span, gain=1.0, deadzone=0.0):
+def opinion_alpha(td, current, value, *, alpha, span, gain=1.0, deadzone=0.0,
+                  deadzone_mode="hard"):
     """Adjust only safe, identity-aligned pair heads using pre-action opinions."""
     available, opinions = aligned_opinions(td, current)
     n = opinions.shape[-1]
     g, v = current['g'][..., :n], value[..., :n]
     safe = current['valid'][..., :n] & torch.isfinite(g) & torch.isfinite(v) & (g <= 0) & (v < 0)
     applied = available & safe & (opinions.abs() > float(deadzone))
-    mapped_opinions = (gain * opinions).clamp(-1., 1.)
+    if deadzone_mode == "continuous":
+        opinions_for_mapping = opinions.sign() * (opinions.abs() - deadzone).clamp_min(0) / (1 - deadzone)
+    elif deadzone_mode == "hard":
+        opinions_for_mapping = opinions
+    else:
+        raise ValueError("Invalid deadzone_mode")
+    mapped_opinions = (gain * opinions_for_mapping).clamp(-1., 1.)
     coefficients = alpha.clone() if isinstance(alpha, torch.Tensor) else torch.full_like(value, alpha)
     pair_base = coefficients[..., :n].clone()
     coefficients[..., :n] = torch.where(
@@ -103,10 +110,10 @@ def dgppo_targets(current, following, next_value, done, gamma, gae_lambda):
 
 @torch.no_grad()
 def dgppo_advantage(task, current, following, value, next_value, *, dt, alpha, eps, weight,
-                    task_mode="gated"):
+                    task_mode="gated", progressive_scale=1.0):
     """Task scaling is resolved upstream; never re-center the mixed advantage."""
-    if task_mode not in {"gated", "additive"}:
-        raise ValueError("task_mode must be 'gated' or 'additive'")
+    if task_mode not in {"gated", "additive", "progressive"}:
+        raise ValueError("Invalid task_mode")
     valid = (current['valid'] & following['valid'] & same_entities(current, following)
              & torch.isfinite(value) & torch.isfinite(next_value)
              & torch.isfinite(current['g']) & torch.isfinite(following['g']))
@@ -119,12 +126,24 @@ def dgppo_advantage(task, current, following, value, next_value, *, dt, alpha, e
     # transitions fall back to task PPO and are never labelled certified-safe.
     eligible = complete | violation
     penalty = torch.where(valid, (delta + eps).clamp_min(0), 0.).amax(-1, keepdim=True)
-    retained_task = task if task_mode == "additive" else torch.where(violation.unsqueeze(-1), 0., task)
+    retention = torch.ones_like(task) if task_mode == "additive" else (~violation).unsqueeze(-1).to(task.dtype)
+    if task_mode == "progressive":
+        # Dimensionless relative violation. Near the boundary the denominator
+        # shrinks, so the same positive risk rate suppresses progress sooner.
+        floor = max(float(eps), 1e-8)
+        severity = torch.where(valid, delta.clamp_min(0) / ((alpha * value).abs() + floor), 0.)
+        retention = (1 - severity.amax(-1, keepdim=True) / progressive_scale).clamp(0, 1)
+        unsafe = (valid & ((current['g'] > 0) | (following['g'] > 0)
+                           | (value >= 0) | (next_value >= 0))).any(-1, keepdim=True)
+        retention = torch.where(unsafe, 0., retention)
+        retained_task = retention * task.clamp_min(0) + task.clamp_max(0)
+    else:
+        retained_task = retention * task
     mixed = retained_task - weight * penalty
     adjusted = torch.where(eligible.unsqueeze(-1), mixed, task) if weight > 0 else task
     return adjusted.detach(), dict(delta=delta, valid=valid, eligible=eligible,
                                    penalty=penalty, violation=violation, complete=complete,
-                                   recovery=(value > 0) & valid)
+                                   recovery=(value > 0) & valid, task_retention=retention)
 
 
 @torch.no_grad()
@@ -140,6 +159,7 @@ def prepare_dgppo_advantage(manager, td, advantage_key):
     metrics = dict(barrier_enabled=float(enabled), barrier_ready=float(ready), barrier_active=0.,
                    barrier_dgppo=1., barrier_weight=weight, barrier_fit_batches=manager.barrier_fit_batches,
                    barrier_task_additive=float(p.dgppo_task_mode == "additive"),
+                   barrier_task_progressive=float(p.dgppo_task_mode == "progressive"),
                    road_alpha_safe=p.dgppo_road_alpha_safe,
                    road_alpha_recovery=p.dgppo_road_alpha_recovery)
     opinion_mode = getattr(p, 'dgppo_opinion_alpha', False)
@@ -183,11 +203,13 @@ def prepare_dgppo_advantage(manager, td, advantage_key):
         else:
             alpha, opinion_info = opinion_alpha(td, current, value, alpha=alpha,
                                                 span=p.dgppo_alpha_span, gain=p.dgppo_alpha_gain,
-                                                deadzone=p.dgppo_opinion_deadzone)
+                                                deadzone=p.dgppo_opinion_deadzone,
+                                                deadzone_mode=p.dgppo_opinion_deadzone_mode)
     # Scaling has already been applied above; do not normalize the mixed result.
     adjusted, info = dgppo_advantage(task, current, following, value, nxt,
                                     dt=p.dt, alpha=alpha, eps=p.dgppo_eps, weight=weight,
-                                    task_mode=p.dgppo_task_mode)
+                                    task_mode=p.dgppo_task_mode,
+                                    progressive_scale=p.dgppo_progressive_scale)
     td.set(advantage_key, adjusted)
     td.set(('agents', 'barrier_violation_mask'), info['violation'].unsqueeze(-1))
     def mean(x):
@@ -197,7 +219,8 @@ def prepare_dgppo_advantage(manager, td, advantage_key):
         # of opinions, including suppression by a dominant road/collision head.
         fixed, fixed_info = dgppo_advantage(
             task, current, following, value, nxt, dt=p.dt, alpha=fixed_alpha,
-            eps=p.dgppo_eps, weight=weight, task_mode=p.dgppo_task_mode)
+            eps=p.dgppo_eps, weight=weight, task_mode=p.dgppo_task_mode,
+            progressive_scale=p.dgppo_progressive_scale)
         n = opinion_info['opinions'].shape[-1]
         pair = info['valid'][..., :n] & info['eligible'].unsqueeze(-1) & opinion_info['safe']
         available = pair & opinion_info['available']
@@ -236,7 +259,6 @@ def prepare_dgppo_advantage(manager, td, advantage_key):
                    barrier_positive_mean=mean(info['penalty'][info['eligible']]),
                    barrier_advantage_delta_abs=mean((adjusted - raw_task).abs()),
                    barrier_task_retention_mean=mean(
-                       (torch.ones_like(info['violation']) if p.dgppo_task_mode == "additive"
-                        else ~info['violation'])[info['eligible']]),
+                       info['task_retention'].squeeze(-1)[info['eligible']]),
                    barrier_observed_violation_count=float((following['valid'] & (following['g'] > 0)).sum()))
     return metrics

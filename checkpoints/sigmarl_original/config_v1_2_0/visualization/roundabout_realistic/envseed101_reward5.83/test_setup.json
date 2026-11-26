@@ -1,0 +1,16 @@
+{
+  "method": "sigmarl",
+  "scenario": "roundabout_realistic",
+  "n_agents": 16,
+  "environment_backend": "current_shared_visualization",
+  "model_path": "/Users/zhangxiaotong/Code/sigmarl-nod-TSC/checkpoints/sigmarl_original/config_v1_2_0",
+  "checkpoint": "reward5.83",
+  "environment_seed": 101,
+  "max_steps": 1200,
+  "rule_fraction": 0.0,
+  "rule_vehicles": {},
+  "deterministic_actions": true,
+  "observation_noise": false,
+  "lane_collision_margin": 0.02,
+  "road_collision_mode": "road_edges"
+}

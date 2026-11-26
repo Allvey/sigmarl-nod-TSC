@@ -93,6 +93,7 @@ def _find_fixed_state(env, policy, parameters, *, ego: int, max_steps: int):
                 span=parameters.dgppo_alpha_span,
                 gain=parameters.dgppo_alpha_gain,
                 deadzone=parameters.dgppo_opinion_deadzone,
+                deadzone_mode=parameters.dgppo_opinion_deadzone_mode,
             )
             continuous = (
                 state["valid"] & following["valid"]
@@ -164,6 +165,7 @@ def _probe(policy, manager, parameters, fixed, following, next_value, *,
             span=parameters.dgppo_alpha_span,
             gain=parameters.dgppo_alpha_gain,
             deadzone=parameters.dgppo_opinion_deadzone,
+            deadzone_mode=parameters.dgppo_opinion_deadzone_mode,
         )
         task = value.new_zeros(*value.shape[:-1], 1)
         _, barrier = dgppo_advantage(
@@ -171,6 +173,7 @@ def _probe(policy, manager, parameters, fixed, following, next_value, *,
             dt=parameters.dt, alpha=coefficients,
             eps=parameters.dgppo_eps, weight=parameters.dgppo_weight,
             task_mode=parameters.dgppo_task_mode,
+            progressive_scale=parameters.dgppo_progressive_scale,
         )
         action = probe.get(("agents", "action"))[0, ego]
         loc = probe.get(("agents", "loc"))[0, ego]

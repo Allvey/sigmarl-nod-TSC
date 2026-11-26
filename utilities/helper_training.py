@@ -868,6 +868,7 @@ class Parameters:
         dgppo_alpha_span: float = 5.0,
         dgppo_alpha_gain: float = 1.0,
         dgppo_opinion_deadzone: float = 0.0,
+        dgppo_opinion_deadzone_mode: str = "hard",
         nod_actor_opinion_mode: str = "online",
         dgppo_road_alpha_safe: float = None,
         dgppo_road_alpha_recovery: float = None,
@@ -939,6 +940,7 @@ class Parameters:
         safety_finetune_lr: float = 5e-5,
         safety_finetune_target_kl: float = 0.01,
         dgppo_task_mode: str = "gated",  # additive retains task advantages on unsafe samples
+        dgppo_progressive_scale: float = 1.0,
     ):
         if nod_observation_mode not in {"legacy_paths", "local_kinematics"}:
             raise ValueError("Invalid NOD observation mode")
@@ -951,9 +953,12 @@ class Parameters:
                 ((is_using_nod_opinion or is_using_nod_actor) and not dgppo_nod)
                 or (nod_freeze_training and not dgppo_nod)):
             raise ValueError("DGPPO NOD requires both opinion and Actor inputs in local_kinematics mode")
-        if dgppo_task_mode not in {"gated", "additive"}:
-            raise ValueError("dgppo_task_mode must be 'gated' or 'additive'")
+        if dgppo_task_mode not in {"gated", "additive", "progressive"}:
+            raise ValueError("Invalid dgppo_task_mode")
         self.dgppo_task_mode = dgppo_task_mode
+        if not math.isfinite(dgppo_progressive_scale) or dgppo_progressive_scale <= 0:
+            raise ValueError("dgppo_progressive_scale must be finite and positive")
+        self.dgppo_progressive_scale = dgppo_progressive_scale
         if ppo_training_profile not in {"current", "original"}:
             raise ValueError("ppo_training_profile must be 'current' or 'original'")
         self.ppo_training_profile = ppo_training_profile
@@ -1095,6 +1100,9 @@ class Parameters:
         self.dgppo_alpha_span = dgppo_alpha_span
         self.dgppo_alpha_gain = dgppo_alpha_gain
         self.dgppo_opinion_deadzone = dgppo_opinion_deadzone
+        if dgppo_opinion_deadzone_mode not in {"hard", "continuous"}:
+            raise ValueError("Invalid dgppo_opinion_deadzone_mode")
+        self.dgppo_opinion_deadzone_mode = dgppo_opinion_deadzone_mode
         if nod_actor_opinion_mode not in {"online", "neutral"}:
             raise ValueError("nod_actor_opinion_mode must be online or neutral")
         if nod_actor_opinion_mode == "neutral" and not dgppo_nod:

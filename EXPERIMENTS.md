@@ -15,6 +15,34 @@ below document earlier experiment selections and training branches.
 
 ## Current benchmark candidate
 
+### Progressive safety-control candidate (2026-11-26)
+
+Run `python main_training.py --method nod --config configs/current/config_dgppo_nod_progressive_control.json`.
+This separate 70-iteration branch initializes Actor, task Critic and Safety Value
+from `checkpoints/nod_error_scale_repeat/seed5080868027432654403/02_control/reward7.38`,
+freezes NOD and uses the same seed, `5080868027432654403`.
+Results go to `checkpoints/nod_progressive_control/seed5080868027432654403/`.
+The fixed benchmark models and evaluation defaults are unchanged.
+
+The opt-in `dgppo_task_mode="progressive"` uses
+`k=clip(1-max_valid(relu(C)/(|alpha*V|+max(eps,1e-8)))/scale,0,1)` and
+`advantage=k*relu(task)+min(task,0)-weight*penalty`, with
+`dgppo_progressive_scale=1`. Larger scale retains more positive task advantage.
+Current or successor physical violation (`g>0`) or nonnegative Safety Value
+forces `k=0`. Existing identity/validity masks, risk penalty and fallback rules
+remain active; this is a training heuristic, not a collision-free guarantee.
+
+`dgppo_opinion_deadzone_mode="continuous"` maps opinions through
+`sign(z)*max(|z|-d,0)/(1-d)` before gain and clipping; here `d=0.1`, gain=1,
+base alpha=10 and span=5. Training and the visualization overlay share this rule.
+The checkpoint barrier contract records both changes and restarts Value warmup.
+Legacy configurations default to `gated` and `hard`, preserving old behavior.
+No longitudinal smoothness cost or vehicle dynamics change is included in this
+first step; those belong to the next comparison after assessing throughput,
+collision breakdown, action changes and jerk with the existing evaluator.
+
+The following candidate descriptions record earlier experiments.
+
 The model currently selected for comparison with SigmaRL and XP-MARL is:
 
 ```text
