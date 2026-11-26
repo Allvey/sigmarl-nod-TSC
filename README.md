@@ -73,9 +73,11 @@ Run `/main_training.py`; it now defaults to the current NOD-DGPPO configuration 
 experiment. During training, all intermediate models that improve the saved
 performance are retained.
 
-To train the complete NOD method from random initialization, follow
-[the four-stage from-scratch guide](docs/current/NOD_FROM_SCRATCH.md). The default
-training profile and older `scratch_candidate` profiles still depend on prior weights.
+To train from random initialization with geometric evidence and a learned error
+scale, follow [the 250+70 iteration guide](docs/current/ERROR_SCALE_FROM_SCRATCH.md).
+The separate [future-evidence/PPO-beta route](docs/current/NOD_FROM_SCRATCH.md)
+also uses two stages. The default training profile and older `scratch_candidate`
+profiles still depend on prior weights.
 
 `/scenarios/road_traffic.py` defines the RL environment, such as observation function and reward function. Besides, it provides an interactive interface, which also visualizes the environment. To open the interface, simply run this file. You can use `arrow keys` to control agents and use the `tab key` to switch between agents. Adjust the parameter `scenario_type` to choose a scenario. All available scenarios are listed in the variable `SCENARIOS` in `utilities/constants.py`. It is recommended to use the virtual visualization to check if the environment is as expected before training.
 ### Testing
@@ -84,22 +86,41 @@ After training, run `/main_testing.py` to test the current model, or pass
 [EXPERIMENTS.md](EXPERIMENTS.md) for active experiments and
 [docs/README.md](docs/README.md) for the documentation index.
 
-For the matched all-Actor comparison of NOD-DGPPO, SigmaRL, and XP-MARL, run
-`python utilities/evaluation_tase26.py` after training the two baselines below.
-The default comparison uses the new original-config training outputs and does
-not include MAPPO. This formal entry point shares the
-paper metrics used by the ITSC24 and ICRA25 evaluation scripts and reports
+`main_testing.py` now defaults to the fixed error-scale NOD model with all vehicles
+controlled by the Actor, deterministic actions and environment seed 101. Use
+`--scenarios intersection_3 intersection_4 on_ramp_2_multilane roundabout_2` for
+sequential visualization, or `--rule-fraction 0.5` to enable mixed rule control.
+See [scenario visualization](docs/current/SCENARIO_VISUALIZATION.md) for video paths.
+
+For the aerial-inspired roundabout with curved approaches, run
+`python main_testing.py --scenario roundabout_realistic --no-speed-print`.
+See [roundabout assets](docs/current/ROUNDABOUT_REALISTIC.md) for topology,
+asset regeneration and output paths.
+
+For the straight divided bottleneck (20 vehicles, 2-to-1-to-2 lanes per direction),
+run `python main_testing.py --scenario bottleneck_1 --no-speed-print`.
+See [bottleneck assets](docs/current/BOTTLENECK_SCENARIO.md) for geometry,
+collision boundaries, editable assets and regeneration.
+
+For the matched all-Actor comparison of NOD-DGPPO, SigmaRL, XP-MARL and TSC, run
+`python utilities/evaluation_tase26.py`. The fixed three-model selection uses
+the error-scale NOD control branch, retrained original SigmaRL, and released
+ICRA25 XP-MARL M1. TSC uses `../sigmarl-traffic/outputs/TSC/seed5/` in its own
+project and process. All methods share metrics and plotting in this project:
 collision rate, throughput, trajectory jerk RMS, average speed, and smoothness.
-SigmaRL and XP-MARL now execute the vendored official 1.2.0 runtime in isolated
-processes. Results go to
-`outputs/benchmarks/paper_metrics_original_baselines/retrained/config_v1_2_0/three_methods/`.
+The default six maps are CPM_entire, intersection_2, on_ramp_1, roundabout_1,
+roundabout_realistic and bottleneck_1. New maps use identical native geometry,
+entry spawning and physical-curb contacts across the four isolated runtimes.
+Results go to `outputs/benchmarks/paper_metrics_with_tsc/seed5/mixed/four_methods/six_scenarios/`.
+Use `--without-tsc` for the fixed three-model comparison. See
+[the TSC evaluation guide](docs/current/TSC_BASELINE.md).
 Train them inside this project with `python main_training.py --method sigmarl`
 and `python main_training.py --method xp_marl`. Both use the official 1.2.0 root
 `config.json` with noise off; XP-MARL differs only in the two priority settings.
 New weights use `checkpoints/{method}_original/config_v1_2_0/`, preserving prior
 training outputs. Then evaluate their new weights
-with `python utilities/evaluation_tase26.py` (`--baseline-checkpoints retrained`
-is the default). Use `--scenarios intersection_2` for just the intersection, or
+with `python utilities/evaluation_tase26.py --baseline-checkpoints retrained`.
+Use `--scenarios intersection_2` for just the intersection, or
 `--baseline-checkpoints released` to explicitly select the historical published pair.
 See [the original baseline guide](docs/current/ORIGINAL_BASELINES.md). The complete
 protocol and output paths are documented in

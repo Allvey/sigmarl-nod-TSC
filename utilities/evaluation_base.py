@@ -62,6 +62,8 @@ from utilities.constants import SCENARIOS, AGENTS
 from utilities.colors import Color, colors
 from utilities.sota_evaluation import select_best_checkpoint
 from baselines.original_sigmarl.runtime import BACKENDS, launch_worker, resolve_backend
+from baselines.scenario_assets import scene_asset_record
+from baselines.tsc.runtime import DEFAULT_TSC_PROJECT, launch_worker as launch_tsc_worker
 
 
 def _compute_low_ttc_exposure_percent(positions, velocities, headings, threshold_s):
@@ -315,6 +317,7 @@ class Evaluation:
         ):
             raise ValueError("model_backends must match model_paths and use known runtimes")
         self.resolved_model_backends = list(self.model_backends)
+        self.tsc_project = Path(kwargs.pop("tsc_project", DEFAULT_TSC_PROJECT)).resolve()
         self.runtime_provenance = [{} for _ in self.model_paths]
 
         self.x_ticks = kwargs.pop(
@@ -492,6 +495,7 @@ class Evaluation:
             return self._get_original_baseline_outputs(backend)
         self.runtime_provenance[self.model_i] = {
             "runtime_backend": "current", "trainer": "utilities.mappo_cavs",
+            "scene_assets": scene_asset_record(self.scenario_type),
         }
         # Load the model with the highest reward
         self.parameters.episode_reward_mean_current = (
@@ -597,13 +601,12 @@ class Evaluation:
         return out_td
 
     def _get_original_baseline_outputs(self, backend):
-        """Collect in a separate upstream process; reuse only metric/plot code."""
+        """Collect in an isolated baseline process; share only metrics/plots."""
         method = "xp_marl" if backend == "xpmarl_1_2_0" else "sigmarl"
         with tempfile.TemporaryDirectory(prefix="sigmarl_original_") as temporary:
             output = Path(temporary) / "rollout.pth"
             provenance = Path(temporary) / "runtime.json"
-            args = [
-                "rollout", "--method", method,
+            args = ([] if backend == "tsc_external" else ["rollout", "--method", method]) + [
                 "--metadata", str(self.selected_checkpoint_metadata.resolve()),
                 "--output", str(output), "--provenance-output", str(provenance),
                 "--scenario", self.scenario_type,
@@ -626,7 +629,10 @@ class Evaluation:
             if self.is_save_simulation_video:
                 video = Path(self.where_to_save_eva_results) / (self.video_names[self.model_i] + ".mp4")
                 args += ["--video-output", str(video.resolve())]
-            launch_worker(args)
+            if backend == "tsc_external":
+                launch_tsc_worker(args, project=self.tsc_project)
+            else:
+                launch_worker(args)
             out_td = torch.load(output, map_location=self.parameters.device)
             record = json.loads(provenance.read_text())
         self.runtime_provenance[self.model_i] = record
@@ -1163,6 +1169,7 @@ class Evaluation:
             "metric_source": "utilities.evaluation_base.Evaluation",
             "protocol": {
                 "scenario": self.scenario_type,
+                "num_agents": self.num_agents,
                 "simulation_steps": self.simulation_steps,
                 "num_simulations_per_model": self.parameters.num_vmas_envs,
                 "evaluation_seed": self.evaluation_seed,
@@ -1170,6 +1177,7 @@ class Evaluation:
                 "deterministic_actions": self.deterministic_actions,
                 "observation_noise_override": self.observation_noise,
                 "reuse_cached_rollouts": self.reuse_cached_rollouts,
+                "scene_assets": scene_asset_record(self.scenario_type),
             },
             "models": aggregate,
         }

@@ -259,7 +259,7 @@ def test_worker_reapplies_matched_seed_after_construction_and_preserves_priority
     assert record["seed"] == 202 and record["recorded_steps"] == 4
 
 
-@pytest.mark.parametrize("checkpoint_source", [None, "released", "retrained"])
+@pytest.mark.parametrize("checkpoint_source", [None, "mixed", "released", "retrained"])
 def test_formal_entrypoint_selects_weights_and_separates_result_directories(tmp_path, monkeypatch, checkpoint_source):
     from utilities import evaluation_tase26 as entry
     profiles = {}
@@ -282,17 +282,21 @@ def test_formal_entrypoint_selects_weights_and_separates_result_directories(tmp_
 
     monkeypatch.setattr(entry, "ROOT", tmp_path)
     monkeypatch.setattr(entry, "Evaluation", FakeEvaluation)
-    arguments = ["evaluation_tase26.py", "--scenarios", "intersection_2"]
+    arguments = ["evaluation_tase26.py", "--without-tsc", "--scenarios", "intersection_2"]
     if checkpoint_source is not None:
         arguments += ["--baseline-checkpoints", checkpoint_source]
     monkeypatch.setattr("sys.argv", arguments)
     entry.main()
-    source = checkpoint_source or "retrained"
+    source = checkpoint_source or "mixed"
     assert calls[0]["model_backends"] == ["auto"] * 3
-    assert calls[0]["legends"] == ["NOD-DGPPO (PPO beta)", "SigmaRL", "XP-MARL"]
+    assert calls[0]["legends"] == ["NOD-DGPPO", "SigmaRL", "XP-MARL"]
     assert calls[0]["x_ticks"] == calls[0]["legends"]
     assert len(calls[0]["model_paths"]) == 3
-    expected = profiles["sigmarl"]["where_to_save"] if source == "retrained" else "checkpoints/itsc24/M0 (our)"
+    assert Path(calls[0]["model_paths"][0]) == (
+        tmp_path / "checkpoints/nod_error_scale_repeat/seed5080868027432654403/02_control"
+    )
+    expected = ("checkpoints/itsc24/M0 (our)" if source == "released"
+                else profiles["sigmarl"]["where_to_save"])
     assert Path(calls[0]["model_paths"][1]) == tmp_path / expected
     if source == "retrained":
         assert Path(calls[0]["model_paths"][2]) == tmp_path / profiles["xp_marl"]["where_to_save"]

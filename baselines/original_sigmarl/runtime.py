@@ -10,7 +10,7 @@ import sys
 PACKAGE = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE.parents[1]
 UPSTREAM = PACKAGE / "upstream"
-BACKENDS = ("current", "auto", "sigmarl_1_2_0", "xpmarl_1_2_0")
+BACKENDS = ("current", "auto", "sigmarl_1_2_0", "xpmarl_1_2_0", "tsc_external")
 
 
 def verify_upstream():
@@ -26,6 +26,8 @@ def resolve_backend(backend, raw_parameters):
     if backend not in BACKENDS:
         raise ValueError("Unknown evaluation backend: " + str(backend))
     if backend == "auto":
+        if raw_parameters.get("use_topology_neighbor_selection", False):
+            return "tsc_external"
         # Modified-project checkpoints carry this field even when NOD is off.
         if "is_using_nod_opinion" in raw_parameters:
             return "current"

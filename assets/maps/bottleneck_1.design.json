@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "description": "Straight divided 2-to-1-to-2 bottleneck, based on the approved schematic; not a surveyed road.",
+  "lane_width": 0.18,
+  "median_width": 0.08,
+  "approach_length": 2.0,
+  "taper_length": 1.05,
+  "throat_length": 1.0,
+  "exit_length": 2.0,
+  "world_margin": 0.3,
+  "world_height": 3.8,
+  "terminal_pavement_extension": 0.12,
+  "sample_spacing": 0.035,
+  "vehicle_size": [0.16, 0.08],
+  "n_agents": 20,
+  "viewer_size": [1280, 640]
+}

@@ -1,8 +1,17 @@
-"""Read-only evaluation fields; no changes to observations/actions/rewards/resets."""
+"""Passive evaluation fields, optionally over shared new-map environment assets."""
 
 
-def instrument_scenario(base_class):
+def instrument_scenario(base_class, scenario_name=None):
     import torch
+
+    if scenario_name in ("roundabout_realistic", "bottleneck_1"):
+        import importlib.util
+        from pathlib import Path
+        path = Path(__file__).resolve().parents[1]/"scenario_assets.py"
+        spec = importlib.util.spec_from_file_location("evaluation_scene_assets", path)
+        assets = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(assets)
+        base_class = assets.install_scene_assets(base_class, scenario_name)
 
     class MeasuredScenario(base_class):
         def reset_world_at(self, env_index=None, agent_index=None):

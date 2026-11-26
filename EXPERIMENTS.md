@@ -1,5 +1,18 @@
 # Experiment index
 
+## Current evaluation selection
+
+`python utilities/evaluation_tase26.py` now compares the fixed NOD error-scale
+control model, original SigmaRL, ICRA25 XP-MARL M1 and external TSC seed5.
+Exact directories, five metrics and commands are in
+[TSC baseline guide](docs/current/TSC_BASELINE.md). TSC remains in sibling
+`sigmarl-traffic`; four-method results stay in this project under
+`outputs/benchmarks/paper_metrics_with_tsc/seed5/mixed/four_methods/six_scenarios/`.
+The default maps are CPM_entire, intersection_2, on_ramp_1, roundabout_1,
+roundabout_realistic and bottleneck_1, with shared native assets for the two new maps.
+`--without-tsc` retains the fixed three-method evaluation. Model descriptions
+below document earlier experiment selections and training branches.
+
 ## Current benchmark candidate
 
 The model currently selected for comparison with SigmaRL and XP-MARL is:

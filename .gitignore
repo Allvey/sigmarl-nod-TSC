@@ -25,6 +25,12 @@ wandb/
 *.svg
 *.webp
 
+# Editable source for the approved roundabout's vector assets.
+!assets/maps/roundabout_realistic.reference.png
+!assets/maps/roundabout_realistic.aerial.png
+!assets/maps/roundabout_realistic.svg
+!assets/maps/bottleneck_1.svg
+
 # Ignore video files
 *.mp4
 *.avi

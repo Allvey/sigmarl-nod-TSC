@@ -61,6 +61,8 @@ def main():
                 "--rule-assignment-seed", str(args.rule_assignment_seed),
                 "--scenario", args.scenario,
                 "--max-steps", str(args.max_steps),
+                "--rule-fraction", "0.5",
+                "--stochastic-actions",
                 "--no-speed-print",
                 "--no-realtime",
             ]

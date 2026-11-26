@@ -108,6 +108,31 @@ class BoundedNormalParamExtractor(NormalParamExtractor):
         return loc, scale.clamp_max(1.0)
 
 
+def _load_behavior_variance_bounds(prefix, device):
+    """Read the pinned NOD contract, including final checkpoints without JSON."""
+    checkpoint = torch.load(prefix + "_nod.pth", map_location=device)
+    bounds = checkpoint.get("variance_log_bounds")
+    if bounds is None:
+        # Older checkpoints did not embed the bounds. Only use metadata for
+        # this exact prefix; another reward snapshot may use another contract.
+        metadata_path = prefix + "_data.json"
+        if not os.path.isfile(metadata_path):
+            raise FileNotFoundError(
+                "Behavior NOD lacks variance_log_bounds and its matching metadata "
+                f"is missing: {metadata_path}"
+            )
+        with open(metadata_path, encoding="utf-8") as file:
+            source = json.load(file)["parameters"]
+        bounds = [source.get("nod_min_log_sigma", -2.5),
+                  source.get("nod_max_log_sigma", 0.0)]
+    if (not isinstance(bounds, (list, tuple)) or len(bounds) != 2
+            or not all(isinstance(value, (int, float)) and math.isfinite(value)
+                       for value in bounds)
+            or bounds[0] >= bounds[1]):
+        raise ValueError(f"Invalid behavior NOD variance_log_bounds: {bounds}")
+    return tuple(bounds)
+
+
 def _generate_seed() -> int:
     return int.from_bytes(os.urandom(8), byteorder="big", signed=False)
 
@@ -405,11 +430,10 @@ def mappo_cavs(parameters: Parameters):
     if error_variance_candidate:
         # The candidate uses a wider error-scale range, while the original
         # behavior filter must retain its saved range during collection.
-        with open(parameters.training_init_checkpoint + "_data.json", encoding="utf-8") as file:
-            source_parameters = json.load(file)["parameters"]
+        bounds = _load_behavior_variance_bounds(
+            parameters.training_init_checkpoint, parameters.device)
         behavior_parameters.nod_variance_supervision = "posterior"
-        behavior_parameters.nod_min_log_sigma = source_parameters.get("nod_min_log_sigma", -2.5)
-        behavior_parameters.nod_max_log_sigma = source_parameters.get("nod_max_log_sigma", 0.0)
+        behavior_parameters.nod_min_log_sigma, behavior_parameters.nod_max_log_sigma = bounds
     nod_manager = NODOpinionManager(parameters=behavior_parameters)
     scenario.nod_manager = nod_manager
     use_nod_actor = bool(

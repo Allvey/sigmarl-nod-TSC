@@ -34,6 +34,7 @@ from vmas.simulator.scenario import BaseScenario
 from utilities.kinematic_bicycle import KinematicBicycle
 from utilities.colors import Color, colors
 from utilities.collision_counter import CollisionCounter
+from utilities.road_collision import lane_boundary_collision, RoadBoundaryCollision
 from utilities.nod_marl.interaction import build_directed_interactions
 from utilities.nod_marl.safety import safety_margins
 from utilities.nod_marl.deadlock import DeadlockTracker
@@ -231,19 +232,35 @@ class ScenarioRoadTraffic(BaseScenario):
         )  # The number of steps to observe (include the current step). At least one, and at most `n_stored_steps`
 
         # World dimensions
-        self.world_x_dim = SCENARIOS[scenario_type]["world_x_dim"]
-        self.world_y_dim = SCENARIOS[scenario_type]["world_y_dim"]
+        # mappo_cavs supplies the selected scene through self.parameters. New
+        # maps may explicitly define their viewport; retain legacy defaults for
+        # old OSM maps that do not define dimensions.
+        selected_scene = getattr(getattr(self, "parameters", None), "scenario_type", scenario_type)
+        layout = SCENARIOS[selected_scene]
+        if "world_x_dim" not in layout or "world_y_dim" not in layout:
+            layout = SCENARIOS[scenario_type]
+        self.world_x_dim = layout["world_x_dim"]
+        self.world_y_dim = layout["world_y_dim"]
 
         self.render_origin = [
             self.world_x_dim / 2,
             self.world_y_dim / 2,
         ]
 
-        self.viewer_size = (
+        self.viewer_size = tuple(layout.get("viewer_size", (
             int(self.world_x_dim * self.resolution_factor),
             int(self.world_y_dim * self.resolution_factor),
-        )
-        self.viewer_zoom = SCENARIOS[scenario_type]["viewer_zoom"]
+        )))
+        self.compact_hud = layout.get("compact_hud", False)
+        self.viewer_zoom = layout["viewer_zoom"]
+        # Scene-local tolerance affects contacts/counting/reset only. Keep
+        # nominal lane coordinates for observations, shaping and Safety Value.
+        self.lane_collision_margin = float(layout.get("lane_collision_margin", 0.))
+        self.road_collision_mode = layout.get("road_collision_mode", "reference_lane")
+        if self.road_collision_mode not in ("reference_lane", "road_edges"):
+            raise ValueError("Unknown road collision mode")
+        if not 0 <= self.lane_collision_margin < float(layout["lane_width"])/2:
+            raise ValueError("Lane collision margin must be non-negative and below half the lane width")
 
         self.max_steering_angle = kwargs.pop(
             "max_steering_angle",
@@ -394,6 +411,11 @@ class ScenarioRoadTraffic(BaseScenario):
         self.map = MapManager(
             scenario_type=self.parameters.scenario_type,
             device=device,
+        )
+        self.road_boundary_collision = (
+            RoadBoundaryCollision.from_asset(
+                SCENARIOS[self.parameters.scenario_type]["geometry_asset_path"], device=device)
+            if self.road_collision_mode == "road_edges" else None
         )
 
         cprint("[INFO] Map parsed.", "blue")
@@ -1326,12 +1348,20 @@ class ScenarioRoadTraffic(BaseScenario):
             random_count = 0
             coordinated_rule = (self.parameters.is_testing_mode
                                 and i_agent in getattr(self, 'testing_rule_profiles', {}))
+            restricted_spawn = any(path.get("spawn_point_indices") is not None
+                                   for path in ref_paths_scenario)
 
             # Ramdomly generate initial states for each agent
             while not is_feasible_initial_position_found:
+                if restricted_spawn and random_count >= 2000:
+                    raise RuntimeError(
+                        f"No collision-free entry spawn for agent {i_agent + 1} "
+                        f"of {self.n_agents} in {self.parameters.scenario_type} "
+                        "after 2000 attempts; expand entry spawn regions or reduce traffic density"
+                    )
                 if coordinated_rule and random_count >= 5000:
                     raise RuntimeError('No safe rule-vehicle insertion slot is available; reduce test traffic density')
-                if random_count >= 20:
+                if random_count == 20 or (random_count > 20 and random_count % 200 == 0):
                     cprint(
                         f"Reset agent(s): random_count = {random_count}.",
                         "grey",
@@ -1353,9 +1383,13 @@ class ScenarioRoadTraffic(BaseScenario):
                     start_point_idx = 3  # Do not set to an overly small value to make sure agents are fully inside its lane
                     end_point_idx = num_points - 3
 
-                random_point_id = torch.randint(
-                    start_point_idx, end_point_idx, (1,)
-                ).item()
+                spawn_indices = ref_path.get("spawn_point_indices")
+                if spawn_indices is not None:
+                    random_point_id = spawn_indices[torch.randint(0, len(spawn_indices), (1,)).item()]
+                else:
+                    random_point_id = torch.randint(
+                        start_point_idx, end_point_idx, (1,)
+                    ).item()
                 zones = ref_path.get('testing_rule_conflict_intervals', []) if coordinated_rule else []
                 if zones:
                     progress = float(ref_path['testing_rule_arc'][random_point_id])
@@ -1961,19 +1995,14 @@ class ScenarioRoadTraffic(BaseScenario):
                     self.collisions.with_agents[:] = self.distances.agents == 0
 
                 # Check for collisions between agents and lanelet boundaries
-                collision_with_left_boundary = interX(
-                    L1=self.vertices[:, a_i],
-                    L2=self.ref_paths_agent_related.left_boundary[:, a_i],
-                    is_return_points=False,
-                )  # [batch_dim]
-                collision_with_right_boundary = interX(
-                    L1=self.vertices[:, a_i],
-                    L2=self.ref_paths_agent_related.right_boundary[:, a_i],
-                    is_return_points=False,
-                )  # [batch_dim]
-                self.collisions.with_lanelets[
-                    (collision_with_left_boundary | collision_with_right_boundary), a_i
-                ] = True
+                if self.road_boundary_collision is None:
+                    collision_with_lane_boundary = lane_boundary_collision(
+                        self.vertices[:, a_i],
+                        self.ref_paths_agent_related.left_boundary[:, a_i],
+                        self.ref_paths_agent_related.right_boundary[:, a_i],
+                        margin=self.lane_collision_margin,
+                    )
+                    self.collisions.with_lanelets[collision_with_lane_boundary, a_i] = True
 
                 # Check for collisions with entry or exit segments (only need if agents' reference paths are not a loop)
                 if not self.ref_paths_agent_related.is_loop[:, a_i].any():
@@ -1987,6 +2016,9 @@ class ScenarioRoadTraffic(BaseScenario):
                         L2=self.ref_paths_agent_related.exit[:, a_i],
                         is_return_points=False,
                     )
+
+            if self.road_boundary_collision is not None:
+                self.collisions.with_lanelets.copy_(self.road_boundary_collision(self.vertices))
 
             # Count before done() can respawn colliding cars and clear the flags.
             self.collision_counter.update(
@@ -3214,8 +3246,13 @@ class ScenarioRoadTraffic(BaseScenario):
             bg.set_color(*Color.green10)
             geoms.append(bg)
 
+        from utilities.map_asset_rendering import static_map_geometries, overlay_text_rows
+        map_artwork = static_map_geometries(self.map.parser, rendering)
+        if map_artwork is not None:
+            geoms.extend(map_artwork)
+
         drawn_boundaries = set()
-        for lanelet in self.map.parser.lanelets_all:
+        for lanelet in (self.map.parser.lanelets_all if map_artwork is None else []):
             left = lanelet["left_boundary"]
             right = lanelet["right_boundary"]
             center = lanelet["center_line"]
@@ -3263,45 +3300,15 @@ class ScenarioRoadTraffic(BaseScenario):
                 _append_polyline(center, Color.black10, 1.2, close=False)
 
         if self.parameters.is_visualize_extra_info:
-            hight_a = -0.10
-            hight_b = -0.20
-            hight_c = -0.30
-
-            # Title
-            geom = rendering.TextLine(
-                text=self.parameters.render_title,
-                x=0.05 * self.resolution_factor,
-                y=(self.world.y_semidim + hight_a) * self.resolution_factor,
-                font_size=14,
-            )
-            xform = rendering.Transform()
-            geom.add_attr(xform)
-            geoms.append(geom)
-
-            # Time and time step
-            geom = rendering.TextLine(
-                text=f"t: {self.timer.step[env_index]*self.parameters.dt:.2f} sec",
-                x=0.05 * self.resolution_factor,
-                y=(self.world.y_semidim + hight_b) * self.resolution_factor,
-                font_size=14,
-            )
-            xform = rendering.Transform()
-            geom.add_attr(xform)
-            geoms.append(geom)
-
-            geom = rendering.TextLine(
-                text=f"n: {self.timer.step[env_index]}",
-                x=0.05 * self.resolution_factor,
-                y=(self.world.y_semidim + hight_c) * self.resolution_factor,
-                font_size=14,
-            )
-            xform = rendering.Transform()
-            geom.add_attr(xform)
-            geoms.append(geom)
-
             vehicle_count = int(self.collision_counter.vehicle[env_index].item())
             road_count = int(self.collision_counter.road[env_index].item())
+            # Anchor to the actual window, independent of metric map size.
+            spacing = 17 if self.compact_hud else .10 * self.resolution_factor
+            font_size = 10 if self.compact_hud else 14
             for row, text in enumerate((
+                self.parameters.render_title,
+                f"t: {self.timer.step[env_index]*self.parameters.dt:.2f} sec",
+                f"n: {self.timer.step[env_index]}",
                 f"Collisions: {vehicle_count + road_count}",
                 f"Vehicle pairs: {vehicle_count}",
                 f"Road contacts: {road_count}",
@@ -3309,8 +3316,8 @@ class ScenarioRoadTraffic(BaseScenario):
                 geom = rendering.TextLine(
                     text=text,
                     x=0.05 * self.resolution_factor,
-                    y=(self.world.y_semidim - 0.40 - row * 0.10) * self.resolution_factor,
-                    font_size=14,
+                    y=self.viewer_size[1] - (row + 1) * spacing,
+                    font_size=font_size,
                 )
                 geom.add_attr(rendering.Transform())
                 geoms.append(geom)
@@ -3752,7 +3759,7 @@ class ScenarioRoadTraffic(BaseScenario):
                         text=label,
                         x=px,
                         y=py,
-                        font_size=14,
+                        font_size=10 if self.compact_hud else 14,
                     )
                     xform = rendering.Transform()
                     geom.add_attr(xform)
@@ -3764,19 +3771,27 @@ class ScenarioRoadTraffic(BaseScenario):
         if getattr(self.parameters, "is_visualize_nod_alpha", False):
             # Pixel-space overlay, also captured by rgb_array/video rendering.
             lines = getattr(self, "nod_alpha_overlay", {}).get(env_index, [])
-            panel_width = 530
+            panel_width = self.viewer_size[0] - 200 if self.compact_hud else 530
             x = max(10, self.viewer_size[0] - panel_width)
+            font_size = 9 if self.compact_hud else 12
+            spacing = 15 if self.compact_hud else 22
+            if self.compact_hud:
+                lines = overlay_text_rows(lines, panel_width - 12, font_size)
             for row, text in enumerate(lines):
                 geom = rendering.TextLine(
-                    text=text, x=x, y=self.viewer_size[1] - 24 - row * 22,
-                    font_size=12)
+                    text=text, x=x, y=self.viewer_size[1] - 24 - row * spacing,
+                    font_size=font_size)
                 geom.add_attr(rendering.Transform())
                 geom.set_color(*Color.black100)
                 geoms.append(geom)
 
         rule_lines = getattr(self, "testing_rule_overlay", {}).get(env_index, [])
+        if self.compact_hud:
+            rule_lines = overlay_text_rows(rule_lines, self.viewer_size[0] - 24, 9)
         for row, text in enumerate(rule_lines):
-            geom = rendering.TextLine(text=text, x=12, y=18 + 22 * (len(rule_lines) - 1 - row), font_size=12)
+            geom = rendering.TextLine(text=text, x=12,
+                                      y=18 + (15 if self.compact_hud else 22) * (len(rule_lines) - 1 - row),
+                                      font_size=9 if self.compact_hud else 12)
             geom.add_attr(rendering.Transform())
             geom.set_color(*Color.black100)
             geoms.append(geom)

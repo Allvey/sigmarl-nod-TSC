@@ -1,0 +1,457 @@
+{
+  "schema_version": 1,
+  "scene": {
+    "map_path": "assets/maps/bottleneck_1.osm",
+    "n_agents": 20,
+    "name": "Straight divided two-to-one-to-two bottleneck",
+    "reference_paths_ids": [
+      [
+        "1",
+        "3",
+        "5",
+        "6",
+        "8"
+      ],
+      [
+        "1",
+        "3",
+        "5",
+        "7",
+        "9"
+      ],
+      [
+        "2",
+        "4",
+        "5",
+        "6",
+        "8"
+      ],
+      [
+        "2",
+        "4",
+        "5",
+        "7",
+        "9"
+      ],
+      [
+        "10",
+        "12",
+        "14",
+        "15",
+        "17"
+      ],
+      [
+        "10",
+        "12",
+        "14",
+        "16",
+        "18"
+      ],
+      [
+        "11",
+        "13",
+        "14",
+        "15",
+        "17"
+      ],
+      [
+        "11",
+        "13",
+        "14",
+        "16",
+        "18"
+      ]
+    ],
+    "neighboring_lanelet_ids": {
+      "1": [
+        "1",
+        "2",
+        "3",
+        "4"
+      ],
+      "2": [
+        "1",
+        "2",
+        "3",
+        "4"
+      ],
+      "3": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "4": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "5": [
+        "3",
+        "4",
+        "5",
+        "6",
+        "7"
+      ],
+      "6": [
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+      ],
+      "7": [
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+      ],
+      "8": [
+        "6",
+        "7",
+        "8",
+        "9"
+      ],
+      "9": [
+        "6",
+        "7",
+        "8",
+        "9"
+      ],
+      "10": [
+        "10",
+        "11",
+        "12",
+        "13"
+      ],
+      "11": [
+        "10",
+        "11",
+        "12",
+        "13"
+      ],
+      "12": [
+        "10",
+        "11",
+        "12",
+        "13",
+        "14"
+      ],
+      "13": [
+        "10",
+        "11",
+        "12",
+        "13",
+        "14"
+      ],
+      "14": [
+        "12",
+        "13",
+        "14",
+        "15",
+        "16"
+      ],
+      "15": [
+        "14",
+        "15",
+        "16",
+        "17",
+        "18"
+      ],
+      "16": [
+        "14",
+        "15",
+        "16",
+        "17",
+        "18"
+      ],
+      "17": [
+        "15",
+        "16",
+        "17",
+        "18"
+      ],
+      "18": [
+        "15",
+        "16",
+        "17",
+        "18"
+      ]
+    },
+    "figsize_x": 6.0,
+    "viewer_zoom": 1.4151925664021838,
+    "viewer_size": [
+      1280,
+      640
+    ],
+    "compact_hud": true,
+    "lane_width": 0.18,
+    "lane_collision_margin": 0.0,
+    "road_collision_mode": "road_edges",
+    "scale": 100000.0,
+    "map_margin": 0.3,
+    "world_x_dim": 7.699999999999999,
+    "world_y_dim": 3.8,
+    "render_asset_path": "assets/maps/bottleneck_1.render.json",
+    "geometry_asset_path": "assets/maps/bottleneck_1.boundaries.json",
+    "route_metadata": [
+      {
+        "direction": "eastbound",
+        "origin": "west",
+        "destination": "east",
+        "entry_lane": 0,
+        "exit_lane": 0,
+        "spawn_start_index": 4,
+        "spawn_end_index": 53,
+        "spawn_point_indices": [
+          4,
+          12,
+          20,
+          28,
+          36,
+          44,
+          52
+        ]
+      },
+      {
+        "direction": "eastbound",
+        "origin": "west",
+        "destination": "east",
+        "entry_lane": 0,
+        "exit_lane": 1,
+        "spawn_start_index": 4,
+        "spawn_end_index": 53,
+        "spawn_point_indices": [
+          4,
+          12,
+          20,
+          28,
+          36,
+          44,
+          52
+        ]
+      },
+      {
+        "direction": "eastbound",
+        "origin": "west",
+        "destination": "east",
+        "entry_lane": 1,
+        "exit_lane": 0,
+        "spawn_start_index": 4,
+        "spawn_end_index": 53,
+        "spawn_point_indices": [
+          8,
+          16,
+          24,
+          32,
+          40,
+          48
+        ]
+      },
+      {
+        "direction": "eastbound",
+        "origin": "west",
+        "destination": "east",
+        "entry_lane": 1,
+        "exit_lane": 1,
+        "spawn_start_index": 4,
+        "spawn_end_index": 53,
+        "spawn_point_indices": [
+          8,
+          16,
+          24,
+          32,
+          40,
+          48
+        ]
+      },
+      {
+        "direction": "westbound",
+        "origin": "east",
+        "destination": "west",
+        "entry_lane": 0,
+        "exit_lane": 0,
+        "spawn_start_index": 4,
+        "spawn_end_index": 53,
+        "spawn_point_indices": [
+          4,
+          12,
+          20,
+          28,
+          36,
+          44,
+          52
+        ]
+      },
+      {
+        "direction": "westbound",
+        "origin": "east",
+        "destination": "west",
+        "entry_lane": 0,
+        "exit_lane": 1,
+        "spawn_start_index": 4,
+        "spawn_end_index": 53,
+        "spawn_point_indices": [
+          4,
+          12,
+          20,
+          28,
+          36,
+          44,
+          52
+        ]
+      },
+      {
+        "direction": "westbound",
+        "origin": "east",
+        "destination": "west",
+        "entry_lane": 1,
+        "exit_lane": 0,
+        "spawn_start_index": 4,
+        "spawn_end_index": 53,
+        "spawn_point_indices": [
+          8,
+          16,
+          24,
+          32,
+          40,
+          48
+        ]
+      },
+      {
+        "direction": "westbound",
+        "origin": "east",
+        "destination": "west",
+        "entry_lane": 1,
+        "exit_lane": 1,
+        "spawn_start_index": 4,
+        "spawn_end_index": 53,
+        "spawn_point_indices": [
+          8,
+          16,
+          24,
+          32,
+          40,
+          48
+        ]
+      }
+    ]
+  },
+  "lanelets": {
+    "1": {
+      "direction": "eastbound",
+      "lane": 0,
+      "kind": "entry"
+    },
+    "2": {
+      "direction": "eastbound",
+      "lane": 1,
+      "kind": "entry"
+    },
+    "3": {
+      "direction": "eastbound",
+      "lane": 0,
+      "kind": "merge"
+    },
+    "4": {
+      "direction": "eastbound",
+      "lane": 1,
+      "kind": "merge"
+    },
+    "5": {
+      "direction": "eastbound",
+      "lane": 0,
+      "kind": "throat"
+    },
+    "6": {
+      "direction": "eastbound",
+      "lane": 0,
+      "kind": "split"
+    },
+    "7": {
+      "direction": "eastbound",
+      "lane": 1,
+      "kind": "split"
+    },
+    "8": {
+      "direction": "eastbound",
+      "lane": 0,
+      "kind": "exit"
+    },
+    "9": {
+      "direction": "eastbound",
+      "lane": 1,
+      "kind": "exit"
+    },
+    "10": {
+      "direction": "westbound",
+      "lane": 0,
+      "kind": "entry"
+    },
+    "11": {
+      "direction": "westbound",
+      "lane": 1,
+      "kind": "entry"
+    },
+    "12": {
+      "direction": "westbound",
+      "lane": 0,
+      "kind": "merge"
+    },
+    "13": {
+      "direction": "westbound",
+      "lane": 1,
+      "kind": "merge"
+    },
+    "14": {
+      "direction": "westbound",
+      "lane": 0,
+      "kind": "throat"
+    },
+    "15": {
+      "direction": "westbound",
+      "lane": 0,
+      "kind": "split"
+    },
+    "16": {
+      "direction": "westbound",
+      "lane": 1,
+      "kind": "split"
+    },
+    "17": {
+      "direction": "westbound",
+      "lane": 0,
+      "kind": "exit"
+    },
+    "18": {
+      "direction": "westbound",
+      "lane": 1,
+      "kind": "exit"
+    }
+  },
+  "geometry_checks": {
+    "route_count": 8,
+    "lanelet_count": 18,
+    "max_curvature_per_m": 0.912921,
+    "min_body_vertical_clearance_m": 0.044907,
+    "lane_width_m": 0.18,
+    "median_width_m": 0.08,
+    "shared_oncoming_lane": false,
+    "vehicle_size_m": [
+      0.16,
+      0.08
+    ],
+    "throat_interval_x": [
+      3.3499999999999996,
+      4.35
+    ],
+    "unique_spawn_slots": 26,
+    "min_spawn_center_distance_m": 0.226771
+  },
+  "design_asset_path": "assets/maps/bottleneck_1.design.json",
+  "note": "Approved schematic implemented analytically; no surveyed-road or policy-performance claim."
+}

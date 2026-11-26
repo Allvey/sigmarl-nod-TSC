@@ -4,6 +4,8 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
+import json
+from pathlib import Path
 
 SCENARIOS = {
     "CPM_entire": {
@@ -623,6 +625,15 @@ SCENARIOS = {
         "scale": 1e5,  # Scale the map
     },
 }
+
+# Generated geometry and topology are kept together; rebuild with
+# python -m scripts.build_roundabout_assets (no simulator required).
+with (Path(__file__).resolve().parents[1] / "assets/maps/roundabout_realistic.json").open(encoding="utf-8") as _asset_file:
+    SCENARIOS["roundabout_realistic"] = json.load(_asset_file)["scene"]
+
+# Native bottleneck assets: rebuild with python -m scripts.build_bottleneck_assets.
+with (Path(__file__).resolve().parents[1] / "assets/maps/bottleneck_1.json").open(encoding="utf-8") as _asset_file:
+    SCENARIOS["bottleneck_1"] = json.load(_asset_file)["scene"]
 
 AGENTS = {
     "width": 0.08,  # [m]

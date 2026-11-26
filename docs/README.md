@@ -29,10 +29,30 @@ method, reusable repository details, or an earlier experiment.
 - [`ORIGINAL_BASELINES.md`](current/ORIGINAL_BASELINES.md): in-project official
   SigmaRL/XP-MARL 1.2.0 implementation, official root-config training with only
   priority toggles differing, provenance and matched five-metric evaluation.
-- [`NOD_FROM_SCRATCH.md`](current/NOD_FROM_SCRATCH.md): complete four-stage NOD
-  training from random initialization, independent outputs, budget and evaluation commands.
+- [`NOD_FROM_SCRATCH.md`](current/NOD_FROM_SCRATCH.md): two-stage joint NOD/control
+  training from random initialization, frozen-predictor PPO beta, budget and evaluation commands.
+- [`ERROR_SCALE_RETRAIN.md`](current/ERROR_SCALE_RETRAIN.md): repeat the historical
+  reward7.38 error-scale branch with its exact training seed and reward7.21 initialization.
+- [`ERROR_SCALE_FROM_SCRATCH.md`](current/ERROR_SCALE_FROM_SCRATCH.md): 250 joint
+  iterations learning geometric-evidence error scale, then 70 frozen-NOD control
+  iterations, with no pretrained dependency or separate candidate stage.
 - [`SOTA_BENCHMARK.md`](current/SOTA_BENCHMARK.md): matched all-Actor protocol,
   official SigmaRL and XP-MARL checkpoints, commands, metrics, and outputs.
+- [`TSC_BASELINE.md`](current/TSC_BASELINE.md): four-method evaluation with the
+  sibling TSC project's seed5 weights, six default scenarios, shared new-map
+  assets in isolated runtimes and unified five-metric results.
+- [`SCENARIO_VISUALIZATION.md`](current/SCENARIO_VISUALIZATION.md): fixed NOD
+  model visualization on additional maps, all-Actor defaults and per-scenario video paths.
+- [`ROUNDABOUT_REALISTIC.md`](current/ROUNDABOUT_REALISTIC.md): aerial-inspired
+  roundabout vectorized from the approved traffic diagram, editable SVG,
+  OSM/boundary/render assets, entry spawning and the `main_testing.py` command.
+- [`BOTTLENECK_SCENARIO.md`](current/BOTTLENECK_SCENARIO.md): straight divided
+  2-to-1-to-2 bottleneck, analytic OSM/SVG/render/collision assets, 20-vehicle
+  visualization, rebuild commands and output paths.
+- [`TRAFFIC_SCENARIO_CONCEPTS.md`](current/TRAFFIC_SCENARIO_CONCEPTS.md): proposed
+  one-way crossroad, right-turn side-road merge and highway merge sketches,
+  designed to reduce close oncoming interactions; existing four evaluation
+  scenarios remain unchanged.
 - [`FUTURE_RISK_MITIGATION_OPINION_TECHNICAL_REPORT.md`](current/FUTURE_RISK_MITIGATION_OPINION_TECHNICAL_REPORT.md):
   implemented future-prediction extension and its current limitations; this is
   an alternative to the frozen-NOD future-evidence mainline, with a different

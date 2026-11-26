@@ -66,6 +66,24 @@ class ParseOSM(ParseMapBase):
         self._process_map_data()
         self._get_reference_paths()
         self._determine_neighboring_lanelets()
+        self.render_asset = None
+        asset_path = SCENARIOS[scenario_type].get("render_asset_path")
+        if asset_path:
+            from utilities.map_asset_rendering import load_render_asset
+            self.render_asset = load_render_asset(asset_path)
+        route_metadata = SCENARIOS[scenario_type].get("route_metadata")
+        if route_metadata is not None:
+            if len(route_metadata) != len(self.reference_paths):
+                raise ValueError("Map route metadata and reference paths do not match")
+            for path, metadata in zip(self.reference_paths, route_metadata):
+                start, end = metadata["spawn_start_index"], metadata["spawn_end_index"]
+                if not 0 < start < end < len(path["center_line"])-1:
+                    raise ValueError("Invalid entry spawn interval in map metadata")
+                indices = metadata.get("spawn_point_indices", list(range(start, end)))
+                if (not indices or len(set(indices)) != len(indices)
+                        or any(type(i) is not int or not start <= i < end for i in indices)):
+                    raise ValueError("Invalid explicit entry spawn points in map metadata")
+                path["spawn_point_indices"] = list(indices)
 
         if self._is_visualize_map:
             self._visualize_map()
@@ -94,11 +112,12 @@ class ParseOSM(ParseMapBase):
                 self.bounds["max_y"] = lon
 
         # Scale and shift nodes
+        margin = SCENARIOS[self._scenario_type].get("map_margin", self._width * 1.2)
         for node_id, (lat, lon) in node_data.items():
             lat = (
                 lat - self.bounds["min_x"]
-            ) * self._scale + self._width * 1.2  # Plus a small margin to to ensure the coordinates of left and right boundaries will still be positive
-            lon = (lon - self.bounds["min_y"]) * self._scale + self._width * 1.2
+            ) * self._scale + margin  # Keep boundaries and artwork inside the viewport.
+            lon = (lon - self.bounds["min_y"]) * self._scale + margin
             self._nodes[node_id] = (lat, lon)
 
         # Extract ways

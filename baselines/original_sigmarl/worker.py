@@ -1,6 +1,7 @@
 """Isolated process entry point; imports only the vendored baseline utilities."""
 import argparse
 import importlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -83,9 +84,9 @@ def rollout(args):
     else:
         from instrumentation import instrument_scenario
 
-    # Only measurement hooks are substituted during evaluation. Training above
-    # uses the byte-identical upstream ScenarioRoadTraffic without a subclass.
-    trainer.ScenarioRoadTraffic = instrument_scenario(trainer.ScenarioRoadTraffic)
+    # Passive measurements, plus shared environmental assets for the two new
+    # maps only. Training above uses byte-identical upstream sources.
+    trainer.ScenarioRoadTraffic = instrument_scenario(trainer.ScenarioRoadTraffic, args.scenario)
     p = helper.Parameters.from_dict(raw)
     p.where_to_save = str(Path(args.metadata).resolve().parent) + os.sep
     p.is_load_model = True
@@ -152,6 +153,7 @@ def rollout(args):
             deterministic_actions=args.deterministic, num_agents=p.n_agents,
             seed_application="after_model_construction_before_rollout",
             nominal_steps=args.steps, recorded_steps=result.shape[1],
+            scene_assets=getattr(trainer.ScenarioRoadTraffic, "_evaluation_scene_assets", None),
         )
         if args.measure_inference_time:
             provenance["policy_latencies_s"] = wrapped.latencies_s
@@ -168,6 +170,7 @@ def main():
     training.add_argument("--config", required=True)
     inspection = sub.add_parser("inspect", help="Check actual module origins without creating an environment")
     inspection.add_argument("--output", required=True)
+    inspection.add_argument("--scenario", help="Inspect new map assets without creating an environment")
     evaluation = sub.add_parser("rollout")
     evaluation.add_argument("--method", choices=("sigmarl", "xp_marl"), required=True)
     evaluation.add_argument("--metadata", required=True)
@@ -190,6 +193,13 @@ def main():
         trainer, helper, provenance = load_runtime()
         scenario = importlib.import_module("scenarios.road_traffic")
         provenance.update(trainer=trainer.__file__, helper=helper.__file__, scenario=scenario.__file__)
+        if args.scenario:
+            path = Path(__file__).resolve().parents[1]/"scenario_assets.py"
+            spec = importlib.util.spec_from_file_location("inspection_scene_assets", path)
+            assets = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(assets)
+            assets.install_scene_assets(trainer.ScenarioRoadTraffic, args.scenario)
+            provenance.update(assets.inspect_scene(args.scenario))
         Path(args.output).write_text(json.dumps(provenance, indent=2) + "\n")
     else:
         rollout(args)

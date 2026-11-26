@@ -1,5 +1,13 @@
 # SigmaRL and XP-MARL benchmark
 
+> Latest entry point: [TSC baseline guide](TSC_BASELINE.md). The default now
+> adds sibling-project TSC seed5 to the fixed NOD error-scale / original SigmaRL /
+> ICRA25 XP-MARL M1 comparison, with results in
+> `outputs/benchmarks/paper_metrics_with_tsc/seed5/mixed/four_methods/six_scenarios/`.
+> The default now includes the original four scenarios, roundabout_realistic and bottleneck_1.
+> Use `--without-tsc` for those three methods alone. The descriptions below
+> retain earlier benchmark history and do not define the current defaults.
+
 > Current implementation: [Original baselines](ORIGINAL_BASELINES.md) describes
 > the in-project official 1.2.0 runtime and the formal five-metric comparison.
 > `evaluation_tase26.py` now dispatches original baselines to isolated upstream

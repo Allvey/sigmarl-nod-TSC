@@ -1,5 +1,10 @@
 # 本项目内的原始 SigmaRL / XP-MARL
 
+> 当前评估入口以[六场景四方法说明](TSC_BASELINE.md)为准：默认使用固定的 NOD、
+> 原版重训 SigmaRL、ICRA25 发布 XP-MARL M1 和同级项目 TSC seed5。
+> 两个新场景通过评估适配器共享本项目资产，原版训练源码仍保持字节一致。
+> 下文的三方法、旧模型和输出目录说明保留为历史记录，不定义当前默认命令。
+
 ## 实现边界
 
 原版代码位于 `baselines/original_sigmarl/upstream/`，来自官方 SigmaRL 标签

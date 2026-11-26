@@ -1,4 +1,4 @@
-"""Matched five-metric evaluation of NOD-DGPPO, original SigmaRL, and XP-MARL."""
+"""Four-method, five-metric evaluation on four legacy and two new traffic maps."""
 from __future__ import annotations
 
 import argparse
@@ -16,37 +16,42 @@ if project_root not in sys.path:
 from utilities.constants import SCENARIOS
 from utilities.evaluation_base import Evaluation
 from baselines.original_sigmarl.runtime import BACKENDS
+from baselines.tsc.runtime import DEFAULT_TSC_PROJECT
 
 
 ROOT = Path(project_root)
 MODEL_PATHS = [
-    "outputs/current/ablations/dgppo_nod_future_evidence_ppo_gate_sequence_control/",
+    "checkpoints/nod_error_scale_repeat/seed5080868027432654403/02_control/",
     "checkpoints/sigmarl_original/config_v1_2_0/",
-    "checkpoints/xp_marl_original/config_v1_2_0/",
+    "checkpoints/icra25/M1 (XP-MARL)/",
 ]
 RELEASED_MODEL_PATHS = [
     MODEL_PATHS[0],
     "checkpoints/itsc24/M0 (our)/",
     "checkpoints/icra25/M1 (XP-MARL)/",
 ]
-LEGENDS = ["NOD-DGPPO (PPO beta)", "SigmaRL", "XP-MARL"]
-DEFAULT_SCENARIOS = ["CPM_entire", "intersection_2", "on_ramp_1", "roundabout_1"]
+LEGENDS = ["NOD-DGPPO", "SigmaRL", "XP-MARL"]
+DEFAULT_SCENARIOS = ["CPM_entire", "intersection_2", "on_ramp_1", "roundabout_1",
+                     "roundabout_realistic", "bottleneck_1"]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--model-paths", nargs="+",
-        help="Optional model directories, in the same order as --legends; default compares the three methods.",
+        help="Optional model directories, in the same order as --legends; default compares four methods including TSC.",
     )
-    parser.add_argument("--legends", nargs="+", default=LEGENDS)
+    parser.add_argument("--legends", nargs="+")
+    parser.add_argument("--without-tsc", action="store_true", help="Keep the fixed three-method comparison")
+    parser.add_argument("--tsc-project", default=str(DEFAULT_TSC_PROJECT), help="Original TSC project directory")
+    parser.add_argument("--tsc-model-path", default="outputs/TSC/seed5/", help="TSC model directory relative to --tsc-project, or absolute")
     parser.add_argument(
         "--model-backends", nargs="+", choices=BACKENDS,
         help="One runtime per model; default auto uses upstream for original metadata and current for NOD.",
     )
     parser.add_argument(
-        "--baseline-checkpoints", choices=("released", "retrained"), default="retrained",
-        help="Use published checkpoints or outputs selected by the official-root-config training profiles.",
+        "--baseline-checkpoints", choices=("mixed", "released", "retrained"), default="mixed",
+        help="Default mixed: retrained SigmaRL and released ICRA25 XP-MARL; alternatively use both released or both retrained.",
     )
     parser.add_argument(
         "--output-root",
@@ -70,19 +75,29 @@ def main() -> None:
     parser.add_argument("--measure-inference-time", action="store_true")
     args = parser.parse_args()
     use_default_models = args.model_paths is None
+    include_tsc = use_default_models and not args.without_tsc
     args.output_root = args.output_root or (
-        "outputs/benchmarks/paper_metrics_original_baselines/" + args.baseline_checkpoints
+        ("outputs/benchmarks/paper_metrics_with_tsc/"
+         + Path(args.tsc_model_path).name + "/" + args.baseline_checkpoints + "/four_methods/six_scenarios")
+        if include_tsc else
+        ("outputs/benchmarks/paper_metrics_original_baselines/" + args.baseline_checkpoints
         + ("/config_v1_2_0" if args.baseline_checkpoints == "retrained" else "")
-        + ("/three_methods" if use_default_models else "/custom_methods")
+        + ("/three_methods" if use_default_models else "/custom_methods"))
     )
     if use_default_models:
         if args.baseline_checkpoints == "released":
             args.model_paths = list(RELEASED_MODEL_PATHS)
-        else:
+        elif args.baseline_checkpoints == "retrained":
             args.model_paths = list(MODEL_PATHS)
             for index, method in ((1, "sigmarl"), (2, "xp_marl")):
                 profile = ROOT / "configs/baselines" / (method + "_original.json")
                 args.model_paths[index] = json.loads(profile.read_text())["where_to_save"]
+        else:
+            args.model_paths = list(MODEL_PATHS)
+        if include_tsc:
+            args.model_paths.append(str((Path(args.tsc_project) / args.tsc_model_path).resolve()))
+    if args.legends is None:
+        args.legends = list(LEGENDS) + (["TSC"] if include_tsc else [])
     if args.num_simulations < 1:
         parser.error("--num-simulations must be positive")
     if args.steps < 2:
@@ -93,6 +108,8 @@ def main() -> None:
         parser.error("--model-paths and --legends must have the same number of entries")
     if len(set(args.legends)) != len(args.legends):
         parser.error("--legends must be unique")
+    if len(set(args.scenarios)) != len(args.scenarios):
+        parser.error("--scenarios must be unique")
     if args.model_backends is not None and len(args.model_backends) != len(args.model_paths):
         parser.error("--model-backends must have one entry per --model-paths")
 
@@ -136,6 +153,7 @@ def main() -> None:
             scenario_type=scenario,
             model_paths=model_paths,
             model_backends=args.model_backends or ["auto"] * len(model_paths),
+            tsc_project=args.tsc_project,
             fitst_model_index=0,
             idx_our=0,
             num_agents=SCENARIOS[scenario]["n_agents"],

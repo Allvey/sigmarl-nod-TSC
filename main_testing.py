@@ -7,6 +7,10 @@ from utilities.helper_training import Parameters, SaveData
 import argparse
 import torch
 import os
+from pathlib import Path
+import subprocess
+import sys
+from torchrl.envs.utils import ExplorationType, set_exploration_type
 
 from vmas.simulator.utils import save_video
 import json
@@ -18,48 +22,77 @@ from utilities.nod_marl.visualization import opinion_alpha_lines
 from utilities.testing_rule_policy import TestingRulePolicy, assign_rule_vehicles
 from utilities.testing_rule_coordinator import CONTROLLER_VERSION
 from utilities.testing_evaluation import rule_run_name, summarize_rule_run
+from utilities.sota_evaluation import select_best_checkpoint
+from utilities.testing_baseline import configure_sigmarl_visualization, restore_original_actor_distribution
 
-parser = argparse.ArgumentParser(description="Visualize one reproducible mixed-controller rollout.")
-parser.add_argument("--model-path", default="outputs/current/dgppo_nod_gain1_control_finetune/")
-parser.add_argument("--env-seed", type=int, default=None,
-                    help="Rollout/environment seed; defaults to the checkpoint seed.")
+parser = argparse.ArgumentParser(description="Visualize the fixed NOD or SigmaRL model in one or more scenarios.")
+parser.add_argument("--method", choices=("nod", "sigmarl"), default="nod")
+parser.add_argument("--model-path", help="Override the selected method's fixed checkpoint directory.")
+parser.add_argument("--env-seed", type=int, default=101,
+                    help="Rollout/environment seed; default matches paper evaluation (101).")
 parser.add_argument("--rule-assignment-seed", type=int, default=123,
                     help="Changes rule-profile assignment only, not environment randomness.")
-parser.add_argument("--scenario", choices=sorted(SCENARIOS), default="intersection_2")
+scenario_options = parser.add_mutually_exclusive_group()
+scenario_options.add_argument("--scenario", choices=sorted(SCENARIOS), default="intersection_2")
+scenario_options.add_argument("--scenarios", choices=sorted(SCENARIOS), nargs="+",
+                              help="Visualize each scenario sequentially in separate processes.")
+parser.add_argument("--rule-fraction", type=float, default=0., help="Rule-controlled fraction; default 0 means all Actor vehicles.")
+parser.add_argument("--stochastic-actions", action="store_true", help="Sample actions instead of the default deterministic policy.")
 parser.add_argument("--max-steps", type=int, default=1200)
 parser.add_argument("--no-video", action="store_true")
 parser.add_argument("--no-speed-print", action="store_true")
 parser.add_argument("--no-realtime", action="store_true")
 args = parser.parse_args()
+if args.model_path is None:
+    args.model_path = ("checkpoints/sigmarl_original/config_v1_2_0/" if args.method == "sigmarl"
+                       else "checkpoints/nod_error_scale_repeat/seed5080868027432654403/02_control/")
 if args.max_steps < 2:
     parser.error("--max-steps must be at least 2")
 if args.env_seed is not None and args.env_seed < 0:
     parser.error("--env-seed must be non-negative")
 if args.rule_assignment_seed < 0:
     parser.error("--rule-assignment-seed must be non-negative")
+if not 0 <= args.rule_fraction <= 1:
+    parser.error("--rule-fraction must be between 0 and 1")
+if args.scenarios:
+    if len(set(args.scenarios)) != len(args.scenarios):
+        parser.error("--scenarios must not contain duplicates")
+    for scenario in args.scenarios:
+        command = [sys.executable, str(Path(__file__).resolve()),
+                   "--method", args.method, "--model-path", args.model_path, "--scenario", scenario,
+                   "--max-steps", str(args.max_steps), "--rule-fraction", str(args.rule_fraction),
+                   "--rule-assignment-seed", str(args.rule_assignment_seed)]
+        if args.env_seed is not None:
+            command += ["--env-seed", str(args.env_seed)]
+        for flag in ("no_video", "no_speed_print", "no_realtime", "stochastic_actions"):
+            if getattr(args, flag):
+                command.append("--" + flag.replace("_", "-"))
+        print(f"[Visualization] {scenario}", flush=True)
+        subprocess.run(command, check=True)
+    raise SystemExit(0)
 
 path = os.path.join(args.model_path, "")
 
 # 比例模式：8辆车、比例0.5时分配4辆规则车；车辆1留给Actor观察NOD。
 # 设为None则使用下方的手动映射；0表示全部Actor，1需要把保留索引设为None。
-rule_fraction = 0.5
+rule_fraction = args.rule_fraction
 rule_profile_weights = {"yielding": 0.25, "moderate": 0.5, "non_yielding": 0.25}
 rule_assignment_seed = args.rule_assignment_seed  # 仅用于控制类型分配，不改变环境随机种子。
-reserved_actor_index = 0  # 0-based；设为None可选择所有车辆。
+reserved_actor_index = 0 if rule_fraction < 1 else None  # 0-based；全规则模式不保留Actor。
 manual_rule_vehicles = {1: "moderate"}  # 仅在rule_fraction=None时使用。
 rule_cruise_speed = 1.0  # m/s，所有类型共用，转弯时适度减速。
 rule_lateral_accel_limit = 1.8  # 弯道限速参数；原值0.6。路径控制和预约预测共用。
 rule_non_yielding_emergency_ttc = 0.45  # s；非避让车辆仅在碰撞迫近时紧急制动。
 
 try:
-    path_to_json_file = next(
-        os.path.join(path, file) for file in os.listdir(path) if file.endswith(".json")
-    )  # Find the first json file in the folder
+    _, path_to_json_file, checkpoint_prefix = select_best_checkpoint(Path(path))
     # Load parameters from the saved json file
     with open(path_to_json_file, "r") as file:
         data = json.load(file)
         saved_data = SaveData.from_dict(data)
         parameters = saved_data.parameters
+        if args.method == "sigmarl":
+            configure_sigmarl_visualization(parameters, data.get("parameters", data))
         # Moved checkpoint folders must not load models from the old JSON path.
         parameters.where_to_save = os.path.join(path, "")
 
@@ -70,8 +103,10 @@ try:
         parameters.is_real_time_rendering = not args.no_realtime
         parameters.is_save_eval_results = False
         parameters.is_load_model = True
+        parameters.is_continue_train = False
         parameters.is_load_final_model = False
         parameters.is_load_out_td = False
+        parameters.is_add_noise = False
         if args.env_seed is not None:
             parameters.seed = args.env_seed
         parameters.max_steps = args.max_steps  # 1200 -> 1 min
@@ -86,7 +121,11 @@ try:
             parameters.n_agents, rule_fraction, rule_profile_weights,
             seed=rule_assignment_seed, actor_index=reserved_actor_index)
             if rule_fraction is not None else dict(manual_rule_vehicles))
-        if rule_fraction is None:
+        if not rule_vehicles:
+            test_output = os.path.join(path, "visualization", parameters.scenario_type,
+                                       f"envseed{parameters.seed}_{checkpoint_prefix}"
+                                       + ("_stochastic" if args.stochastic_actions else ""))
+        elif rule_fraction is None:
             test_output = os.path.join(path, "rule_vehicle_visualization", CONTROLLER_VERSION) if rule_vehicles else path
         else:
             run_name = rule_run_name(
@@ -113,7 +152,7 @@ try:
         # 固定展示邻居的智能体索引（0-based）。可按需修改。
         parameters.visualize_observed_neighbors_agent_index = 0
         # 显示该车对可见邻居的 z 和训练规则 alpha；0 对应画面中的车辆 1。
-        parameters.is_visualize_nod_alpha = True
+        parameters.is_visualize_nod_alpha = args.method == "nod"
         parameters.is_visualize_agent_id = True
         # 关闭“未来三个位置点”可视化
         parameters.is_visualize_future_three_points = False
@@ -127,6 +166,10 @@ try:
         parameters.agent_speed_log_path = os.path.join(test_output, "agent_speeds.csv")
         parameters.agent_speed_log_interval = 1
         env, policy, priority_module, parameters = mappo_cavs(parameters=parameters)
+        if args.method == "sigmarl":
+            restore_original_actor_distribution(policy)
+        if args.env_seed is not None:
+            env.set_seed(args.env_seed)
         if rule_vehicles:
             policy = TestingRulePolicy(policy, env.scenario, rule_vehicles,
                                        cruise_speed=rule_cruise_speed,
@@ -134,6 +177,17 @@ try:
                                        non_yielding_emergency_ttc=rule_non_yielding_emergency_ttc)
 
         os.makedirs(test_output, exist_ok=True)
+        with open(os.path.join(test_output, "test_setup.json"), "w") as setup_file:
+            json.dump(dict(method=args.method, scenario=parameters.scenario_type, n_agents=parameters.n_agents,
+                           environment_backend="current_shared_visualization",
+                           model_path=os.path.abspath(path), checkpoint=parameters.model_name,
+                           environment_seed=parameters.seed, max_steps=parameters.max_steps,
+                           rule_fraction=rule_fraction, rule_vehicles=rule_vehicles,
+                           deterministic_actions=not args.stochastic_actions,
+                           observation_noise=parameters.is_add_noise,
+                           lane_collision_margin=SCENARIOS[parameters.scenario_type].get("lane_collision_margin", 0.),
+                           road_collision_mode=SCENARIOS[parameters.scenario_type].get("road_collision_mode", "reference_lane")),
+                      setup_file, indent=2)
         if rule_fraction is not None or rule_vehicles:
             with open(os.path.join(test_output, "rule_setup.json"), "w") as setup_file:
                 json.dump(dict(scenario=parameters.scenario_type, vehicles=rule_vehicles,
@@ -264,15 +318,18 @@ try:
             return env.render(mode="rgb_array", visualize_when_rgb=True)
 
         try:
-            rollout_result = env.rollout(
-                max_steps=parameters.max_steps - 1,
-                policy=policy,
-                priority_module=priority_module,
-                callback=render_and_log,
-                auto_cast_to_device=True,
-                break_when_any_done=False,
-                is_save_simulation_video=parameters.is_save_simulation_video,
-            )
+            with torch.no_grad(), set_exploration_type(
+                ExplorationType.RANDOM if args.stochastic_actions else ExplorationType.MODE
+            ):
+                rollout_result = env.rollout(
+                    max_steps=parameters.max_steps - 1,
+                    policy=policy,
+                    priority_module=priority_module,
+                    callback=render_and_log,
+                    auto_cast_to_device=True,
+                    break_when_any_done=False,
+                    is_save_simulation_video=parameters.is_save_simulation_video,
+                )
         finally:
             if speed_log_f is not None:
                 speed_log_f.close()
@@ -309,5 +366,6 @@ try:
             print("[Evaluation summary] " + json.dumps(summary, sort_keys=True))
         if len(frame_list) > 0:
             save_video(os.path.join(test_output, "video"), frame_list, fps=1 / parameters.dt)
+        env.close()
 except StopIteration:
     raise FileNotFoundError("No json file found.")
