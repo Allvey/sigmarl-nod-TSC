@@ -11,5 +11,6 @@
     },
     "terminal.integrated.env.windows": {
         "PYTHONDONTWRITEBYTECODE": "1"
-    }
+    },
+    "cmake.sourceDirectory": "/home/allvey/Projects/sigmarl-nod-TSC/deployment/gazebo"
 }

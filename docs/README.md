@@ -5,6 +5,21 @@ method, reusable repository details, or an earlier experiment.
 
 ## Current method
 
+- [`POLICY_ROS2_BRIDGE.md`](current/POLICY_ROS2_BRIDGE.md): frozen reward7.38
+  Actor/NOD inference from ROS2 Gazebo states, local route observations, bicycle
+  action conversion, spatial/time scaling and bounded JetAuto control.
+- [`LOCAL_JUNCTION_GAZEBO.md`](current/LOCAL_JUNCTION_GAZEBO.md): default Gazebo scene,
+  one lane per direction, short approaches, three JetAuto robots and a pausable
+  local traffic demo with straight/left/right routes.
+- [`CPM_MIXED_GAZEBO.md`](current/CPM_MIXED_GAZEBO.md): optional complete Gazebo map,
+  canonical CPM geometry at 3× scale, four JetAuto robots, exported routes,
+  overhead Tag detection and multi-vehicle ROS2 interfaces.
+- [`JETAUTO_GAZEBO.md`](current/JETAUTO_GAZEBO.md): hardware-matched JetAuto
+  Orin Nano Super 4GB/A1 profile, official geometry adapted to ROS2 Humble,
+  isolated Docker runtime, omnidirectional control and camera/lidar checks.
+- [`GAZEBO_ENVIRONMENT.md`](current/GAZEBO_ENVIRONMENT.md): Gazebo Classic 11
+  overhead-camera experiment arena, physical Ackermann cars, AprilTags,
+  one-command launch, ROS interfaces and verification commands.
 - [LEARNING_IN_NOD_TECHNICAL_PLAN.md](current/LEARNING_IN_NOD_TECHNICAL_PLAN.md):
   Paper-method specification: supervised future risk-mitigation evidence,
   risk attention A learned during candidate supervision and frozen during

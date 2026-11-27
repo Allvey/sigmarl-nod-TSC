@@ -1,0 +1,21 @@
+{
+  "extends": "jetauto_a1.json",
+  "scenario": "CPM_mixed_local_2lane",
+  "arena_size": [6.0, 6.0],
+  "lane_width": 0.45,
+  "map": {"approach_extent": 2.5, "corner_radius": 0.35, "marking_width": 0.025, "dash_length": 0.18, "dash_gap": 0.12},
+  "camera": {"height": 5.5, "width": 2048, "height_pixels": 2048, "horizontal_fov": 1.1, "fps": 10},
+  "vehicle": {"tag_size": 0.16},
+  "traffic": {"enabled": true, "speed": 0.2, "holding_distance": 1.35, "exit_margin": 0.4, "cycle_maneuvers": true},
+  "ground_tags": [
+    {"id": 0, "x": -2.7, "y": -2.7, "size": 0.2},
+    {"id": 1, "x": 2.7, "y": -2.7, "size": 0.2},
+    {"id": 2, "x": 2.7, "y": 2.7, "size": 0.2},
+    {"id": 3, "x": -2.7, "y": 2.7, "size": 0.2}
+  ],
+  "cars": [
+    {"name": "car_0", "tag_id": 10, "route_index": 1, "spawn_distance": 0.40, "color": [0.15, 0.45, 0.95, 1]},
+    {"name": "car_1", "tag_id": 11, "route_index": 5, "spawn_distance": 0.75, "color": [0.95, 0.25, 0.15, 1]},
+    {"name": "car_2", "tag_id": 12, "route_index": 6, "spawn_distance": 0.55, "color": [0.95, 0.75, 0.10, 1]}
+  ]
+}

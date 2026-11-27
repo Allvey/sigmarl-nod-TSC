@@ -1,0 +1,13 @@
+{
+  "extends": "jetauto_a1.json",
+  "scenario": "CPM_mixed",
+  "map": {"scale": 3.0, "padding": 0.75, "marking_width": 0.025, "dash_length": 0.18, "dash_gap": 0.12},
+  "camera": {"height": 10.5, "width": 3072, "height_pixels": 2816, "horizontal_fov": 1.25, "fps": 5},
+  "vehicle": {"tag_size": 0.2},
+  "cars": [
+    {"name": "car_0", "tag_id": 10, "route_group": "intersection", "route_index": 1, "spawn_distance": 0.5, "color": [0.15, 0.45, 0.95, 1]},
+    {"name": "car_1", "tag_id": 11, "route_group": "intersection", "route_index": 7, "spawn_distance": 0.5, "color": [0.95, 0.25, 0.15, 1]},
+    {"name": "car_2", "tag_id": 12, "route_group": "intersection", "route_index": 13, "spawn_distance": 0.5, "color": [0.95, 0.75, 0.10, 1]},
+    {"name": "car_3", "tag_id": 13, "route_group": "intersection", "route_index": 19, "spawn_distance": 0.5, "color": [0.65, 0.25, 0.90, 1]}
+  ]
+}

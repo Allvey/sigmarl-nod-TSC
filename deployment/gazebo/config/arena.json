@@ -1,0 +1,16 @@
+{
+  "arena_size": [3.0, 3.0],
+  "lane_width": 0.25,
+  "camera": {"height": 3.0, "width": 2048, "height_pixels": 2048, "horizontal_fov": 1.04, "fps": 20},
+  "vehicle": {"length": 0.16, "width": 0.08, "wheelbase": 0.16, "track": 0.094, "wheel_radius": 0.022, "wheel_width": 0.014, "tag_size": 0.07, "tag_height": 0.071, "max_speed": 1.0, "max_steering": 0.6108652382, "max_acceleration": 0.8, "max_steering_rate": 1.5, "command_timeout": 0.35},
+  "ground_tags": [
+    {"id": 0, "x": -1.3, "y": -1.3, "size": 0.14},
+    {"id": 1, "x": 1.3, "y": -1.3, "size": 0.14},
+    {"id": 2, "x": 1.3, "y": 1.3, "size": 0.14},
+    {"id": 3, "x": -1.3, "y": 1.3, "size": 0.14}
+  ],
+  "cars": [
+    {"name": "car_0", "tag_id": 10, "x": -1.0, "y": -0.125, "yaw": 0.0, "color": [0.15, 0.45, 0.95, 1]},
+    {"name": "car_1", "tag_id": 11, "x": 0.125, "y": -1.0, "yaw": 1.5707963267948966, "color": [0.95, 0.25, 0.15, 1]}
+  ]
+}

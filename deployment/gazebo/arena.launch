@@ -1,0 +1,15 @@
+<launch>
+  <arg name="world" />
+  <arg name="gui" default="true" />
+  <arg name="paused" default="false" />
+  <arg name="camera_height" default="3.0" />
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg world)" />
+    <arg name="gui" value="$(arg gui)" />
+    <arg name="paused" value="$(arg paused)" />
+    <arg name="verbose" value="true" />
+    <arg name="server_required" value="true" />
+  </include>
+  <node pkg="tf2_ros" type="static_transform_publisher" name="overhead_camera_tf"
+        args="0 0 $(arg camera_height) 1 0 0 0 map overhead_camera_optical" />
+</launch>

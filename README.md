@@ -128,6 +128,19 @@ protocol and output paths are documented in
 
 ## Project organization
 
+For the JetAuto Orin Nano Super 4GB/A1 experiment, run
+`bash deployment/gazebo/launch_jetauto.sh`. It uses an isolated ROS2 Humble/Gazebo
+container, official JetAuto geometry, omnidirectional control, AprilTags,
+colored lane markings, A1 scans and an overhead camera. The default is
+[a local two-lane junction with three robots](docs/current/LOCAL_JUNCTION_GAZEBO.md),
+short approaches and a pausable rule-based traffic demo. The
+[complete 3× CPM map](docs/current/CPM_MIXED_GAZEBO.md) remains an optional profile. See
+[the setup and interfaces](docs/current/JETAUTO_GAZEBO.md). The initial
+[ROS1 steering-car prototype](docs/current/GAZEBO_ENVIRONMENT.md) remains available.
+With the downloaded checkpoint and Gazebo running, use
+`bash deployment/gazebo/launch_jetauto.sh policy` for the
+[Actor/NOD to ROS2 bridge](docs/current/POLICY_ROS2_BRIDGE.md).
+
 The repository separates active work from historical experiments. Keep new
 files in the corresponding directories instead of placing experiment configs,
 outputs, or technical notes in the repository root.
